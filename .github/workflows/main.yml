@@ -1,0 +1,111 @@
+name: Build DVA Play iOS (.ipa)
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Optional custom release tag (e.g. v1.0.0)'
+        required: false
+        default: ''
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+
+      - name: Locate app directory and install npm dependencies
+        run: |
+          if [ -f "dva_ios/dva-ios/package.json" ]; then
+            cd "dva_ios/dva-ios"
+          elif [ -f "dva-ios/package.json" ]; then
+            cd "dva-ios"
+          fi
+          echo "APP_DIR=$(pwd)" >> "$GITHUB_ENV"
+          npm install --legacy-peer-deps
+
+      - name: Expo Prebuild iOS
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          npx expo prebuild --platform ios --no-install
+
+      - name: Install CocoaPods
+        working-directory: ${{ env.APP_DIR }}/ios
+        run: |
+          pod install --repo-update
+
+      - name: Build iOS .app & Package .ipa
+        working-directory: ${{ env.APP_DIR }}
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          WORKSPACE=$(ls -d ios/*.xcworkspace | head -n 1)
+          SCHEME=$(xcodebuild -list -workspace "$WORKSPACE" -json | python3 -c "import sys, json; data = json.load(sys.stdin); print(data['workspace']['schemes'][0])")
+          echo "Using workspace: $WORKSPACE | scheme: $SCHEME"
+
+          if [ -n "$APPLE_CERTIFICATE_BASE64" ] && [ -n "$APPLE_PROVISIONING_PROFILE_BASE64" ]; then
+            echo "Signed build secrets detected - building signed archive..."
+            KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+            CERT_PATH=$RUNNER_TEMP/certificate.p12
+            PP_PATH=$RUNNER_TEMP/profile.mobileprovision
+            echo "$APPLE_CERTIFICATE_BASE64" | base64 --decode > "$CERT_PATH"
+            echo "$APPLE_PROVISIONING_PROFILE_BASE64" | base64 --decode > "$PP_PATH"
+
+            security create-keychain -p "dva-temp-pass" "$KEYCHAIN_PATH"
+            security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+            security unlock-keychain -p "dva-temp-pass" "$KEYCHAIN_PATH"
+            security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+            security list-keychains -d user -s "$KEYCHAIN_PATH"
+            mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+            cp "$PP_PATH" ~/Library/MobileDevice/Provisioning\ Profiles/profile.mobileprovision
+
+            xcodebuild -workspace "$WORKSPACE" \
+              -scheme "$SCHEME" \
+              -configuration Release \
+              -sdk iphoneos \
+              -archivePath build/DVAPlay.xcarchive \
+              archive
+
+            APP_PATH=$(ls -d build/DVAPlay.xcarchive/Products/Applications/*.app | head -n 1)
+          else
+            echo "No Apple signing secrets found. Building unsigned .ipa for Sideloadly / AltStore / SideStore / TrollStore..."
+            xcodebuild -workspace "$WORKSPACE" \
+              -scheme "$SCHEME" \
+              -configuration Release \
+              -sdk iphoneos \
+              -destination 'generic/platform=iOS' \
+              -derivedDataPath build \
+              CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGN_IDENTITY="" \
+              AD_HOC_CODE_SIGNING_ALLOWED=YES \
+              build
+
+            APP_PATH=$(ls -d build/Build/Products/Release-iphoneos/*.app | head -n 1)
+          fi
+
+          rm -rf build/Payload DVA-Play-iOS.ipa
+          mkdir -p build/Payload
+          cp -R "$APP_PATH" build/Payload/
+          cd build
+          zip -qry ../DVA-Play-iOS.ipa Payload
+          cd ..
+          ls -lh DVA-Play-iOS.ipa
+
+      - name: Upload DVA-Play-iOS.ipa Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DVA-Play-iOS-IPA
+          path: ${{ env.APP_DIR }}/DVA-Play-iOS.ipa

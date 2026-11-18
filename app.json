@@ -1,0 +1,72 @@
+{
+  "expo": {
+    "name": "Đặng Việt Anh",
+    "slug": "dva-play-ios",
+    "version": "1.0.0",
+    "runtimeVersion": "1.0.0",
+    "orientation": "default",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#07090F",
+    "splash": {
+      "image": "./assets/splash-logo.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#07090F"
+    },
+    "updates": {
+      "enabled": true,
+      "checkAutomatically": "ON_LOAD",
+      "fallbackToCacheTimeout": 3000,
+      "url": "https://dangvietanh.com/dva_ios/api/updates.php"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.dangvietanh.dvaplay",
+      "buildNumber": "1",
+      "infoPlist": {
+        "LSApplicationQueriesSchemes": ["altstore", "sidestore"],
+        "NSFaceIDUsageDescription": "Sử dụng Face ID để mở khóa nhanh ứng dụng Đặng Việt Anh.",
+        "NSCameraUsageDescription": "Sử dụng Camera để quét mã QR DVA Cast chiếu phim lên TV.",
+        "NSPhotoLibraryAddUsageDescription": "Cho phép lưu tệp video đã tải vào thư viện hoặc Tệp trên iPhone.",
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true
+        },
+        "UIBackgroundModes": ["audio", "fetch"],
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "plugins": [
+      "expo-updates",
+      [
+        "expo-video",
+        {
+          "supportsBackgroundPlayback": true,
+          "supportsPictureInPicture": true
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Sử dụng Camera để quét mã QR DVA Cast chiếu phim lên TV."
+        }
+      ],
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Sử dụng Face ID để mở khóa ứng dụng Đặng Việt Anh."
+        }
+      ],
+      [
+        "expo-screen-orientation",
+        {
+          "initialOrientation": "PORTRAIT_UP"
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": ""
+      }
+    }
+  }
+}
