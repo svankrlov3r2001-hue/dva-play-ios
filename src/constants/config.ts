@@ -1,13 +1,13 @@
 export const API_BASE_URL = 'https://dangvietanh.com/dva_ios/api';
 export const SITE_BASE_URL = 'https://dangvietanh.com';
-export const PORTAL_URL = 'https://dangvietanh.com/dva_ios/';
+export const PORTAL_URL = 'https://dangvietanh.com/tai-ung-dung.html';
 export const OTA_MANIFEST_URL = 'https://dangvietanh.com/dva_ios/app-version.json';
 export const EXPO_UPDATES_URL = 'https://dangvietanh.com/dva_ios/api/updates.php';
 
 export const APP_NAME = 'Đặng Việt Anh';
 export const APP_BUNDLE_ID = 'com.dangvietanh.dvaplay';
-export const APP_VERSION = '1.0.4';
-export const APP_VERSION_CODE = 5;
+export const APP_VERSION = '1.0.5';
+export const APP_VERSION_CODE = 6;
 export const APP_RUNTIME_VERSION = '1.0.0';
 export const APP_RELEASE_DATE = '19/11/2026';
 

@@ -80,7 +80,7 @@ export function CastModal({ visible, movieToCast, onClose }: CastModalProps) {
 
   const extractCode = (raw: string): string => {
     const trimmed = raw.trim();
-    const match = trimmed.match(/(?:code=|pair=|cast\/)([A-Za-z0-9]{4,10})/i);
+    const match = trimmed.match(/(?:code=|pair=|(?:dva_)?cast\/)([A-Za-z0-9]{4,10})/i);
     if (match) return match[1].toUpperCase();
     return trimmed.toUpperCase();
   };

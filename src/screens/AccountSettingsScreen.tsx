@@ -113,8 +113,8 @@ export function AccountSettingsScreen({
       if (res.otaUpdated) {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         Alert.alert(
-          'Đã tải bản cập nhật giao diện OTA!',
-          'Giao diện và tính năng mới đã tải xong ngay trên iPhone mà không cần cài lại file .ipa.',
+          'Đã tải bản cập nhật mới!',
+          'Giao diện và tính năng xem phim mới đã sẵn sàng ngay trên iPhone của bạn.',
           [
             { text: 'Để lần sau', style: 'cancel' },
             {
@@ -125,25 +125,25 @@ export function AccountSettingsScreen({
         );
       } else if (res.ipaAvailable && res.manifest) {
         Alert.alert(
-          `Có bản .ipa mới v${res.manifest.versionName}`,
-          res.manifest.changelog || 'Phiên bản .ipa mới đã sẵn sàng trên trang tải.',
+          `Có phiên bản mới v${res.manifest.versionName}`,
+          res.manifest.changelog || 'Phiên bản ứng dụng mới đã sẵn sàng trên trang Tải Ứng Dụng.',
           [
             { text: 'Để sau', style: 'cancel' },
             {
-              text: 'Mở trang tải .ipa',
+              text: 'Mở trang Tải Ứng Dụng',
               onPress: () => Linking.openURL(res.manifest?.portalUrl || PORTAL_URL),
             },
           ]
         );
       } else if (!res.otaSupported) {
         Alert.alert(
-          'Đang chạy chế độ Expo Go / Dev',
-          `Phiên bản: ${APP_VERSION} (Runtime ${APP_RUNTIME_VERSION}).\n\nKhi build thành file .ipa, expo-updates sẽ tự động tải bản cập nhật giao diện OTA trực tiếp từ dangvietanh.com/dva_ios/api/updates.php.`
+          'Đã là phiên bản mới nhất',
+          `Phiên bản hiện tại: v${APP_VERSION} • Phát hành ${APP_RELEASE_DATE}`
         );
       } else {
         Alert.alert(
-          'Đã là bản mới nhất',
-          `Phiên bản: ${APP_VERSION} • Runtime OTA: ${otaState.runtimeVersion}`
+          'Đã là phiên bản mới nhất',
+          `Phiên bản hiện tại: v${APP_VERSION} • Phát hành ${APP_RELEASE_DATE}`
         );
       }
     } catch {
@@ -155,7 +155,7 @@ export function AccountSettingsScreen({
 
   const handleClearOffline = () => {
     if (offlineItems.length === 0) return;
-    Alert.alert('Xóa toàn bộ phim Offline?', 'Tất cả tệp video tải ngoại tuyến sẽ bị xóa.', [
+    Alert.alert('Xóa toàn bộ phim ngoại tuyến?', 'Tất cả phim đã tải để xem ngoại tuyến trên iPhone sẽ bị xóa.', [
       { text: 'Hủy', style: 'cancel' },
       {
         text: 'Xóa hết',
@@ -284,12 +284,8 @@ export function AccountSettingsScreen({
         />
         <SettingSwitchRow
           icon="albums-outline"
-          label="Picture-in-Picture (PiP)"
-          desc={
-            otaState.isExpoGo
-              ? 'Thu nhỏ trình phát nổi khi thoát (chạy đầy đủ trên bản .ipa độc lập)'
-              : 'Thu nhỏ trình phát nổi khi thoát ra màn hình chính'
-          }
+          label="Thu nhỏ khung hình phim"
+          desc="Tiếp tục xem phim trong khung hình nổi khi thoát ra màn hình chính"
           value={settings.pipEnabled}
           onChange={(v) => updateSetting('pipEnabled', v)}
         />
@@ -327,7 +323,7 @@ export function AccountSettingsScreen({
             <Ionicons name="tv-outline" size={20} color="#FFF" />
             <View>
               <Text style={styles.settingLabel}>DVA Cast (Quét QR chiếu lên TV)</Text>
-              <Text style={styles.settingDesc}>Ghép đôi nhanh với Android TV / Web Cast</Text>
+              <Text style={styles.settingDesc}>Kết nối và điều khiển phát phim trên màn hình lớn TV</Text>
             </View>
           </View>
           <Ionicons name="chevron-forward" size={18} color={COLORS.muted} />
@@ -339,9 +335,9 @@ export function AccountSettingsScreen({
           <View style={styles.rowLeft}>
             <Ionicons name="folder-outline" size={20} color="#FFF" />
             <View>
-              <Text style={styles.settingLabel}>Bộ nhớ phim Offline</Text>
+              <Text style={styles.settingLabel}>Bộ nhớ phim ngoại tuyến</Text>
               <Text style={styles.settingDesc}>
-                {offlineItems.length} video • {formatBytes(totalBytes)} đã dùng
+                {offlineItems.length} phim • {formatBytes(totalBytes)} đã dùng
               </Text>
             </View>
           </View>
@@ -359,14 +355,9 @@ export function AccountSettingsScreen({
       <GlassSurface intensity={45} radius={RADII.xl} style={styles.card}>
         <View style={styles.actionRow}>
           <View style={{ flex: 1, paddingRight: 10 }}>
-            <Text style={styles.settingLabel}>Cập nhật ứng dụng &amp; Giao diện OTA</Text>
+            <Text style={styles.settingLabel}>Cập nhật ứng dụng</Text>
             <Text style={styles.settingDesc}>
-              v{APP_VERSION} (Build {APP_VERSION_CODE}) • Runtime {otaState.runtimeVersion} •{' '}
-              {otaState.isExpoGo
-                ? 'Expo Go'
-                : otaState.isEmbeddedLaunch
-                ? 'Bản .ipa gốc'
-                : 'Bản OTA mới nhất'}
+              Phiên bản v{APP_VERSION} (Bản dựng {APP_VERSION_CODE}) • Phát hành {APP_RELEASE_DATE}
             </Text>
           </View>
           <TouchableOpacity
@@ -377,7 +368,7 @@ export function AccountSettingsScreen({
             {checkingUpdate ? (
               <ActivityIndicator size="small" color="#FFF" />
             ) : (
-              <Text style={styles.subtleBtnTxt}>Cập nhật OTA</Text>
+              <Text style={styles.subtleBtnTxt}>Kiểm tra</Text>
             )}
           </TouchableOpacity>
         </View>
@@ -418,8 +409,8 @@ export function AccountSettingsScreen({
                 date: APP_RELEASE_DATE,
                 title: 'Phát hành phiên bản đầu tiên cho iPhone',
                 changes: [
-                  'Giao diện Apple Liquid Glass tối ưu thao tác 1 tay',
-                  'Trình phát kép AVPlayer + WKWebView fallback, tải MP4 offline, Face ID & DVA Cast QR',
+                  'Giao diện điện ảnh tối ưu thao tác một tay trên màn hình iPhone',
+                  'Hỗ trợ xem ngoại tuyến, thu nhỏ khung hình phim, khóa Face ID và chiếu phim lên TV qua mã QR',
                 ],
               },
             ]).map((h) => (
