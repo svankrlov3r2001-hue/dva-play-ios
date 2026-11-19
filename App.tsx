@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Animated,
+  AppState,
   Easing,
   StyleSheet,
   Text,
@@ -67,7 +68,16 @@ function RootAppContent() {
 
   const activePortraitInsets = winWidth < winHeight ? insets : portraitInsets;
 
-  const { user, bootstrapping, isLocked, unlockWithBiometrics, logout } = useAuth();
+  const {
+    user,
+    bootstrapping,
+    isLocked,
+    lockPromptVisible,
+    lockSeq,
+    unlockWithBiometrics,
+    attemptAutoUnlockWithBiometrics,
+    logout,
+  } = useAuth();
 
   // Minimum 3s Startup Connection Splash state matching dva-play/src/main/splashManager.js
   const [splashVisible, setSplashVisible] = useState(true);
@@ -143,25 +153,57 @@ function RootAppContent() {
   useEffect(() => {
     if (splashVisible && !splashDismissing && splashMinDone && serverReady && !bootstrapping) {
       setSplashDismissing(true);
-      const t = setTimeout(() => {
-        setSplashVisible(false);
-      }, 440);
-      return () => clearTimeout(t);
     }
   }, [splashVisible, splashDismissing, splashMinDone, serverReady, bootstrapping]);
 
-  const unlockAttemptedRef = useRef(false);
+  useEffect(() => {
+    if (!splashDismissing || !splashVisible) return;
+    const t = setTimeout(() => {
+      setSplashVisible(false);
+    }, 440);
+    return () => clearTimeout(t);
+  }, [splashDismissing, splashVisible]);
+
+  const lastAttemptedLockSeqRef = useRef(-1);
 
   useEffect(() => {
     if (!isLocked) {
-      unlockAttemptedRef.current = false;
+      lastAttemptedLockSeqRef.current = -1;
       return;
     }
-    if (!splashVisible && user && isLocked && !unlockAttemptedRef.current) {
-      unlockAttemptedRef.current = true;
-      unlockWithBiometrics().catch(() => {});
+    if ((splashVisible && !splashDismissing) || !user) {
+      return;
     }
-  }, [splashVisible, user, isLocked, unlockWithBiometrics]);
+    if (lastAttemptedLockSeqRef.current === lockSeq) {
+      return;
+    }
+
+    const triggerScan = () => {
+      if (lastAttemptedLockSeqRef.current === lockSeq) return;
+      lastAttemptedLockSeqRef.current = lockSeq;
+      attemptAutoUnlockWithBiometrics().catch(() => {});
+    };
+
+    if (AppState.currentState === 'background') {
+      const sub = AppState.addEventListener('change', (state) => {
+        if (state === 'active') {
+          sub.remove();
+          setTimeout(triggerScan, 80);
+        }
+      });
+      return () => sub.remove();
+    }
+
+    const t = setTimeout(triggerScan, 80);
+    return () => clearTimeout(t);
+  }, [
+    splashVisible,
+    splashDismissing,
+    user,
+    isLocked,
+    lockSeq,
+    attemptAutoUnlockWithBiometrics,
+  ]);
 
   const handleOpenPreview = (item: MovieItem) => {
     Haptics.selectionAsync();
@@ -423,18 +465,31 @@ function RootAppContent() {
       return (
         <View style={styles.lockContainer}>
           <AmbientAppBackground />
-          <GlassSurface intensity={55} radius={30} style={styles.lockCard}>
-            <Ionicons name="lock-closed" size={42} color={COLORS.accent} />
-            <Text style={styles.lockTitle}>Đã khóa bằng Face ID</Text>
-            <Text style={styles.lockSub}>Xác thực để tiếp tục xem phim trên Đặng Việt Anh</Text>
-            <TouchableOpacity style={styles.unlockBtn} onPress={unlockWithBiometrics}>
-              <Ionicons name="scan-outline" size={20} color="#FFF" />
-              <Text style={styles.unlockTxt}>Mở khóa ngay</Text>
+          {lockPromptVisible ? (
+            <GlassSurface intensity={55} radius={30} style={styles.lockCard}>
+              <Ionicons name="lock-closed" size={42} color={COLORS.accent} />
+              <Text style={styles.lockTitle}>Đã khóa bằng Face ID</Text>
+              <Text style={styles.lockSub}>Xác thực để tiếp tục xem phim trên Đặng Việt Anh</Text>
+              <TouchableOpacity style={styles.unlockBtn} onPress={unlockWithBiometrics}>
+                <Ionicons name="scan-outline" size={20} color="#FFF" />
+                <Text style={styles.unlockTxt}>Mở khóa ngay</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={logout} style={{ marginTop: 14 }}>
+                <Text style={styles.logoutLink}>Đăng xuất tài khoản</Text>
+              </TouchableOpacity>
+            </GlassSurface>
+          ) : (
+            <TouchableOpacity
+              activeOpacity={0.85}
+              onPress={() => {
+                attemptAutoUnlockWithBiometrics().catch(() => {});
+              }}
+              style={styles.scanningPill}
+            >
+              <Ionicons name="scan-outline" size={22} color={COLORS.accent} />
+              <Text style={styles.scanningText}>Đang quét Face ID...</Text>
             </TouchableOpacity>
-            <TouchableOpacity onPress={logout} style={{ marginTop: 14 }}>
-              <Text style={styles.logoutLink}>Đăng xuất tài khoản</Text>
-            </TouchableOpacity>
-          </GlassSurface>
+          )}
         </View>
       );
     }
@@ -657,6 +712,22 @@ const styles = StyleSheet.create({
   logoutLink: {
     color: COLORS.muted,
     fontSize: 13.5,
+    fontWeight: '600',
+  },
+  scanningPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 20,
+    paddingVertical: 13,
+    borderRadius: 24,
+    backgroundColor: 'rgba(20, 20, 20, 0.72)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.14)',
+  },
+  scanningText: {
+    color: '#F8FAFC',
+    fontSize: 14,
     fontWeight: '600',
   },
 });

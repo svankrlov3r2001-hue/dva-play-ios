@@ -2,7 +2,7 @@
   "expo": {
     "name": "Đặng Việt Anh",
     "slug": "dva-play-ios",
-    "version": "1.0.5",
+    "version": "1.0.10",
     "runtimeVersion": "1.0.0",
     "orientation": "default",
     "icon": "./assets/icon.png",
@@ -22,7 +22,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.dangvietanh.dvaplay",
-      "buildNumber": "6",
+      "buildNumber": "11",
       "infoPlist": {
         "LSApplicationQueriesSchemes": ["altstore", "sidestore"],
         "NSFaceIDUsageDescription": "Sử dụng Face ID để mở khóa nhanh ứng dụng Đặng Việt Anh.",
@@ -61,7 +61,8 @@
         {
           "initialOrientation": "PORTRAIT_UP"
         }
-      ]
+      ],
+      "./plugins/withIosHomeIndicatorAutoHide"
     ],
     "extra": {
       "eas": {

@@ -21,9 +21,12 @@ interface AuthContextValue {
   cookies: AuthCookies | null;
   bootstrapping: boolean;
   isLocked: boolean;
+  lockPromptVisible: boolean;
+  lockSeq: number;
   login: (identity: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   unlockWithBiometrics: () => Promise<boolean>;
+  attemptAutoUnlockWithBiometrics: () => Promise<boolean>;
   verifyBiometricsForEnable: () => Promise<{ ok: boolean; reason?: string }>;
   lockAppNow: () => void;
   refreshUser: () => Promise<void>;
@@ -35,9 +38,12 @@ const AuthContext = createContext<AuthContextValue>({
   cookies: null,
   bootstrapping: true,
   isLocked: false,
+  lockPromptVisible: false,
+  lockSeq: 0,
   login: async () => {},
   logout: async () => {},
   unlockWithBiometrics: async () => true,
+  attemptAutoUnlockWithBiometrics: async () => true,
   verifyBiometricsForEnable: async () => ({ ok: true }),
   lockAppNow: () => {},
   refreshUser: async () => {},
@@ -76,20 +82,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [cookies, setCookies] = useState<AuthCookies | null>(null);
   const [bootstrapping, setBootstrapping] = useState(true);
   const [isLocked, setIsLocked] = useState(false);
+  const [lockPromptVisible, setLockPromptVisible] = useState(false);
+  const [lockSeq, setLockSeq] = useState(0);
 
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
   const userRef = useRef(user);
   userRef.current = user;
-  const biometricBusyRef = useRef(false);
+  const isAuthenticatingRef = useRef(false);
+  const lastAuthEndedAtRef = useRef(0);
   const lastUnlockAtRef = useRef(0);
   const backgroundedAtRef = useRef(0);
+  const isLockedRef = useRef(isLocked);
+  isLockedRef.current = isLocked;
 
-  const releaseBusyAfterCooldown = useCallback(() => {
-    setTimeout(() => {
-      biometricBusyRef.current = false;
-    }, 850);
-  }, []);
+  const runBiometricPrompt = useCallback(
+    async (promptMessage: string, disableDeviceFallback = false) => {
+      return LocalAuthentication.authenticateAsync({
+        promptMessage,
+        cancelLabel: 'Hủy',
+        fallbackLabel: 'Dùng mật mã thiết bị',
+        disableDeviceFallback,
+      });
+    },
+    []
+  );
 
   const verifyBiometricsForEnable = useCallback(async (): Promise<{
     ok: boolean;
@@ -100,14 +117,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return { ok: false, reason: support.reason };
     }
 
-    biometricBusyRef.current = true;
+    isAuthenticatingRef.current = true;
     try {
-      const res = await LocalAuthentication.authenticateAsync({
-        promptMessage: 'Xác thực để bật khóa ứng dụng',
-        cancelLabel: 'Hủy',
-        fallbackLabel: 'Dùng mật mã thiết bị',
-        disableDeviceFallback: false,
-      });
+      const res = await runBiometricPrompt('Xác thực để bật khóa ứng dụng', false);
       if (res.success) {
         lastUnlockAtRef.current = Date.now();
         return { ok: true };
@@ -122,54 +134,108 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         reason: e?.message || 'Không thể mở hộp thoại xác thực sinh trắc học.',
       };
     } finally {
-      releaseBusyAfterCooldown();
+      lastAuthEndedAtRef.current = Date.now();
+      isAuthenticatingRef.current = false;
     }
-  }, [releaseBusyAfterCooldown]);
+  }, [runBiometricPrompt]);
 
   const unlockWithBiometrics = useCallback(async (): Promise<boolean> => {
-    if (biometricBusyRef.current) {
+    if (isAuthenticatingRef.current) {
       return false;
     }
     const support = await checkBiometricSupportAsync();
     if (!support.supported) {
+      setLockPromptVisible(false);
       setIsLocked(false);
       return true;
     }
 
-    biometricBusyRef.current = true;
+    isAuthenticatingRef.current = true;
     try {
-      const res = await LocalAuthentication.authenticateAsync({
-        promptMessage: 'Mở khóa Đặng Việt Anh',
-        cancelLabel: 'Hủy',
-        fallbackLabel: 'Dùng mật mã thiết bị',
-        disableDeviceFallback: false,
-      });
+      const res = await runBiometricPrompt('Mở khóa Đặng Việt Anh', false);
       if (res.success) {
         lastUnlockAtRef.current = Date.now();
+        setLockPromptVisible(false);
         setIsLocked(false);
         return true;
       }
+      setLockPromptVisible(true);
       return false;
     } catch {
+      setLockPromptVisible(true);
       return false;
     } finally {
-      releaseBusyAfterCooldown();
+      lastAuthEndedAtRef.current = Date.now();
+      isAuthenticatingRef.current = false;
     }
-  }, [releaseBusyAfterCooldown]);
+  }, [runBiometricPrompt]);
+
+  const attemptAutoUnlockWithBiometrics = useCallback(async (): Promise<boolean> => {
+    if (isAuthenticatingRef.current) {
+      return false;
+    }
+    const support = await checkBiometricSupportAsync();
+    if (!support.supported) {
+      setLockPromptVisible(false);
+      setIsLocked(false);
+      return true;
+    }
+
+    const isBioEnrolled = await LocalAuthentication.isEnrolledAsync().catch(() => false);
+    isAuthenticatingRef.current = true;
+    setLockPromptVisible(false);
+    try {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        if (!userRef.current || !isLockedRef.current) {
+          return false;
+        }
+        const res = await runBiometricPrompt(
+          'Mở khóa Đặng Việt Anh',
+          isBioEnrolled && attempt < 3
+        );
+        if (res.success) {
+          lastUnlockAtRef.current = Date.now();
+          lastAuthEndedAtRef.current = Date.now();
+          setLockPromptVisible(false);
+          setIsLocked(false);
+          return true;
+        }
+        const errCode = String((res as any).error || '');
+        if (errCode === 'lockout') {
+          break;
+        }
+        if (attempt < 3) {
+          await new Promise((r) => setTimeout(r, 300));
+        }
+      }
+      setLockPromptVisible(true);
+      return false;
+    } catch {
+      setLockPromptVisible(true);
+      return false;
+    } finally {
+      lastAuthEndedAtRef.current = Date.now();
+      isAuthenticatingRef.current = false;
+    }
+  }, [runBiometricPrompt]);
 
   const lockAppNow = useCallback(() => {
     if (userRef.current) {
+      setLockPromptVisible(false);
       setIsLocked(true);
+      setLockSeq((s) => s + 1);
     }
   }, []);
 
-  // Lock automatically when returning from real background while faceIdEnabled is on
+  // Lock automatically when exiting/switching out while faceIdEnabled is on
   useEffect(() => {
     const onAppStateChange = (nextState: AppStateStatus) => {
+      if (isAuthenticatingRef.current) return;
+      if (Date.now() - lastAuthEndedAtRef.current < 1200) return;
+      if (Date.now() - lastUnlockAtRef.current < 1600) return;
+
       if (nextState === 'background') {
-        if (!biometricBusyRef.current) {
-          backgroundedAtRef.current = Date.now();
-        }
+        backgroundedAtRef.current = Date.now();
         return;
       }
 
@@ -177,15 +243,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const bgAt = backgroundedAtRef.current;
         backgroundedAtRef.current = 0;
 
-        if (biometricBusyRef.current) return;
-        if (Date.now() - lastUnlockAtRef.current < 1600) return;
-        if (
-          bgAt > 0 &&
-          Date.now() - bgAt >= 1500 &&
-          settingsRef.current.faceIdEnabled &&
-          userRef.current
-        ) {
+        if (bgAt > 0 && settingsRef.current.faceIdEnabled && userRef.current) {
+          setLockPromptVisible(false);
           setIsLocked(true);
+          setLockSeq((s) => s + 1);
         }
       }
     };
@@ -225,7 +286,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           }
 
           if (settingsRef.current.faceIdEnabled) {
+            setLockPromptVisible(false);
             setIsLocked(true);
+            setLockSeq((s) => s + 1);
           }
 
           try {
@@ -270,6 +333,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setToken(res.token);
     setUser(res.user);
     setCookies(res.cookies || null);
+    setLockPromptVisible(false);
     setIsLocked(false);
 
     await Promise.all([
@@ -289,6 +353,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setToken(null);
     setUser(null);
     setCookies(null);
+    setLockPromptVisible(false);
     setIsLocked(false);
     await Promise.all([
       SecureStore.deleteItemAsync(KEY_TOKEN),
@@ -315,9 +380,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         cookies,
         bootstrapping,
         isLocked,
+        lockPromptVisible,
+        lockSeq,
         login,
         logout,
         unlockWithBiometrics,
+        attemptAutoUnlockWithBiometrics,
         verifyBiometricsForEnable,
         lockAppNow,
         refreshUser,

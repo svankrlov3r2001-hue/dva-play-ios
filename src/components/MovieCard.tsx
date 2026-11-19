@@ -15,6 +15,21 @@ interface MovieCardProps {
   onRemoveWatched?: (item: MovieItem) => void;
 }
 
+function WatchProgressBar({ percent }: { percent: number }) {
+  const pct = Math.max(0, Math.min(100, percent || 0));
+  if (pct <= 0) return null;
+  return (
+    <View style={styles.progressTrack}>
+      <LinearGradient
+        colors={['#e50914', '#d50055']}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 0 }}
+        style={[styles.progressFill, { width: `${pct}%` }]}
+      />
+    </View>
+  );
+}
+
 export function MovieCard({
   item,
   layout = 'vertical',
@@ -26,6 +41,7 @@ export function MovieCard({
   const rawTitle = String(item.title || '');
   const titlePrimary = item.title_primary || rawTitle.split(' - ')[0] || rawTitle;
   const titleSecondary = item.subtitle || rawTitle.split(' - ')[1] || '';
+  const watchedPct = Math.max(0, Math.min(100, item.progress_percent || 0));
 
   if (layout === 'watched') {
     const cardW = width || 268;
@@ -175,7 +191,7 @@ export function MovieCard({
             colors={['transparent', 'rgba(0,0,0,0.82)']}
             style={styles.bottomScrim}
           />
-          <View style={styles.floatingSplitBadgesLeft}>
+          <View style={[styles.floatingSplitBadgesLeft, watchedPct > 0 && { bottom: 12 }]}>
             <View style={styles.splitSubHalf}>
               <Text style={styles.splitPillText}>P.Đề</Text>
             </View>
@@ -188,6 +204,7 @@ export function MovieCard({
               <Text style={styles.splitPillText}>{item.episode_badge || 'HD'}</Text>
             </LinearGradient>
           </View>
+          <WatchProgressBar percent={watchedPct} />
         </View>
         <Text style={styles.cardTitle} numberOfLines={1}>
           {titlePrimary}
@@ -218,6 +235,7 @@ export function MovieCard({
             style={styles.fillImage}
             resizeMode="cover"
           />
+          <WatchProgressBar percent={watchedPct} />
         </View>
         <View style={styles.top10BottomInfo}>
           <Text style={styles.top10RankNumber}>{item.rank ?? 1}</Text>
@@ -260,7 +278,7 @@ export function MovieCard({
           colors={['transparent', 'rgba(7,9,15,0.72)']}
           style={styles.bottomScrim}
         />
-        <View style={styles.floatingSplitBadgesCenter}>
+        <View style={[styles.floatingSplitBadgesCenter, watchedPct > 0 && { bottom: 12 }]}>
           <View style={styles.splitSubHalf}>
             <Text style={styles.splitPillText}>P.Đề</Text>
           </View>
@@ -273,6 +291,7 @@ export function MovieCard({
             <Text style={styles.splitPillText}>{item.episode_badge || item.video_quality || 'HD'}</Text>
           </LinearGradient>
         </View>
+        <WatchProgressBar percent={watchedPct} />
       </View>
       <Text style={[styles.cardTitle, layout !== 'grid' && { textAlign: 'center' }]} numberOfLines={1}>
         {titlePrimary}

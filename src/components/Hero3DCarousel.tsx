@@ -10,7 +10,6 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import { COLORS } from '../constants/config';
@@ -219,26 +218,22 @@ export function Hero3DCarousel({
 
   return (
     <View style={[styles.shell, { paddingTop: topInset + 104 }]}>
-      {/* Blurred full-bleed ambient poster background blending smoothly into app background */}
+      {/* Blurred full-bleed ambient poster background with smooth ::before-style bottom fade */}
       <Image
         source={{ uri: activeItem.poster_url || activeItem.thumbnail_url }}
         style={styles.backdropImg}
-        blurRadius={22}
+        blurRadius={24}
         resizeMode="cover"
       />
-      <View pointerEvents="none" style={styles.bottomBlurBand}>
-        <BlurView intensity={28} tint="dark" style={StyleSheet.absoluteFill} />
-      </View>
       <LinearGradient
         colors={[
-          'rgba(7,9,15,0.42)',
-          'rgba(7,9,15,0.18)',
-          'rgba(12,9,16,0.52)',
-          'rgba(12,9,16,0.82)',
-          'rgba(12,9,16,0.34)',
-          'transparent',
+          'rgba(7,9,15,0.46)',
+          'rgba(7,9,15,0.12)',
+          'rgba(7,9,15,0.40)',
+          'rgba(7,9,15,0.82)',
+          COLORS.bg,
         ]}
-        locations={[0, 0.32, 0.62, 0.80, 0.92, 1]}
+        locations={[0, 0.28, 0.52, 0.82, 1]}
         style={StyleSheet.absoluteFill}
         pointerEvents="none"
       />
@@ -381,23 +376,16 @@ const styles = StyleSheet.create({
     position: 'relative',
     overflow: 'hidden',
     paddingHorizontal: 18,
-    paddingBottom: 18,
+    paddingBottom: 14,
     marginBottom: 0,
   },
   backdropImg: {
     position: 'absolute',
     top: 0,
     right: 0,
-    bottom: 28,
+    bottom: 0,
     left: 0,
     opacity: 0.44,
-  },
-  bottomBlurBand: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    height: 92,
   },
   deckArea: {
     width: '100%',

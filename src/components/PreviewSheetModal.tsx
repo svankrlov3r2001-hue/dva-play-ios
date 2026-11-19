@@ -12,7 +12,6 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import * as Haptics from 'expo-haptics';
@@ -250,7 +249,7 @@ export function PreviewSheetModal({
             </View>
             <View style={styles.handleBar} />
 
-            {/* Backdrop / Live Trailer Header with seamless bottom blur bridge */}
+            {/* Backdrop / Live Trailer Header with seamless ::before-style bottom fade */}
             <View style={styles.mediaBox}>
               {previewBackdropUri ? (
                 <Image
@@ -271,17 +270,15 @@ export function PreviewSheetModal({
                 </Animated.View>
               ) : null}
 
-              <View pointerEvents="none" style={styles.mediaBottomBlur}>
-                <BlurView intensity={28} tint="dark" style={StyleSheet.absoluteFill} />
-              </View>
               <LinearGradient
                 colors={[
-                  'rgba(7,9,15,0.08)',
-                  'rgba(10,9,15,0.16)',
-                  'rgba(13,10,16,0.72)',
-                  'rgba(13,10,16,0.96)',
+                  'rgba(7,9,15,0.16)',
+                  'rgba(7,9,15,0)',
+                  'rgba(7,9,15,0.40)',
+                  'rgba(7,9,15,0.82)',
+                  COLORS.bg,
                 ]}
-                locations={[0, 0.42, 0.76, 1]}
+                locations={[0, 0.34, 0.54, 0.82, 1]}
                 style={StyleSheet.absoluteFill}
                 pointerEvents="none"
               />
@@ -306,6 +303,13 @@ export function PreviewSheetModal({
                 </TouchableOpacity>
               ) : null}
             </View>
+
+            <LinearGradient
+              colors={[COLORS.bg, 'rgba(7,9,15,0.68)', 'rgba(7,9,15,0)']}
+              locations={[0, 0.42, 1]}
+              style={styles.mediaBottomBridge}
+              pointerEvents="none"
+            />
 
             <SkeletonCrossfade
               loading={loading || !info}
@@ -470,16 +474,13 @@ const styles = StyleSheet.create({
   mediaBox: {
     width: '100%',
     height: 215,
-    backgroundColor: '#0A0D16',
+    backgroundColor: COLORS.bg,
     position: 'relative',
     overflow: 'hidden',
   },
-  mediaBottomBlur: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    height: 54,
+  mediaBottomBridge: {
+    height: 36,
+    marginBottom: -36,
   },
   closeBtn: {
     position: 'absolute',

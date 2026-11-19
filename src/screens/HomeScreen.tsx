@@ -16,6 +16,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { GlassSurface } from '../components/GlassSurface';
@@ -471,13 +472,21 @@ export function HomeScreen({
         >
           {/* 3D Perspective Hero Carousel matching dva_play/index.php */}
           {heroList.length > 0 ? (
-            <Hero3DCarousel
-              items={heroList}
-              topInset={insets.top}
-              onPlay={onPlayDirect}
-              onToggleWishlist={handleToggleWishlist}
-              onOpenDetail={onOpenDetail}
-            />
+            <>
+              <Hero3DCarousel
+                items={heroList}
+                topInset={insets.top}
+                onPlay={onPlayDirect}
+                onToggleWishlist={handleToggleWishlist}
+                onOpenDetail={onOpenDetail}
+              />
+              <LinearGradient
+                colors={[COLORS.bg, 'rgba(7,9,15,0.68)', 'rgba(7,9,15,0)']}
+                locations={[0, 0.42, 1]}
+                style={styles.heroBottomBridge}
+                pointerEvents="none"
+              />
+            </>
           ) : (
             <View style={{ height: insets.top + 112 }} />
           )}
@@ -493,7 +502,10 @@ export function HomeScreen({
             return (
               <View
                 key={section.id}
-                style={styles.sectionBlock}
+                style={[
+                  styles.sectionBlock,
+                  idx === 0 && heroList.length > 0 && styles.firstSectionBlock,
+                ]}
                 onLayout={(e) => {
                   sectionOffsetsRef.current[section.id] = e.nativeEvent.layout.y;
                   scheduleRevealCheck();
@@ -777,8 +789,15 @@ const styles = StyleSheet.create({
     marginTop: 12,
     fontSize: 13.5,
   },
+  heroBottomBridge: {
+    height: 64,
+    marginBottom: -64,
+  },
   sectionBlock: {
     marginTop: 22,
+  },
+  firstSectionBlock: {
+    marginTop: 8,
   },
   sectionHeaderRow: {
     paddingHorizontal: 16,
