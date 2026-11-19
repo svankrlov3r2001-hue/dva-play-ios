@@ -51,9 +51,22 @@ jobs:
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
         run: |
-          WORKSPACE=$(ls -d ios/*.xcworkspace | head -n 1)
-          SCHEME=$(xcodebuild -list -workspace "$WORKSPACE" -json | python3 -c "import sys, json; data = json.load(sys.stdin); print(data['workspace']['schemes'][0])")
-          echo "Using workspace: $WORKSPACE | scheme: $SCHEME"
+          set -e
+          NODE_BIN=$(command -v node || true)
+          if [ -n "$NODE_BIN" ]; then
+            echo "export NODE_BINARY=$NODE_BIN" > ios/.xcode.env.local
+          fi
+
+          WORKSPACE=$(find ios -maxdepth 1 -name "*.xcworkspace" | head -n 1)
+          PROJECT=$(find ios -maxdepth 1 -name "*.xcodeproj" | head -n 1)
+          echo "Detected workspace: $WORKSPACE | project: $PROJECT"
+          xcodebuild -list -project "$PROJECT" || true
+
+          SCHEME=$(xcodebuild -list -project "$PROJECT" -json | python3 -c "import sys, json; data = json.load(sys.stdin); schemes = [s for s in data.get('project', {}).get('schemes', []) if not s.endswith(('Tests', 'UITests'))]; print(schemes[0] if schemes else '')")
+          if [ -z "$SCHEME" ]; then
+            SCHEME=$(basename "$PROJECT" .xcodeproj)
+          fi
+          echo "Using workspace: $WORKSPACE | project: $PROJECT | scheme: $SCHEME"
 
           if [ -n "$APPLE_CERTIFICATE_BASE64" ] && [ -n "$APPLE_PROVISIONING_PROFILE_BASE64" ]; then
             echo "Signed build secrets detected - building signed archive..."
@@ -78,7 +91,7 @@ jobs:
               -archivePath build/DVAPlay.xcarchive \
               archive
 
-            APP_PATH=$(ls -d build/DVAPlay.xcarchive/Products/Applications/*.app | head -n 1)
+            APP_PATH=$(find build/DVAPlay.xcarchive/Products/Applications -maxdepth 2 -name "*.app" -type d 2>/dev/null | head -n 1)
           else
             echo "No Apple signing secrets found. Building unsigned .ipa for Sideloadly / AltStore / SideStore / TrollStore..."
             xcodebuild -workspace "$WORKSPACE" \
@@ -93,8 +106,18 @@ jobs:
               AD_HOC_CODE_SIGNING_ALLOWED=YES \
               build
 
-            APP_PATH=$(ls -d build/Build/Products/Release-iphoneos/*.app | head -n 1)
+            APP_PATH=$(find build/Build/Products/Release-iphoneos -maxdepth 2 -name "*.app" -type d 2>/dev/null | head -n 1)
+            if [ -z "$APP_PATH" ]; then
+              APP_PATH=$(find build -name "*.app" -type d ! -path "*.dSYM*" 2>/dev/null | head -n 1)
+            fi
           fi
+
+          if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
+            echo "ERROR: Built .app bundle not found after xcodebuild!"
+            find build -maxdepth 4 2>/dev/null || true
+            exit 1
+          fi
+          echo "Packaging .app bundle: $APP_PATH"
 
           rm -rf build/Payload DVA-Play-iOS.ipa
           mkdir -p build/Payload
