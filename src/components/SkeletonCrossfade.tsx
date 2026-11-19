@@ -16,6 +16,8 @@ interface SkeletonCrossfadeProps {
   style?: StyleProp<ViewStyle>;
   /** True for dynamic-height modals/sheets so the skeleton sizes the container while loading */
   intrinsicHeight?: boolean;
+  /** Keep skeleton pre-mounted in background (default true for main screens, false for intrinsicHeight) */
+  keepSkeletonMounted?: boolean;
   fadeDurationMs?: number;
   backgroundColor?: string;
 }
@@ -30,6 +32,7 @@ export function SkeletonCrossfade({
   children,
   style,
   intrinsicHeight = false,
+  keepSkeletonMounted = !intrinsicHeight,
   fadeDurationMs = 300,
   backgroundColor = COLORS.bg,
 }: SkeletonCrossfadeProps) {
@@ -37,6 +40,14 @@ export function SkeletonCrossfade({
   const skeletonOpacity = useRef(new Animated.Value(loading ? 1 : 0)).current;
   const contentOpacity = useRef(new Animated.Value(loading ? 0 : 1)).current;
   const wasLoadingRef = useRef(loading);
+
+  // Immediately reveal skeleton on Frame 0 before commit when loading transitions false -> true
+  if (loading && !wasLoadingRef.current) {
+    skeletonOpacity.stopAnimation();
+    contentOpacity.stopAnimation();
+    skeletonOpacity.setValue(1);
+    contentOpacity.setValue(0);
+  }
 
   useEffect(() => {
     if (loading) {
@@ -52,32 +63,42 @@ export function SkeletonCrossfade({
     if (wasLoadingRef.current) {
       wasLoadingRef.current = false;
       setRenderSkeleton(true);
-      skeletonOpacity.stopAnimation();
-      contentOpacity.stopAnimation();
-      Animated.parallel([
-        Animated.timing(skeletonOpacity, {
-          toValue: 0,
-          duration: fadeDurationMs,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }),
-        Animated.timing(contentOpacity, {
-          toValue: 1,
-          duration: fadeDurationMs + 40,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }),
-      ]).start(({ finished }) => {
-        if (finished) {
-          setRenderSkeleton(false);
-        }
+      let cancelled = false;
+      const rafId = requestAnimationFrame(() => {
+        if (cancelled) return;
+        skeletonOpacity.stopAnimation();
+        contentOpacity.stopAnimation();
+        Animated.parallel([
+          Animated.timing(skeletonOpacity, {
+            toValue: 0,
+            duration: fadeDurationMs,
+            easing: Easing.out(Easing.cubic),
+            useNativeDriver: true,
+          }),
+          Animated.timing(contentOpacity, {
+            toValue: 1,
+            duration: fadeDurationMs + 40,
+            easing: Easing.out(Easing.cubic),
+            useNativeDriver: true,
+          }),
+        ]).start(({ finished }) => {
+          if (finished && !cancelled) {
+            setRenderSkeleton(false);
+          }
+        });
       });
-    } else {
-      contentOpacity.setValue(1);
-      skeletonOpacity.setValue(0);
-      setRenderSkeleton(false);
+      return () => {
+        cancelled = true;
+        cancelAnimationFrame(rafId);
+      };
     }
+
+    contentOpacity.setValue(1);
+    skeletonOpacity.setValue(0);
+    setRenderSkeleton(false);
   }, [loading, fadeDurationMs, skeletonOpacity, contentOpacity]);
+
+  const showSkeleton = keepSkeletonMounted || loading || renderSkeleton;
 
   if (intrinsicHeight) {
     return (
@@ -87,7 +108,7 @@ export function SkeletonCrossfade({
             {children}
           </Animated.View>
         ) : null}
-        {renderSkeleton ? (
+        {showSkeleton ? (
           <Animated.View
             pointerEvents={loading ? 'auto' : 'none'}
             style={[
@@ -110,7 +131,7 @@ export function SkeletonCrossfade({
       >
         {children}
       </Animated.View>
-      {renderSkeleton ? (
+      {showSkeleton ? (
         <Animated.View
           pointerEvents={loading ? 'auto' : 'none'}
           style={[styles.overlay, { backgroundColor, opacity: skeletonOpacity }]}

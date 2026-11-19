@@ -1,8 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  Modal,
+  Animated,
+  Easing,
   StyleSheet,
   Text,
   TextInput,
@@ -13,6 +14,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { AmbientAppBackground } from '../components/AmbientAppBackground';
 import { GlassSurface } from '../components/GlassSurface';
 import { COLORS, RADII } from '../constants/config';
 import {
@@ -40,6 +42,22 @@ export function CastModal({ visible, movieToCast, onClose }: CastModalProps) {
   const [pairing, setPairing] = useState(false);
   const [scanned, setScanned] = useState(false);
   const [tvStatus, setTvStatus] = useState<any>(null);
+  const enterAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (visible) {
+      enterAnim.setValue(0);
+      Animated.timing(enterAnim, {
+        toValue: 1,
+        duration: 240,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start();
+    } else {
+      enterAnim.stopAnimation();
+      enterAnim.setValue(0);
+    }
+  }, [visible, enterAnim]);
 
   useEffect(() => {
     if (!visible) {
@@ -120,14 +138,23 @@ export function CastModal({ visible, movieToCast, onClose }: CastModalProps) {
     setScanned(false);
   };
 
+  if (!visible) {
+    return null;
+  }
+
+  const translateY = enterAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [56, 0],
+  });
+
   return (
-    <Modal
-      visible={visible}
-      animationType="slide"
-      presentationStyle="pageSheet"
-      supportedOrientations={['portrait', 'landscape-left', 'landscape-right']}
-      onRequestClose={onClose}
+    <Animated.View
+      style={[
+        styles.overlayRoot,
+        { opacity: enterAnim, transform: [{ translateY }] },
+      ]}
     >
+      <AmbientAppBackground />
       <View
         style={[
           styles.container,
@@ -258,14 +285,23 @@ export function CastModal({ visible, movieToCast, onClose }: CastModalProps) {
           </View>
         )}
       </View>
-    </Modal>
+    </Animated.View>
   );
 }
 
 const styles = StyleSheet.create({
+  overlayRoot: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    zIndex: 700,
+    backgroundColor: COLORS.bg,
+  },
   container: {
     flex: 1,
-    backgroundColor: COLORS.bg,
+    backgroundColor: 'transparent',
     paddingHorizontal: 18,
   },
   header: {

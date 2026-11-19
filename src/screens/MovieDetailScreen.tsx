@@ -1,9 +1,10 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Animated,
+  Easing,
   Image,
-  Modal,
   ScrollView,
   Share,
   StyleSheet,
@@ -15,6 +16,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { AmbientAppBackground } from '../components/AmbientAppBackground';
 import { GlassSurface } from '../components/GlassSurface';
 import { MovieCard } from '../components/MovieCard';
 import { SkeletonCrossfade } from '../components/SkeletonCrossfade';
@@ -79,6 +81,22 @@ export function MovieDetailScreen({
   const [inWishlist, setInWishlist] = useState(false);
   const [offlineItems, setOfflineItems] = useState<OfflineDownloadItem[]>([]);
   const [downloadingNow, setDownloadingNow] = useState(false);
+  const enterAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (visible) {
+      enterAnim.setValue(0);
+      Animated.timing(enterAnim, {
+        toValue: 1,
+        duration: 240,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start();
+    } else {
+      enterAnim.stopAnimation();
+      enterAnim.setValue(0);
+    }
+  }, [visible, enterAnim]);
 
   const loadDetails = useCallback(async (id: number) => {
     setLoading(true);
@@ -201,20 +219,30 @@ export function MovieDetailScreen({
       ].filter((g) => g.items.length > 0)
     : [];
 
+  if (!visible) {
+    return null;
+  }
+
+  const translateY = enterAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [48, 0],
+  });
+
   return (
-    <Modal
-      visible={visible}
-      animationType="slide"
-      presentationStyle="fullScreen"
-      supportedOrientations={['portrait', 'landscape-left', 'landscape-right']}
-      onRequestClose={onClose}
+    <Animated.View
+      style={[
+        styles.overlayRoot,
+        { opacity: enterAnim, transform: [{ translateY }] },
+      ]}
     >
+      <AmbientAppBackground />
       <View style={styles.container}>
         <SkeletonCrossfade
           loading={loading || !movie}
+          backgroundColor="transparent"
           skeleton={
             <View style={{ flex: 1 }}>
-              <MovieDetailSkeleton topInset={insets.top} />
+              <MovieDetailSkeleton topInset={insets.top} active={visible && (loading || !movie)} />
               <TouchableOpacity
                 onPress={onClose}
                 style={[styles.floatingBack, { top: insets.top + 10, zIndex: 20 }]}
@@ -237,7 +265,7 @@ export function MovieDetailScreen({
                 resizeMode="cover"
               />
               <LinearGradient
-                colors={['rgba(7,9,15,0.5)', 'rgba(7,9,15,0.2)', '#07090F']}
+                colors={['rgba(7,9,15,0.45)', 'rgba(7,9,15,0.2)', 'rgba(10,11,18,0.88)']}
                 locations={[0, 0.4, 1]}
                 style={StyleSheet.absoluteFill}
               />
@@ -553,14 +581,23 @@ export function MovieDetailScreen({
         </SkeletonCrossfade>
         {obscuredByPlayer ? <View style={styles.playerLaunchVeil} /> : null}
       </View>
-    </Modal>
+    </Animated.View>
   );
 }
 
 const styles = StyleSheet.create({
+  overlayRoot: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    zIndex: 500,
+    backgroundColor: COLORS.bg,
+  },
   container: {
     flex: 1,
-    backgroundColor: COLORS.bg,
+    backgroundColor: 'transparent',
   },
   playerLaunchVeil: {
     position: 'absolute',

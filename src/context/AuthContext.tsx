@@ -1,4 +1,5 @@
-import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { AppState, AppStateStatus } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import * as LocalAuthentication from 'expo-local-authentication';
 import {
@@ -23,6 +24,8 @@ interface AuthContextValue {
   login: (identity: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   unlockWithBiometrics: () => Promise<boolean>;
+  verifyBiometricsForEnable: () => Promise<{ ok: boolean; reason?: string }>;
+  lockAppNow: () => void;
   refreshUser: () => Promise<void>;
 }
 
@@ -35,8 +38,36 @@ const AuthContext = createContext<AuthContextValue>({
   login: async () => {},
   logout: async () => {},
   unlockWithBiometrics: async () => true,
+  verifyBiometricsForEnable: async () => ({ ok: true }),
+  lockAppNow: () => {},
   refreshUser: async () => {},
 });
+
+async function checkBiometricSupportAsync(): Promise<{ supported: boolean; reason?: string }> {
+  try {
+    const [hasHardware, isEnrolled, enrolledLevel] = await Promise.all([
+      LocalAuthentication.hasHardwareAsync(),
+      LocalAuthentication.isEnrolledAsync(),
+      LocalAuthentication.getEnrolledLevelAsync(),
+    ]);
+
+    if (
+      !isEnrolled &&
+      enrolledLevel === LocalAuthentication.SecurityLevel.NONE
+    ) {
+      return {
+        supported: false,
+        reason: hasHardware
+          ? 'Thiết bị chưa bật Face ID, Touch ID hoặc mật mã khóa máy trong Cài đặt iPhone.'
+          : 'Thiết bị chưa thiết lập bảo mật khóa màn hình trong Cài đặt.',
+      };
+    }
+
+    return { supported: true };
+  } catch {
+    return { supported: true };
+  }
+}
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const { settings, loaded: settingsLoaded } = useSettings();
@@ -46,27 +77,123 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [bootstrapping, setBootstrapping] = useState(true);
   const [isLocked, setIsLocked] = useState(false);
 
-  const unlockWithBiometrics = useCallback(async (): Promise<boolean> => {
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const userRef = useRef(user);
+  userRef.current = user;
+  const biometricBusyRef = useRef(false);
+  const lastUnlockAtRef = useRef(0);
+  const backgroundedAtRef = useRef(0);
+
+  const releaseBusyAfterCooldown = useCallback(() => {
+    setTimeout(() => {
+      biometricBusyRef.current = false;
+    }, 850);
+  }, []);
+
+  const verifyBiometricsForEnable = useCallback(async (): Promise<{
+    ok: boolean;
+    reason?: string;
+  }> => {
+    const support = await checkBiometricSupportAsync();
+    if (!support.supported) {
+      return { ok: false, reason: support.reason };
+    }
+
+    biometricBusyRef.current = true;
     try {
-      const hasHardware = await LocalAuthentication.hasHardwareAsync();
-      const enrolled = await LocalAuthentication.isEnrolledAsync();
-      if (!hasHardware || !enrolled) {
-        setIsLocked(false);
-        return true;
+      const res = await LocalAuthentication.authenticateAsync({
+        promptMessage: 'Xác thực để bật khóa ứng dụng',
+        cancelLabel: 'Hủy',
+        fallbackLabel: 'Dùng mật mã thiết bị',
+        disableDeviceFallback: false,
+      });
+      if (res.success) {
+        lastUnlockAtRef.current = Date.now();
+        return { ok: true };
       }
+      return {
+        ok: false,
+        reason: 'Xác thực Face ID / Touch ID đã bị hủy hoặc không khớp.',
+      };
+    } catch (e: any) {
+      return {
+        ok: false,
+        reason: e?.message || 'Không thể mở hộp thoại xác thực sinh trắc học.',
+      };
+    } finally {
+      releaseBusyAfterCooldown();
+    }
+  }, [releaseBusyAfterCooldown]);
+
+  const unlockWithBiometrics = useCallback(async (): Promise<boolean> => {
+    if (biometricBusyRef.current) {
+      return false;
+    }
+    const support = await checkBiometricSupportAsync();
+    if (!support.supported) {
+      setIsLocked(false);
+      return true;
+    }
+
+    biometricBusyRef.current = true;
+    try {
       const res = await LocalAuthentication.authenticateAsync({
         promptMessage: 'Mở khóa Đặng Việt Anh',
         cancelLabel: 'Hủy',
-        fallbackLabel: 'Dùng mật khẩu thiết bị',
+        fallbackLabel: 'Dùng mật mã thiết bị',
+        disableDeviceFallback: false,
       });
       if (res.success) {
+        lastUnlockAtRef.current = Date.now();
         setIsLocked(false);
         return true;
       }
       return false;
     } catch {
       return false;
+    } finally {
+      releaseBusyAfterCooldown();
     }
+  }, [releaseBusyAfterCooldown]);
+
+  const lockAppNow = useCallback(() => {
+    if (userRef.current) {
+      setIsLocked(true);
+    }
+  }, []);
+
+  // Lock automatically when returning from real background while faceIdEnabled is on
+  useEffect(() => {
+    const onAppStateChange = (nextState: AppStateStatus) => {
+      if (nextState === 'background') {
+        if (!biometricBusyRef.current) {
+          backgroundedAtRef.current = Date.now();
+        }
+        return;
+      }
+
+      if (nextState === 'active') {
+        const bgAt = backgroundedAtRef.current;
+        backgroundedAtRef.current = 0;
+
+        if (biometricBusyRef.current) return;
+        if (Date.now() - lastUnlockAtRef.current < 1600) return;
+        if (
+          bgAt > 0 &&
+          Date.now() - bgAt >= 1500 &&
+          settingsRef.current.faceIdEnabled &&
+          userRef.current
+        ) {
+          setIsLocked(true);
+        }
+      }
+    };
+
+    const sub = AppState.addEventListener('change', onAppStateChange);
+    return () => {
+      sub.remove();
+    };
   }, []);
 
   useEffect(() => {
@@ -97,7 +224,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             } catch {}
           }
 
-          if (settings.faceIdEnabled) {
+          if (settingsRef.current.faceIdEnabled) {
             setIsLocked(true);
           }
 
@@ -191,6 +318,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         login,
         logout,
         unlockWithBiometrics,
+        verifyBiometricsForEnable,
+        lockAppNow,
         refreshUser,
       }}
     >

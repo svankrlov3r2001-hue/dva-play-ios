@@ -1,20 +1,18 @@
 import React, { useEffect, useRef } from 'react';
 import {
   Animated,
-  Dimensions,
   Easing,
   Image,
   StyleSheet,
   Text,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
-import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import { COLORS } from '../constants/config';
-
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
+import { AmbientAppBackground } from './AmbientAppBackground';
 
 interface SplashOverlayProps {
   visible: boolean;
@@ -25,8 +23,7 @@ interface SplashOverlayProps {
 }
 
 /**
- * Minimum 3-second startup connection UX matching
- * dva-play/src/renderer/splash.html & splashManager.js.
+ * Clean borderless startup connection splash matching DVA Play ambient UX.
  */
 export function SplashOverlay({
   visible,
@@ -35,7 +32,9 @@ export function SplashOverlay({
   hasError,
   onRetry,
 }: SplashOverlayProps) {
-  const cardScale = useRef(new Animated.Value(0.92)).current;
+  const { width: winWidth, height: winHeight } = useWindowDimensions();
+  const portraitWidth = Math.min(winWidth, winHeight);
+  const contentScale = useRef(new Animated.Value(0.92)).current;
   const overlayOpacity = useRef(new Animated.Value(0)).current;
   const shimmerX = useRef(new Animated.Value(-240)).current;
   const dotPulse = useRef(new Animated.Value(0.65)).current;
@@ -49,14 +48,14 @@ export function SplashOverlay({
         easing: Easing.bezier(0.22, 1, 0.36, 1),
         useNativeDriver: true,
       }),
-      Animated.timing(cardScale, {
+      Animated.timing(contentScale, {
         toValue: 1,
         duration: 460,
         easing: Easing.bezier(0.22, 1, 0.36, 1),
         useNativeDriver: true,
       }),
     ]).start();
-  }, [visible, overlayOpacity, cardScale]);
+  }, [visible, overlayOpacity, contentScale]);
 
   useEffect(() => {
     if (!dismissing) return;
@@ -67,14 +66,14 @@ export function SplashOverlay({
         easing: Easing.bezier(0.22, 1, 0.36, 1),
         useNativeDriver: true,
       }),
-      Animated.timing(cardScale, {
+      Animated.timing(contentScale, {
         toValue: 1.04,
         duration: 420,
         easing: Easing.bezier(0.22, 1, 0.36, 1),
         useNativeDriver: true,
       }),
     ]).start();
-  }, [dismissing, overlayOpacity, cardScale]);
+  }, [dismissing, overlayOpacity, contentScale]);
 
   useEffect(() => {
     if (!visible) return;
@@ -127,84 +126,69 @@ export function SplashOverlay({
       pointerEvents={dismissing ? 'none' : 'auto'}
       style={[styles.overlay, { opacity: overlayOpacity }]}
     >
-      {/* Radial ambient crimson & rose glows matching splash.html */}
-      <LinearGradient
-        colors={['rgba(229, 9, 20, 0.18)', 'transparent']}
-        start={{ x: 0.15, y: 0.15 }}
-        end={{ x: 0.75, y: 0.75 }}
-        style={StyleSheet.absoluteFill}
-      />
-      <LinearGradient
-        colors={['transparent', 'rgba(213, 0, 85, 0.14)']}
-        start={{ x: 0.25, y: 0.25 }}
-        end={{ x: 0.9, y: 0.9 }}
-        style={StyleSheet.absoluteFill}
-      />
+      <AmbientAppBackground />
 
-      <Animated.View style={[styles.cardWrap, { transform: [{ scale: cardScale }] }]}>
-        <BlurView intensity={55} tint="dark" style={StyleSheet.absoluteFill} />
-        <View style={styles.cardTint} />
-        <View style={styles.cardInner}>
-          <Image
-            source={require('../../assets/splash-logo.png')}
-            style={styles.logo}
-            resizeMode="contain"
-          />
+      <Animated.View
+        style={[
+          styles.contentWrap,
+          { width: Math.min(portraitWidth - 48, 360), transform: [{ scale: contentScale }] },
+        ]}
+      >
+        <Image
+          source={require('../../assets/splash-logo.png')}
+          style={styles.logo}
+          resizeMode="contain"
+        />
 
-          <Text style={styles.title}>Đặng Việt Anh</Text>
+        <Text style={styles.title}>Đặng Việt Anh</Text>
 
-          <View style={[styles.statusPill, hasError && styles.statusPillError]}>
-            <Animated.View
-              style={[
-                styles.shimmerSweep,
-                { transform: [{ translateX: shimmerX }, { skewX: '-18deg' }] },
+        <View style={[styles.statusPill, hasError && styles.statusPillError]}>
+          <Animated.View
+            style={[
+              styles.shimmerSweep,
+              { transform: [{ translateX: shimmerX }, { skewX: '-18deg' }] },
+            ]}
+          >
+            <LinearGradient
+              colors={[
+                'rgba(255,255,255,0)',
+                'rgba(255,255,255,0.16)',
+                'rgba(255,255,255,0)',
               ]}
-            >
-              <LinearGradient
-                colors={[
-                  'rgba(255,255,255,0)',
-                  'rgba(255,255,255,0.16)',
-                  'rgba(255,255,255,0)',
-                ]}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 0 }}
-                style={StyleSheet.absoluteFill}
-              />
-            </Animated.View>
-
-            <Animated.View
-              style={[
-                styles.statusDot,
-                {
-                  backgroundColor: hasError ? '#fbbf24' : '#e50914',
-                  opacity: dotPulse,
-                  transform: [{ scale: dotPulse }],
-                },
-              ]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 0 }}
+              style={StyleSheet.absoluteFill}
             />
-            <Text style={styles.statusText} numberOfLines={2}>
-              {statusText || 'Đang kết nối...'}
-            </Text>
-          </View>
+          </Animated.View>
 
-          {hasError ? (
-            <TouchableOpacity
-              activeOpacity={0.85}
-              style={styles.retryBtn}
-              onPress={() => {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                onRetry();
-              }}
-            >
-              <Text style={styles.retryText}>Thử lại ngay</Text>
-            </TouchableOpacity>
-          ) : null}
+          <Animated.View
+            style={[
+              styles.statusDot,
+              {
+                backgroundColor: hasError ? '#fbbf24' : '#e50914',
+                opacity: dotPulse,
+                transform: [{ scale: dotPulse }],
+              },
+            ]}
+          />
+          <Text style={styles.statusText} numberOfLines={2}>
+            {statusText || 'Đang kết nối...'}
+          </Text>
         </View>
-      </Animated.View>
 
-      <Text style={styles.hint}>
-        Đang đồng bộ không gian phim Đặng Việt Anh
-      </Text>
+        {hasError ? (
+          <TouchableOpacity
+            activeOpacity={0.85}
+            style={styles.retryBtn}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              onRetry();
+            }}
+          >
+            <Text style={styles.retryText}>Thử lại ngay</Text>
+          </TouchableOpacity>
+        ) : null}
+      </Animated.View>
     </Animated.View>
   );
 }
@@ -222,36 +206,16 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 24,
   },
-  cardWrap: {
-    width: Math.min(SCREEN_WIDTH - 48, 360),
-    borderRadius: 40,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.16)',
-    shadowColor: '#000',
-    shadowOpacity: 0.58,
-    shadowRadius: 32,
-    shadowOffset: { width: 0, height: 18 },
-    elevation: 16,
-  },
-  cardTint: {
-    position: 'absolute',
-    top: 0,
-    right: 0,
-    bottom: 0,
-    left: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.28)',
-  },
-  cardInner: {
-    paddingVertical: 44,
-    paddingHorizontal: 28,
+  contentWrap: {
+    paddingVertical: 24,
+    paddingHorizontal: 20,
     alignItems: 'center',
     justifyContent: 'center',
     gap: 18,
   },
   logo: {
-    width: 108,
-    height: 108,
+    width: 112,
+    height: 112,
     borderRadius: 24,
   },
   title: {
@@ -312,13 +276,5 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 13.5,
     fontWeight: '700',
-  },
-  hint: {
-    position: 'absolute',
-    bottom: 44,
-    color: 'rgba(245, 246, 250, 0.48)',
-    fontSize: 12.5,
-    letterSpacing: 0.2,
-    textAlign: 'center',
   },
 });

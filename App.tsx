@@ -1,10 +1,24 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import {
+  Animated,
+  Easing,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  useWindowDimensions,
+  View,
+} from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { StatusBar } from 'expo-status-bar';
-import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
+import {
+  EdgeInsets,
+  SafeAreaInsetsContext,
+  SafeAreaProvider,
+  useSafeAreaInsets,
+} from 'react-native-safe-area-context';
+import { AmbientAppBackground } from './src/components/AmbientAppBackground';
 import { AppMenuBar, AppTabKey } from './src/components/AppMenuBar';
 import { GlassSurface } from './src/components/GlassSurface';
 import { PreviewSheetModal } from './src/components/PreviewSheetModal';
@@ -29,8 +43,30 @@ import { checkAuthStatusApi } from './src/services/api';
 import { runSilentBackgroundOtaSync } from './src/services/otaService';
 import { EpisodeItem, MovieItem, OfflineDownloadItem } from './src/types/models';
 
+type PlayerTransitionPhase = 'idle' | 'hiding' | 'rotating' | 'active' | 'closing';
+
 function RootAppContent() {
   const insets = useSafeAreaInsets();
+  const { width: winWidth, height: winHeight } = useWindowDimensions();
+  const portraitWidth = Math.min(winWidth, winHeight);
+  const portraitHeight = Math.max(winWidth, winHeight);
+  const [portraitInsets, setPortraitInsets] = useState<EdgeInsets>(insets);
+
+  useEffect(() => {
+    if (winWidth < winHeight) {
+      setPortraitInsets((prev) =>
+        prev.top === insets.top &&
+        prev.bottom === insets.bottom &&
+        prev.left === insets.left &&
+        prev.right === insets.right
+          ? prev
+          : insets
+      );
+    }
+  }, [winWidth, winHeight, insets]);
+
+  const activePortraitInsets = winWidth < winHeight ? insets : portraitInsets;
+
   const { user, bootstrapping, isLocked, unlockWithBiometrics, logout } = useAuth();
 
   // Minimum 3s Startup Connection Splash state matching dva-play/src/main/splashManager.js
@@ -43,12 +79,22 @@ function RootAppContent() {
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [activeTab, setActiveTab] = useState<AppTabKey>('home');
+  const [accountOpen, setAccountOpen] = useState(false);
   const [previewId, setPreviewId] = useState<number | null>(null);
+  const [previewMovie, setPreviewMovie] = useState<MovieItem | null>(null);
   const [detailId, setDetailId] = useState<number | null>(null);
   const [playerParams, setPlayerParams] = useState<PlayerLaunchParams | null>(null);
-  const [playerLaunchCurtain, setPlayerLaunchCurtain] = useState(false);
-  const launchCurtainTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const closeCurtainTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [playerPhase, setPlayerPhase] = useState<PlayerTransitionPhase>('idle');
+  const portraitOpacity = useRef(new Animated.Value(1)).current;
+  const queuedPlayerParamsRef = useRef<PlayerLaunchParams | null>(null);
+  const pendingAfterRestoreRef = useRef<(() => void) | undefined>(undefined);
+  const hidingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hidingRafRef = useRef<number | null>(null);
+  const rotatingFallbackRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const rotatingStableRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const closingFallbackRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const closingStableRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const closingRafRef = useRef<number | null>(null);
   const [castVisible, setCastVisible] = useState(false);
   const [castMovie, setCastMovie] = useState<{
     videosId: number;
@@ -104,45 +150,223 @@ function RootAppContent() {
     }
   }, [splashVisible, splashDismissing, splashMinDone, serverReady, bootstrapping]);
 
+  const unlockAttemptedRef = useRef(false);
+
   useEffect(() => {
-    if (!splashVisible && user && isLocked) {
+    if (!isLocked) {
+      unlockAttemptedRef.current = false;
+      return;
+    }
+    if (!splashVisible && user && isLocked && !unlockAttemptedRef.current) {
+      unlockAttemptedRef.current = true;
       unlockWithBiometrics().catch(() => {});
     }
   }, [splashVisible, user, isLocked, unlockWithBiometrics]);
 
   const handleOpenPreview = (item: MovieItem) => {
     Haptics.selectionAsync();
+    setPreviewMovie(item);
     setPreviewId(item.videos_id);
   };
 
-  const launchPlayerWithCurtain = useCallback((nextParams: PlayerLaunchParams) => {
-    if (launchCurtainTimerRef.current) clearTimeout(launchCurtainTimerRef.current);
-    if (closeCurtainTimerRef.current) clearTimeout(closeCurtainTimerRef.current);
-    setPlayerLaunchCurtain(true);
-    ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE).catch(() => {});
-    // Keep opaque dark curtain up until portrait -> landscape transition settles before presenting PlayerModal
-    launchCurtainTimerRef.current = setTimeout(() => {
-      setPlayerParams(nextParams);
-    }, 160);
+  const clearTransitionTimers = useCallback(() => {
+    if (hidingRafRef.current !== null) {
+      cancelAnimationFrame(hidingRafRef.current);
+      hidingRafRef.current = null;
+    }
+    if (hidingTimerRef.current) {
+      clearTimeout(hidingTimerRef.current);
+      hidingTimerRef.current = null;
+    }
+    if (rotatingFallbackRef.current) {
+      clearTimeout(rotatingFallbackRef.current);
+      rotatingFallbackRef.current = null;
+    }
+    if (rotatingStableRef.current) {
+      clearTimeout(rotatingStableRef.current);
+      rotatingStableRef.current = null;
+    }
+    if (closingRafRef.current !== null) {
+      cancelAnimationFrame(closingRafRef.current);
+      closingRafRef.current = null;
+    }
+    if (closingFallbackRef.current) {
+      clearTimeout(closingFallbackRef.current);
+      closingFallbackRef.current = null;
+    }
+    if (closingStableRef.current) {
+      clearTimeout(closingStableRef.current);
+      closingStableRef.current = null;
+    }
   }, []);
 
-  const closePlayerWithCurtain = useCallback((afterRestore?: () => void) => {
-    if (launchCurtainTimerRef.current) clearTimeout(launchCurtainTimerRef.current);
-    if (closeCurtainTimerRef.current) clearTimeout(closeCurtainTimerRef.current);
-    setPlayerLaunchCurtain(true);
-    setPlayerParams(null);
-    closeCurtainTimerRef.current = setTimeout(() => {
-      setPlayerLaunchCurtain(false);
-      if (afterRestore) afterRestore();
-    }, 440);
-  }, []);
+  const activateQueuedPlayer = useCallback(() => {
+    if (rotatingFallbackRef.current) {
+      clearTimeout(rotatingFallbackRef.current);
+      rotatingFallbackRef.current = null;
+    }
+    if (rotatingStableRef.current) {
+      clearTimeout(rotatingStableRef.current);
+      rotatingStableRef.current = null;
+    }
+    const next = queuedPlayerParamsRef.current;
+    queuedPlayerParamsRef.current = null;
+    if (next) {
+      setPlayerParams(next);
+      setPlayerPhase('active');
+    } else {
+      portraitOpacity.setValue(1);
+      setPlayerPhase('idle');
+    }
+  }, [portraitOpacity]);
+
+  const finishClosingToPortrait = useCallback(() => {
+    if (closingFallbackRef.current) {
+      clearTimeout(closingFallbackRef.current);
+      closingFallbackRef.current = null;
+    }
+    if (closingStableRef.current) {
+      clearTimeout(closingStableRef.current);
+      closingStableRef.current = null;
+    }
+    const afterCb = pendingAfterRestoreRef.current;
+    pendingAfterRestoreRef.current = undefined;
+    if (afterCb) afterCb();
+    portraitOpacity.stopAnimation();
+    portraitOpacity.setValue(0);
+    setPlayerPhase('idle');
+    requestAnimationFrame(() => {
+      Animated.timing(portraitOpacity, {
+        toValue: 1,
+        duration: 180,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start();
+    });
+  }, [portraitOpacity]);
+
+  const launchPlayerWithCurtain = useCallback(
+    (nextParams: PlayerLaunchParams) => {
+      clearTransitionTimers();
+      pendingAfterRestoreRef.current = undefined;
+      queuedPlayerParamsRef.current = nextParams;
+      setPreviewId(null);
+      setPreviewMovie(null);
+      setPlayerParams(null);
+      portraitOpacity.stopAnimation();
+      portraitOpacity.setValue(0);
+      setPlayerPhase('hiding');
+    },
+    [clearTransitionTimers, portraitOpacity]
+  );
+
+  const closePlayerWithCurtain = useCallback(
+    (afterRestore?: () => void) => {
+      clearTransitionTimers();
+      queuedPlayerParamsRef.current = null;
+      pendingAfterRestoreRef.current = afterRestore;
+      setPlayerParams(null);
+      portraitOpacity.stopAnimation();
+      portraitOpacity.setValue(0);
+      setPlayerPhase('closing');
+      closingRafRef.current = requestAnimationFrame(() => {
+        closingRafRef.current = null;
+        ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => {});
+      });
+    },
+    [clearTransitionTimers, portraitOpacity]
+  );
+
+  // Step 1 -> 2: Wait for display:none black frame to paint before locking LANDSCAPE
+  useEffect(() => {
+    if (playerPhase !== 'hiding') return;
+    hidingRafRef.current = requestAnimationFrame(() => {
+      hidingRafRef.current = null;
+      hidingTimerRef.current = setTimeout(() => {
+        hidingTimerRef.current = null;
+        setPlayerPhase('rotating');
+        ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE).catch(() => {});
+      }, 90);
+    });
+    return () => {
+      if (hidingRafRef.current !== null) {
+        cancelAnimationFrame(hidingRafRef.current);
+        hidingRafRef.current = null;
+      }
+      if (hidingTimerRef.current) {
+        clearTimeout(hidingTimerRef.current);
+        hidingTimerRef.current = null;
+      }
+    };
+  }, [playerPhase]);
+
+  // Step 2 -> 3: Fallback guard while waiting for landscape dimensions
+  useEffect(() => {
+    if (playerPhase !== 'rotating') return;
+    rotatingFallbackRef.current = setTimeout(() => {
+      activateQueuedPlayer();
+    }, 520);
+    return () => {
+      if (rotatingFallbackRef.current) {
+        clearTimeout(rotatingFallbackRef.current);
+        rotatingFallbackRef.current = null;
+      }
+    };
+  }, [playerPhase, activateQueuedPlayer]);
+
+  // Step 2 -> 3: Mount PlayerModal only after landscape bounds settle
+  useEffect(() => {
+    if (playerPhase !== 'rotating') return;
+    if (winWidth > winHeight) {
+      if (rotatingStableRef.current) clearTimeout(rotatingStableRef.current);
+      rotatingStableRef.current = setTimeout(() => {
+        activateQueuedPlayer();
+      }, 60);
+    }
+    return () => {
+      if (rotatingStableRef.current) {
+        clearTimeout(rotatingStableRef.current);
+        rotatingStableRef.current = null;
+      }
+    };
+  }, [playerPhase, winWidth, winHeight, activateQueuedPlayer]);
+
+  // Closing fallback guard while waiting for portrait dimensions
+  useEffect(() => {
+    if (playerPhase !== 'closing') return;
+    closingFallbackRef.current = setTimeout(() => {
+      finishClosingToPortrait();
+    }, 520);
+    return () => {
+      if (closingFallbackRef.current) {
+        clearTimeout(closingFallbackRef.current);
+        closingFallbackRef.current = null;
+      }
+    };
+  }, [playerPhase, finishClosingToPortrait]);
+
+  // Closing -> idle: Reveal portrait stage only after portrait bounds settle
+  useEffect(() => {
+    if (playerPhase !== 'closing') return;
+    if (winWidth < winHeight) {
+      if (closingStableRef.current) clearTimeout(closingStableRef.current);
+      closingStableRef.current = setTimeout(() => {
+        finishClosingToPortrait();
+      }, 80);
+    }
+    return () => {
+      if (closingStableRef.current) {
+        clearTimeout(closingStableRef.current);
+        closingStableRef.current = null;
+      }
+    };
+  }, [playerPhase, winWidth, winHeight, finishClosingToPortrait]);
 
   useEffect(() => {
     return () => {
-      if (launchCurtainTimerRef.current) clearTimeout(launchCurtainTimerRef.current);
-      if (closeCurtainTimerRef.current) clearTimeout(closeCurtainTimerRef.current);
+      clearTransitionTimers();
     };
-  }, []);
+  }, [clearTransitionTimers]);
 
   const handlePlayDirect = (item: MovieItem) => {
     if (item.stream_code) {
@@ -184,7 +408,11 @@ function RootAppContent() {
 
   const renderMainContent = () => {
     if (bootstrapping) {
-      return <View style={styles.root} />;
+      return (
+        <View style={styles.root}>
+          <AmbientAppBackground />
+        </View>
+      );
     }
 
     if (!user) {
@@ -194,6 +422,7 @@ function RootAppContent() {
     if (isLocked) {
       return (
         <View style={styles.lockContainer}>
+          <AmbientAppBackground />
           <GlassSurface intensity={55} radius={30} style={styles.lockCard}>
             <Ionicons name="lock-closed" size={42} color={COLORS.accent} />
             <Text style={styles.lockTitle}>Đã khóa bằng Face ID</Text>
@@ -210,89 +439,118 @@ function RootAppContent() {
       );
     }
 
+    const hidePortraitStage = playerPhase !== 'idle';
+
     return (
       <View style={styles.root}>
-        <View style={styles.screenArea}>
-          {activeTab === 'home' ? (
-            <HomeScreen
-              onOpenPreview={handleOpenPreview}
-              onOpenDetail={(id) => setDetailId(id)}
-              onPlayDirect={handlePlayDirect}
-              onOpenCast={() => {
-                setCastMovie(null);
+        <SafeAreaInsetsContext.Provider value={activePortraitInsets}>
+          <Animated.View
+            style={[
+              styles.portraitStage,
+              {
+                width: portraitWidth,
+                height: portraitHeight,
+                display: hidePortraitStage ? 'none' : 'flex',
+                opacity: portraitOpacity,
+              },
+            ]}
+            pointerEvents={hidePortraitStage ? 'none' : 'auto'}
+          >
+            <AmbientAppBackground />
+            <View style={styles.screenArea}>
+              {activeTab === 'home' ? (
+                <HomeScreen
+                  onOpenPreview={handleOpenPreview}
+                  onOpenDetail={(id) => setDetailId(id)}
+                  onPlayDirect={handlePlayDirect}
+                  onOpenCast={() => {
+                    setCastMovie(null);
+                    setCastVisible(true);
+                  }}
+                  onOpenAccount={() => setAccountOpen(true)}
+                  onNavigateExplore={() => setActiveTab('explore')}
+                />
+              ) : null}
+
+              {activeTab === 'explore' ? (
+                <ExploreScreen onOpenPreview={handleOpenPreview} />
+              ) : null}
+
+              {activeTab === 'search' ? (
+                <SearchScreen
+                  onOpenPreview={handleOpenPreview}
+                  onOpenDetail={(id) => setDetailId(id)}
+                />
+              ) : null}
+
+              {activeTab === 'library' ? (
+                <LibraryScreen
+                  onOpenPreview={handleOpenPreview}
+                  onPlayOffline={handlePlayOffline}
+                />
+              ) : null}
+            </View>
+
+            {/* Bottom Liquid Glass Menu Bar ported from `_L8j7Tt_app_container` */}
+            <AppMenuBar
+              activeTab={activeTab}
+              bottomInset={activePortraitInsets.bottom}
+              onSelectTab={setActiveTab}
+            />
+
+            {/* Global In-Tree Overlays */}
+            <MovieDetailScreen
+              visible={detailId !== null}
+              videosId={detailId}
+              obscuredByPlayer={hidePortraitStage || playerParams !== null}
+              onClose={() => setDetailId(null)}
+              onPlay={(p) => launchPlayerWithCurtain(p)}
+              onOpenCastWithMovie={(m) => {
+                setCastMovie(m);
                 setCastVisible(true);
               }}
-              onNavigateExplore={() => setActiveTab('explore')}
+              onSelectRelated={(newId) => setDetailId(newId)}
             />
-          ) : null}
 
-          {activeTab === 'explore' ? (
-            <ExploreScreen onOpenPreview={handleOpenPreview} />
-          ) : null}
-
-          {activeTab === 'search' ? (
-            <SearchScreen
-              onOpenPreview={handleOpenPreview}
+            <PreviewSheetModal
+              visible={previewId !== null}
+              videosId={previewId}
+              initialMovie={previewMovie}
+              obscuredByPlayer={hidePortraitStage || playerParams !== null}
+              onClose={() => {
+                setPreviewId(null);
+                setPreviewMovie(null);
+              }}
+              onPlay={(p) =>
+                launchPlayerWithCurtain({
+                  videosId: p.videosId,
+                  streamCode: p.streamCode,
+                  episodeId: p.episodeId,
+                  title: p.title,
+                })
+              }
               onOpenDetail={(id) => setDetailId(id)}
             />
-          ) : null}
 
-          {activeTab === 'library' ? (
-            <LibraryScreen
-              onOpenPreview={handleOpenPreview}
-              onPlayOffline={handlePlayOffline}
-            />
-          ) : null}
-
-          {activeTab === 'account' ? (
             <AccountSettingsScreen
+              visible={accountOpen}
+              onClose={() => setAccountOpen(false)}
               onOpenCast={() => {
                 setCastMovie(null);
                 setCastVisible(true);
               }}
             />
-          ) : null}
-        </View>
 
-        {/* Bottom Liquid Glass Menu Bar ported from `_L8j7Tt_app_container` */}
-        <AppMenuBar
-          activeTab={activeTab}
-          bottomInset={insets.bottom}
-          onSelectTab={setActiveTab}
-        />
-
-        {/* Global Modals */}
-        <PreviewSheetModal
-          visible={previewId !== null}
-          videosId={previewId}
-          obscuredByPlayer={playerLaunchCurtain || playerParams !== null}
-          onClose={() => setPreviewId(null)}
-          onPlay={(p) =>
-            launchPlayerWithCurtain({
-              videosId: p.videosId,
-              streamCode: p.streamCode,
-              episodeId: p.episodeId,
-              title: p.title,
-            })
-          }
-          onOpenDetail={(id) => setDetailId(id)}
-        />
-
-        <MovieDetailScreen
-          visible={detailId !== null}
-          videosId={detailId}
-          obscuredByPlayer={playerLaunchCurtain || playerParams !== null}
-          onClose={() => setDetailId(null)}
-          onPlay={(p) => launchPlayerWithCurtain(p)}
-          onOpenCastWithMovie={(m) => {
-            setCastMovie(m);
-            setCastVisible(true);
-          }}
-          onSelectRelated={(newId) => setDetailId(newId)}
-        />
+            <CastModal
+              visible={castVisible}
+              movieToCast={castMovie}
+              onClose={() => setCastVisible(false)}
+            />
+          </Animated.View>
+        </SafeAreaInsetsContext.Provider>
 
         <PlayerModal
-          visible={playerParams !== null}
+          visible={playerPhase === 'active' && playerParams !== null}
           params={playerParams}
           onClose={() => closePlayerWithCurtain()}
           onSwitchEpisode={handleSwitchEpisode}
@@ -307,18 +565,13 @@ function RootAppContent() {
             closePlayerWithCurtain(() => setCastVisible(true));
           }}
         />
-
-        <CastModal
-          visible={castVisible}
-          movieToCast={castMovie}
-          onClose={() => setCastVisible(false)}
-        />
       </View>
     );
   };
 
   return (
     <View style={styles.root}>
+      <StatusBar hidden={playerPhase !== 'idle'} style="light" />
       {renderMainContent()}
       <SplashOverlay
         visible={splashVisible}
@@ -331,7 +584,6 @@ function RootAppContent() {
           probeServerConnection();
         }}
       />
-      {playerLaunchCurtain ? <View style={styles.playerLaunchCurtain} /> : null}
     </View>
   );
 }
@@ -341,7 +593,6 @@ export default function App() {
     <SafeAreaProvider>
       <SettingsProvider>
         <AuthProvider>
-          <StatusBar style="light" />
           <RootAppContent />
         </AuthProvider>
       </SettingsProvider>
@@ -354,17 +605,15 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORS.bg,
   },
-  screenArea: {
-    flex: 1,
-  },
-  playerLaunchCurtain: {
+  portraitStage: {
     position: 'absolute',
     top: 0,
-    right: 0,
-    bottom: 0,
     left: 0,
     backgroundColor: COLORS.bg,
-    zIndex: 9999,
+    overflow: 'hidden',
+  },
+  screenArea: {
+    flex: 1,
   },
   lockContainer: {
     flex: 1,

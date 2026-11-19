@@ -1,13 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
-  Dimensions,
   Easing,
   LayoutChangeEvent,
   PanResponder,
   StyleSheet,
   Text,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -15,23 +15,23 @@ import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
-
-export type AppTabKey = 'home' | 'explore' | 'search' | 'library' | 'account';
+export type AppTabKey = 'home' | 'explore' | 'search' | 'library';
 
 export interface AppMenuTabItem {
   key: AppTabKey;
   label: string;
   icon: keyof typeof Ionicons.glyphMap;
+  activeIcon: keyof typeof Ionicons.glyphMap;
 }
 
 const MENU_ITEMS: AppMenuTabItem[] = [
-  { key: 'home', label: 'Trang chủ', icon: 'home' },
-  { key: 'explore', label: 'Khám phá', icon: 'compass' },
-  { key: 'search', label: 'Tìm kiếm', icon: 'search' },
-  { key: 'library', label: 'Tủ phim', icon: 'bookmark' },
-  { key: 'account', label: 'Tài khoản', icon: 'person' },
+  { key: 'home', label: 'Trang chủ', icon: 'home-outline', activeIcon: 'home' },
+  { key: 'explore', label: 'Khám phá', icon: 'compass-outline', activeIcon: 'compass' },
+  { key: 'search', label: 'Tìm kiếm', icon: 'search-outline', activeIcon: 'search' },
+  { key: 'library', label: 'Tủ phim', icon: 'bookmark-outline', activeIcon: 'bookmark' },
 ];
+
+const ACTIVE_ACCENT_COLOR = '#FF3B4E';
 
 interface AppMenuBarProps {
   activeTab: AppTabKey;
@@ -40,15 +40,21 @@ interface AppMenuBarProps {
 }
 
 /**
- * Native iOS Liquid Glass Menu Bar ported faithfully from `_L8j7Tt_app_container`
- * (`_L8j7Tt_menu_bar` & `_L8j7Tt_active_indicator`) in default/index.php.
- * Supports smooth spring indicator slides, scale bounce, AND interactive finger drag scrubbing.
+ * Compact 4-item iOS Liquid Glass Floating Tab Bar with sliding spring pill
+ * and finger-drag scrubbing.
  */
 export function AppMenuBar({ activeTab, bottomInset, onSelectTab }: AppMenuBarProps) {
-  const barWidth = Math.min(SCREEN_WIDTH - 20, 460);
-  const innerPad = 10;
+  const { width: winWidth, height: winHeight } = useWindowDimensions();
+  const portraitWidth = Math.min(winWidth, winHeight);
+  const barWidth = Math.min(portraitWidth - 28, 420);
+  const innerPad = 5;
   const [measuredWidth, setMeasuredWidth] = useState(barWidth);
-  const itemWidth = Math.max(40, (measuredWidth - innerPad * 2) / MENU_ITEMS.length);
+
+  useEffect(() => {
+    setMeasuredWidth((prev) => (Math.abs(prev - barWidth) > 1 ? barWidth : prev));
+  }, [barWidth]);
+
+  const itemWidth = Math.max(48, (measuredWidth - innerPad * 2) / MENU_ITEMS.length);
 
   const activeIndex = Math.max(
     0,
@@ -71,7 +77,6 @@ export function AppMenuBar({ activeTab, bottomInset, onSelectTab }: AppMenuBarPr
   const onSelectTabRef = useRef(onSelectTab);
   onSelectTabRef.current = onSelectTab;
 
-  // Slide & bounce indicator when activeTab or width changes (when not dragging)
   useEffect(() => {
     if (isDragging) return;
     const targetLeft = innerPad + activeIndex * itemWidth;
@@ -79,20 +84,20 @@ export function AppMenuBar({ activeTab, bottomInset, onSelectTab }: AppMenuBarPr
     Animated.parallel([
       Animated.spring(indicatorLeft, {
         toValue: targetLeft,
-        tension: 120,
+        tension: 135,
         friction: 15,
         useNativeDriver: false,
       }),
       Animated.sequence([
         Animated.timing(indicatorScale, {
-          toValue: 1.26,
-          duration: 165,
+          toValue: 1.16,
+          duration: 145,
           easing: Easing.out(Easing.quad),
           useNativeDriver: true,
         }),
         Animated.spring(indicatorScale, {
           toValue: 1,
-          tension: 140,
+          tension: 150,
           friction: 12,
           useNativeDriver: true,
         }),
@@ -112,7 +117,7 @@ export function AppMenuBar({ activeTab, bottomInset, onSelectTab }: AppMenuBarPr
           setHoverIndex(activeIndexRef.current);
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
           Animated.spring(indicatorScale, {
-            toValue: 1.32,
+            toValue: 1.2,
             tension: 180,
             friction: 14,
             useNativeDriver: true,
@@ -155,7 +160,7 @@ export function AppMenuBar({ activeTab, bottomInset, onSelectTab }: AppMenuBarPr
 
           Animated.spring(indicatorScale, {
             toValue: 1,
-            tension: 140,
+            tension: 150,
             friction: 12,
             useNativeDriver: true,
           }).start();
@@ -172,7 +177,7 @@ export function AppMenuBar({ activeTab, bottomInset, onSelectTab }: AppMenuBarPr
           hoverIndexRef.current = null;
           Animated.spring(indicatorScale, {
             toValue: 1,
-            tension: 140,
+            tension: 150,
             friction: 12,
             useNativeDriver: true,
           }).start();
@@ -182,7 +187,7 @@ export function AppMenuBar({ activeTab, bottomInset, onSelectTab }: AppMenuBarPr
   );
 
   const handleBarLayout = (e: LayoutChangeEvent) => {
-    const w = e.nativeEvent.layout.width;
+    const w = Math.min(e.nativeEvent.layout.width, barWidth);
     if (w > 0 && Math.abs(w - measuredWidth) > 1) {
       setMeasuredWidth(w);
     }
@@ -191,22 +196,21 @@ export function AppMenuBar({ activeTab, bottomInset, onSelectTab }: AppMenuBarPr
   return (
     <View
       pointerEvents="box-none"
-      style={[styles.outerWrap, { bottom: Math.max(10, bottomInset) }]}
+      style={[styles.outerWrap, { bottom: Math.max(10, bottomInset - 6) }]}
     >
       <View
         onLayout={handleBarLayout}
         style={[styles.menuBar, { width: barWidth }]}
         {...panResponder.panHandlers}
       >
-        {/* Rounded pill background clipped cleanly inside borderRadius 40 */}
         <View style={styles.glassClip} pointerEvents="none">
-          <BlurView intensity={68} tint="dark" style={StyleSheet.absoluteFill} />
+          <BlurView intensity={78} tint="dark" style={StyleSheet.absoluteFill} />
           <View style={styles.glassTint} />
           <LinearGradient
             colors={[
+              'rgba(255,255,255,0.20)',
+              'rgba(255,255,255,0.03)',
               'rgba(255,255,255,0.14)',
-              'rgba(255,255,255,0.02)',
-              'rgba(255,255,255,0.12)',
             ]}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 1 }}
@@ -214,7 +218,6 @@ export function AppMenuBar({ activeTab, bottomInset, onSelectTab }: AppMenuBarPr
           />
         </View>
 
-        {/* `_L8j7Tt_active_indicator`: Sliding frosted capsule */}
         <Animated.View
           pointerEvents="none"
           style={[
@@ -234,7 +237,6 @@ export function AppMenuBar({ activeTab, bottomInset, onSelectTab }: AppMenuBarPr
           />
         </Animated.View>
 
-        {/* Menu Items matching `_L8j7Tt_menu_item` */}
         <View style={[styles.itemsRow, { paddingHorizontal: innerPad }]}>
           {MENU_ITEMS.map((item, idx) => {
             const isActive = activeTab === item.key;
@@ -259,9 +261,9 @@ export function AppMenuBar({ activeTab, bottomInset, onSelectTab }: AppMenuBarPr
                   ]}
                 >
                   <Ionicons
-                    name={item.icon}
+                    name={highlighted ? item.activeIcon : item.icon}
                     size={22}
-                    color={highlighted ? '#FFFFFF' : '#8E8E93'}
+                    color={highlighted ? ACTIVE_ACCENT_COLOR : '#F1F5F9'}
                   />
                 </View>
                 <Text
@@ -292,13 +294,13 @@ const styles = StyleSheet.create({
     zIndex: 200,
   },
   menuBar: {
-    height: 76,
-    borderRadius: 40,
+    height: 64,
+    borderRadius: 32,
     justifyContent: 'center',
     shadowColor: '#000',
-    shadowOpacity: 0.56,
-    shadowRadius: 24,
-    shadowOffset: { width: 0, height: 14 },
+    shadowOpacity: 0.54,
+    shadowRadius: 22,
+    shadowOffset: { width: 0, height: 12 },
     elevation: 18,
   },
   glassClip: {
@@ -307,10 +309,10 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     left: 0,
-    borderRadius: 40,
+    borderRadius: 32,
     overflow: 'hidden',
-    borderWidth: 1.2,
-    borderColor: 'rgba(255, 255, 255, 0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.18)',
   },
   glassTint: {
     position: 'absolute',
@@ -318,7 +320,7 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     left: 0,
-    backgroundColor: 'rgba(20, 20, 20, 0.42)',
+    backgroundColor: 'rgba(18, 20, 26, 0.52)',
   },
   rimBorder: {
     position: 'absolute',
@@ -326,30 +328,30 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     left: 0,
-    opacity: 0.25,
+    opacity: 0.28,
   },
   indicatorWrap: {
     position: 'absolute',
-    top: 7,
-    bottom: 7,
+    top: 5,
+    bottom: 5,
     justifyContent: 'center',
     alignItems: 'center',
     zIndex: 2,
   },
   indicatorPill: {
-    width: '96%',
+    width: '94%',
     height: '100%',
-    borderRadius: 100,
-    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    borderRadius: 27,
+    backgroundColor: 'rgba(255, 255, 255, 0.14)',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
+    borderColor: 'rgba(255, 255, 255, 0.16)',
   },
   indicatorPillDragging: {
-    backgroundColor: 'rgba(255, 255, 255, 0.19)',
-    borderColor: 'rgba(255, 255, 255, 0.24)',
+    backgroundColor: 'rgba(255, 255, 255, 0.20)',
+    borderColor: 'rgba(255, 255, 255, 0.28)',
     shadowColor: '#FFFFFF',
     shadowOpacity: 0.22,
-    shadowRadius: 14,
+    shadowRadius: 12,
   },
   itemsRow: {
     flexDirection: 'row',
@@ -363,27 +365,29 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   iconBox: {
-    marginBottom: 4,
+    marginBottom: 2,
     alignItems: 'center',
     justifyContent: 'center',
   },
   iconActive: {
-    transform: [{ translateY: -2 }],
+    transform: [{ translateY: -1 }],
   },
   iconDragHover: {
-    transform: [{ translateY: -4 }, { scale: 1.2 }],
+    transform: [{ translateY: -3 }, { scale: 1.14 }],
   },
   label: {
-    color: '#8E8E93',
+    color: 'rgba(241, 245, 249, 0.82)',
     fontSize: 10.5,
-    fontWeight: '800',
+    fontWeight: '600',
     letterSpacing: -0.1,
   },
   labelActive: {
-    color: '#FFFFFF',
+    color: ACTIVE_ACCENT_COLOR,
+    fontWeight: '700',
   },
   labelDragHover: {
-    color: '#FFFFFF',
-    transform: [{ translateY: 3 }, { scale: 1.08 }],
+    color: ACTIVE_ACCENT_COLOR,
+    fontWeight: '700',
+    transform: [{ translateY: 2 }, { scale: 1.05 }],
   },
 });

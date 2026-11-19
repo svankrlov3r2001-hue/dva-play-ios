@@ -2,19 +2,19 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  Dimensions,
   FlatList,
-  Image,
   RefreshControl,
   StyleSheet,
   Text,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { GlassSurface } from '../components/GlassSurface';
+import { LazyImage } from '../components/LazyImage';
 import { MovieCard } from '../components/MovieCard';
 import { COLORS, RADII } from '../constants/config';
 import { deleteWatchedMovieApi, fetchLibraryApi } from '../services/api';
@@ -27,9 +27,6 @@ import {
 } from '../services/downloadService';
 import { MovieItem, OfflineDownloadItem } from '../types/models';
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const GRID_CARD_WIDTH = Math.floor((SCREEN_WIDTH - 32 - 20) / 3);
-
 interface LibraryScreenProps {
   onOpenPreview: (item: MovieItem) => void;
   onPlayOffline: (item: OfflineDownloadItem) => void;
@@ -37,6 +34,9 @@ interface LibraryScreenProps {
 
 export function LibraryScreen({ onOpenPreview, onPlayOffline }: LibraryScreenProps) {
   const insets = useSafeAreaInsets();
+  const { width: winWidth, height: winHeight } = useWindowDimensions();
+  const portraitWidth = Math.min(winWidth, winHeight);
+  const gridCardWidth = Math.floor((portraitWidth - 32 - 20) / 3);
   const [tab, setTab] = useState<'wishlist' | 'watched' | 'offline'>('wishlist');
   const [wishlist, setWishlist] = useState<MovieItem[]>([]);
   const [watched, setWatched] = useState<MovieItem[]>([]);
@@ -60,16 +60,32 @@ export function LibraryScreen({ onOpenPreview, onPlayOffline }: LibraryScreenPro
 
   useEffect(() => {
     loadLibrary();
-    loadOfflineDownloads().then(setOfflineItems);
+    loadOfflineDownloads()
+      .then(setOfflineItems)
+      .catch(() => setOfflineItems([]));
     const unsub = subscribeOfflineDownloads(setOfflineItems);
     return unsub;
   }, [loadLibrary]);
 
-  const handleRemoveWatched = async (item: MovieItem) => {
-    try {
-      await deleteWatchedMovieApi(item.videos_id);
-      setWatched((prev) => prev.filter((w) => w.videos_id !== item.videos_id));
-    } catch {}
+  const handleRemoveWatched = (item: MovieItem) => {
+    Haptics.selectionAsync();
+    Alert.alert(
+      'Xóa khỏi Đang xem?',
+      `Bạn muốn xóa "${item.title_primary || item.title}" khỏi danh sách Đang xem?`,
+      [
+        { text: 'Hủy', style: 'cancel' },
+        {
+          text: 'Xóa',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await deleteWatchedMovieApi(item.videos_id);
+              setWatched((prev) => prev.filter((w) => w.videos_id !== item.videos_id));
+            } catch {}
+          },
+        },
+      ]
+    );
   };
 
   const handleDeleteOffline = (item: OfflineDownloadItem) => {
@@ -114,8 +130,9 @@ export function LibraryScreen({ onOpenPreview, onPlayOffline }: LibraryScreenPro
 
       {tab === 'offline' ? (
         <FlatList
+          key="library-offline-list"
           data={offlineItems}
-          keyExtractor={(item) => item.id}
+          keyExtractor={(item, idx) => `${item.id}_${idx}`}
           contentContainerStyle={{
             paddingHorizontal: 16,
             paddingTop: 12,
@@ -130,8 +147,8 @@ export function LibraryScreen({ onOpenPreview, onPlayOffline }: LibraryScreenPro
           }
           renderItem={({ item }) => (
             <GlassSurface intensity={42} radius={RADII.md} style={styles.offlineCard}>
-              <Image
-                source={{ uri: item.thumbnail_url || item.poster_url }}
+              <LazyImage
+                uri={item.thumbnail_url || item.poster_url}
                 style={styles.offlineThumb}
                 resizeMode="cover"
               />
@@ -196,9 +213,14 @@ export function LibraryScreen({ onOpenPreview, onPlayOffline }: LibraryScreenPro
         </View>
       ) : tab === 'wishlist' ? (
         <FlatList
+          key="library-wishlist-grid"
           data={wishlist}
           numColumns={3}
-          keyExtractor={(item) => String(item.videos_id)}
+          initialNumToRender={9}
+          maxToRenderPerBatch={6}
+          windowSize={5}
+          removeClippedSubviews
+          keyExtractor={(item, idx) => `wish_${item.videos_id}_${idx}`}
           columnWrapperStyle={styles.gridRow}
           refreshControl={
             <RefreshControl
@@ -214,7 +236,7 @@ export function LibraryScreen({ onOpenPreview, onPlayOffline }: LibraryScreenPro
           }}
           renderItem={({ item }) => (
             <View style={{ marginBottom: 16 }}>
-              <MovieCard item={item} layout="vertical" width={GRID_CARD_WIDTH} onPress={onOpenPreview} />
+              <MovieCard item={item} layout="grid" width={gridCardWidth} onPress={onOpenPreview} />
             </View>
           )}
           ListEmptyComponent={
@@ -226,8 +248,9 @@ export function LibraryScreen({ onOpenPreview, onPlayOffline }: LibraryScreenPro
         />
       ) : (
         <FlatList
+          key="library-watched-list"
           data={watched}
-          keyExtractor={(item) => String(item.videos_id)}
+          keyExtractor={(item, idx) => `watched_${item.videos_id}_${idx}`}
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
@@ -245,7 +268,8 @@ export function LibraryScreen({ onOpenPreview, onPlayOffline }: LibraryScreenPro
               <MovieCard
                 item={item}
                 layout="watched"
-                width={SCREEN_WIDTH - 32}
+                width={portraitWidth - 32}
+                fullWidth
                 onPress={onOpenPreview}
                 onRemoveWatched={handleRemoveWatched}
               />
@@ -266,7 +290,7 @@ export function LibraryScreen({ onOpenPreview, onPlayOffline }: LibraryScreenPro
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: COLORS.bg,
+    backgroundColor: 'transparent',
   },
   title: {
     color: '#FFF',

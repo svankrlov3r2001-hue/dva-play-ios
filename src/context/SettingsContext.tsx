@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import * as FileSystem from 'expo-file-system/legacy';
 import { AppSettings } from '../types/models';
 
@@ -34,6 +34,7 @@ const SettingsContext = createContext<SettingsContextValue>({
 export function SettingsProvider({ children }: { children: React.ReactNode }) {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [loaded, setLoaded] = useState(false);
+  const settingsRef = useRef<AppSettings>(DEFAULT_SETTINGS);
 
   useEffect(() => {
     let active = true;
@@ -45,7 +46,9 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
             const raw = await FileSystem.readAsStringAsync(SETTINGS_FILE);
             const parsed = JSON.parse(raw);
             if (active && parsed && typeof parsed === 'object') {
-              setSettings({ ...DEFAULT_SETTINGS, ...parsed });
+              const merged = { ...DEFAULT_SETTINGS, ...parsed };
+              settingsRef.current = merged;
+              setSettings(merged);
             }
           }
         }
@@ -62,13 +65,14 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
 
   const updateSetting = useCallback(
     async <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
-      setSettings((prev) => {
-        const next = { ...prev, [key]: value };
-        if (FileSystem.documentDirectory) {
-          FileSystem.writeAsStringAsync(SETTINGS_FILE, JSON.stringify(next)).catch(() => {});
-        }
-        return next;
-      });
+      const next = { ...settingsRef.current, [key]: value };
+      settingsRef.current = next;
+      setSettings(next);
+      if (FileSystem.documentDirectory) {
+        try {
+          await FileSystem.writeAsStringAsync(SETTINGS_FILE, JSON.stringify(next));
+        } catch {}
+      }
     },
     []
   );

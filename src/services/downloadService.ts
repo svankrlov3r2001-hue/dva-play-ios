@@ -14,16 +14,20 @@ let initialized = false;
 
 async function ensureDir(): Promise<void> {
   if (!FileSystem.documentDirectory) return;
-  const info = await FileSystem.getInfoAsync(OFFLINE_DIR);
-  if (!info.exists) {
-    await FileSystem.makeDirectoryAsync(OFFLINE_DIR, { intermediates: true });
-  }
+  try {
+    const info = await FileSystem.getInfoAsync(OFFLINE_DIR);
+    if (!info.exists) {
+      await FileSystem.makeDirectoryAsync(OFFLINE_DIR, { intermediates: true });
+    }
+  } catch {}
 }
 
 async function persistIndex(items: OfflineDownloadItem[]): Promise<void> {
   cachedItems = items;
   if (FileSystem.documentDirectory) {
-    await FileSystem.writeAsStringAsync(INDEX_FILE, JSON.stringify(items));
+    try {
+      await FileSystem.writeAsStringAsync(INDEX_FILE, JSON.stringify(items));
+    } catch {}
   }
   listeners.forEach((fn) => fn([...cachedItems]));
 }
@@ -32,11 +36,11 @@ export async function loadOfflineDownloads(): Promise<OfflineDownloadItem[]> {
   if (initialized) {
     return [...cachedItems];
   }
-  await ensureDir();
-  if (FileSystem.documentDirectory) {
-    const info = await FileSystem.getInfoAsync(INDEX_FILE);
-    if (info.exists) {
-      try {
+  try {
+    await ensureDir();
+    if (FileSystem.documentDirectory) {
+      const info = await FileSystem.getInfoAsync(INDEX_FILE);
+      if (info.exists) {
         const raw = await FileSystem.readAsStringAsync(INDEX_FILE);
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) {
@@ -44,10 +48,10 @@ export async function loadOfflineDownloads(): Promise<OfflineDownloadItem[]> {
             item.status === 'downloading' ? { ...item, status: 'failed' } : item
           );
         }
-      } catch {
-        cachedItems = [];
       }
     }
+  } catch {
+    cachedItems = [];
   }
   initialized = true;
   return [...cachedItems];

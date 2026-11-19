@@ -1,33 +1,61 @@
 import React, { useEffect, useRef } from 'react';
 import {
   Animated,
-  Dimensions,
   Easing,
   StyleProp,
   StyleSheet,
+  TouchableOpacity,
+  useWindowDimensions,
   View,
   ViewStyle,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { COLORS, RADII } from '../constants/config';
+import { AmbientAppBackground } from './AmbientAppBackground';
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
-
-export function useShimmerProgress(): Animated.Value {
+/**
+ * Per-skeleton-instance native 60fps shimmer loop.
+ * Starts via requestAnimationFrame after mount/activation so RN 0.88 Fabric
+ * always binds the native driver animation to mounted views.
+ */
+export function useShimmerProgress(active = true): Animated.Value {
   const progress = useRef(new Animated.Value(0)).current;
+
   useEffect(() => {
-    progress.setValue(0);
-    const anim = Animated.loop(
-      Animated.timing(progress, {
-        toValue: 1,
-        duration: 1350,
-        easing: Easing.inOut(Easing.ease),
-        useNativeDriver: true,
-      })
-    );
-    anim.start();
-    return () => anim.stop();
-  }, [progress]);
+    if (!active) {
+      progress.stopAnimation();
+      progress.setValue(0);
+      return;
+    }
+
+    let cancelled = false;
+    let loopAnim: Animated.CompositeAnimation | null = null;
+    const rafId = requestAnimationFrame(() => {
+      if (cancelled) return;
+      progress.stopAnimation();
+      progress.setValue(0);
+      loopAnim = Animated.loop(
+        Animated.timing(progress, {
+          toValue: 1,
+          duration: 1150,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        })
+      );
+      loopAnim.start();
+    });
+
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(rafId);
+      if (loopAnim) {
+        loopAnim.stop();
+      }
+      progress.stopAnimation();
+    };
+  }, [active, progress]);
+
   return progress;
 }
 
@@ -36,17 +64,19 @@ export function SkeletonBox({
   width,
   height,
   radius = 14,
+  maxSweep = 460,
   style,
 }: {
   progress: Animated.Value;
   width?: number | `${number}%`;
   height?: number;
   radius?: number;
+  maxSweep?: number;
   style?: StyleProp<ViewStyle>;
 }) {
   const translateX = progress.interpolate({
     inputRange: [0, 1],
-    outputRange: [-180, 320],
+    outputRange: [-220, maxSweep],
   });
 
   return (
@@ -69,7 +99,13 @@ export function SkeletonBox({
         ]}
       >
         <LinearGradient
-          colors={['transparent', 'rgba(255,255,255,0.06)', 'rgba(255,255,255,0.14)', 'rgba(255,255,255,0.06)', 'transparent']}
+          colors={[
+            'transparent',
+            'rgba(255,255,255,0.06)',
+            'rgba(255,255,255,0.22)',
+            'rgba(255,255,255,0.06)',
+            'transparent',
+          ]}
           start={{ x: 0, y: 0.5 }}
           end={{ x: 1, y: 0.5 }}
           style={StyleSheet.absoluteFill}
@@ -82,14 +118,21 @@ export function SkeletonBox({
 /**
  * Category / Tab switch skeleton ported from W:\public_html\dva_play\index.php (.dva-sk-hero + cards)
  */
-export function HomeHubSkeleton({ topInset }: { topInset: number }) {
-  const progress = useShimmerProgress();
-  const cardW = Math.min(208, SCREEN_WIDTH * 0.54);
+export function HomeHubSkeleton({
+  topInset,
+  active = true,
+}: {
+  topInset: number;
+  active?: boolean;
+}) {
+  const progress = useShimmerProgress(active);
+  const { width: winWidth, height: winHeight } = useWindowDimensions();
+  const portraitWidth = Math.min(winWidth, winHeight);
+  const cardW = Math.min(208, portraitWidth * 0.54);
   const cardH = Math.round(cardW * 1.44);
 
   return (
     <View style={[styles.hubContainer, { paddingTop: topInset + 114 }]}>
-      {/* Hero 3D Perspective Deck Skeleton */}
       <View style={[styles.skHeroStage, { height: cardH + 16 }]}>
         <SkeletonBox
           progress={progress}
@@ -120,7 +163,6 @@ export function HomeHubSkeleton({ topInset }: { topInset: number }) {
         />
       </View>
 
-      {/* Hero Info Skeleton */}
       <View style={styles.skHeroInfo}>
         <SkeletonBox progress={progress} width={76} height={22} radius={RADII.pill} />
         <SkeletonBox progress={progress} width="78%" height={26} radius={10} />
@@ -134,11 +176,10 @@ export function HomeHubSkeleton({ topInset }: { topInset: number }) {
         </View>
       </View>
 
-      {/* Section 1: 16:9 Watched / Landscape Row Skeleton */}
       <View style={styles.skSection}>
         <SkeletonBox progress={progress} width={150} height={18} radius={8} />
         <View style={styles.rowGap12}>
-          {[0, 1, 2].map((idx) => (
+          {[0, 1].map((idx) => (
             <View key={`land-${idx}`} style={{ width: 205, gap: 8 }}>
               <SkeletonBox progress={progress} width={205} height={116} radius={20} />
               <SkeletonBox progress={progress} width="80%" height={14} radius={6} />
@@ -147,36 +188,31 @@ export function HomeHubSkeleton({ topInset }: { topInset: number }) {
           ))}
         </View>
       </View>
-
-      {/* Section 2: Vertical Poster Row Skeleton */}
-      <View style={styles.skSection}>
-        <SkeletonBox progress={progress} width={190} height={18} radius={8} />
-        <View style={styles.rowGap12}>
-          {[0, 1, 2, 3].map((idx) => (
-            <View key={`vert-${idx}`} style={{ width: 126, gap: 8 }}>
-              <SkeletonBox progress={progress} width={126} height={186} radius={20} />
-              <SkeletonBox progress={progress} width="84%" height={13} radius={6} />
-              <SkeletonBox progress={progress} width="56%" height={10} radius={5} />
-            </View>
-          ))}
-        </View>
-      </View>
     </View>
   );
 }
 
 /**
- * 3-column catalog grid skeleton for ExploreScreen filter switches
+ * 3-column catalog grid skeleton for ExploreScreen & SearchScreen
  */
-export function ExploreGridSkeleton({ cardWidth }: { cardWidth: number }) {
-  const progress = useShimmerProgress();
-  const cardH = Math.round(cardWidth * 1.48);
+export function ExploreGridSkeleton({
+  cardWidth,
+  active = true,
+}: {
+  cardWidth: number;
+  active?: boolean;
+}) {
+  const progress = useShimmerProgress(active);
+  const { width: winWidth, height: winHeight } = useWindowDimensions();
+  const portraitWidth = Math.min(winWidth, winHeight);
+  const safeCardW = Math.min(cardWidth, Math.floor((portraitWidth - 32 - 20) / 3));
+  const cardH = Math.round(safeCardW * 1.48);
 
   return (
-    <View style={styles.gridWrap}>
+    <View style={[styles.gridWrap, { width: portraitWidth }]}>
       {[0, 1, 2, 3, 4, 5, 6, 7, 8].map((idx) => (
-        <View key={idx} style={{ width: cardWidth, gap: 6, marginBottom: 14 }}>
-          <SkeletonBox progress={progress} width={cardWidth} height={cardH} radius={16} />
+        <View key={idx} style={{ width: safeCardW, gap: 6, marginBottom: 14 }}>
+          <SkeletonBox progress={progress} width={safeCardW} height={cardH} radius={16} />
           <SkeletonBox progress={progress} width="82%" height={12} radius={6} />
         </View>
       ))}
@@ -185,10 +221,13 @@ export function ExploreGridSkeleton({ cardWidth }: { cardWidth: number }) {
 }
 
 /**
- * Sheet skeleton matching Image 2 ("Đang tải thông tin phim...")
+ * Sheet skeleton matching PreviewSheetModal
  */
-export function PreviewSheetSkeleton() {
-  const progress = useShimmerProgress();
+export function PreviewSheetSkeleton({ active = true }: { active?: boolean }) {
+  const progress = useShimmerProgress(active);
+  const { width: winWidth, height: winHeight } = useWindowDimensions();
+  const portraitWidth = Math.min(winWidth, winHeight);
+  const playW = Math.max(130, Math.round(portraitWidth * 0.38));
   return (
     <View style={styles.previewWrap}>
       <SkeletonBox progress={progress} width="64%" height={28} radius={10} />
@@ -203,7 +242,7 @@ export function PreviewSheetSkeleton() {
         <SkeletonBox progress={progress} width="68%" height={13} radius={6} />
       </View>
       <View style={[styles.rowGap10, { marginTop: 10 }]}>
-        <SkeletonBox progress={progress} width={150} height={46} radius={18} style={{ flex: 1 }} />
+        <SkeletonBox progress={progress} width={playW} height={46} radius={18} style={{ flex: 1 }} />
         <SkeletonBox progress={progress} width={46} height={46} radius={18} />
         <SkeletonBox progress={progress} width={92} height={46} radius={18} />
       </View>
@@ -214,11 +253,20 @@ export function PreviewSheetSkeleton() {
 /**
  * Full-screen MovieDetail skeleton
  */
-export function MovieDetailSkeleton({ topInset }: { topInset: number }) {
-  const progress = useShimmerProgress();
+export function MovieDetailSkeleton({
+  topInset,
+  active = true,
+}: {
+  topInset: number;
+  active?: boolean;
+}) {
+  const progress = useShimmerProgress(active);
+  const { width: winWidth, height: winHeight } = useWindowDimensions();
+  const portraitWidth = Math.min(winWidth, winHeight);
+  const bannerHeight = Math.min(260, Math.round(portraitWidth * 0.66));
   return (
     <View style={styles.detailWrap}>
-      <SkeletonBox progress={progress} width="100%" height={260} radius={0} />
+      <SkeletonBox progress={progress} width="100%" height={bannerHeight} radius={0} />
       <View style={[styles.detailBody, { marginTop: -56 }]}>
         <View style={styles.rowGap12}>
           <SkeletonBox progress={progress} width={100} height={146} radius={16} />
@@ -255,69 +303,95 @@ export function MovieDetailSkeleton({ topInset }: { topInset: number }) {
 }
 
 /**
- * Landscape Player HUD Skeleton mirroring #dva-app-hud / Image 6
+ * Landscape Player HUD Skeleton mirroring #dva-app-hud with unified DVA Play Ambient Background
  */
 export function PlayerLandscapeSkeleton({
   leftInset,
   rightInset,
+  active = true,
+  onBack,
 }: {
   leftInset: number;
   rightInset: number;
+  active?: boolean;
+  onBack?: () => void;
 }) {
-  const progress = useShimmerProgress();
+  const progress = useShimmerProgress(active);
+  const { width: winWidth, height: winHeight } = useWindowDimensions();
+  const landscapeWidth = Math.max(winWidth, winHeight);
+  const sweepMax = Math.max(540, Math.round(landscapeWidth));
+  const effectiveLeft = Math.max(20, leftInset);
+  const effectiveRight = Math.max(20, rightInset);
+
   return (
-    <View
-      style={[
-        styles.playerWrap,
-        {
-          paddingLeft: Math.max(20, leftInset + 10),
-          paddingRight: Math.max(20, rightInset + 10),
-          paddingTop: 14,
-          paddingBottom: 16,
-        },
-      ]}
-    >
-      {/* Top Bar Skeleton */}
-      <View style={styles.playerTop}>
-        <View style={styles.rowGap12}>
-          <SkeletonBox progress={progress} width={42} height={42} radius={21} />
-          <View style={{ gap: 6 }}>
-            <SkeletonBox progress={progress} width={220} height={18} radius={8} />
-            <SkeletonBox progress={progress} width={116} height={12} radius={6} />
+    <View style={styles.playerRoot}>
+      <AmbientAppBackground />
+      <View
+        style={[
+          styles.playerWrap,
+          StyleSheet.absoluteFill,
+          {
+            paddingLeft: effectiveLeft,
+            paddingRight: effectiveRight,
+            paddingTop: 14,
+            paddingBottom: 16,
+          },
+        ]}
+      >
+        {/* Top Bar Skeleton */}
+        <View style={styles.playerTop}>
+          <View style={styles.rowGap12}>
+            {onBack ? (
+              <TouchableOpacity onPress={onBack} style={styles.playerBackBtn}>
+                <Ionicons name="chevron-back" size={23} color="#FFF" />
+              </TouchableOpacity>
+            ) : (
+              <SkeletonBox progress={progress} width={42} height={42} radius={21} />
+            )}
+            <View style={{ gap: 6 }}>
+              <SkeletonBox progress={progress} width={220} height={18} radius={8} />
+              <SkeletonBox progress={progress} width={116} height={12} radius={6} />
+            </View>
+          </View>
+          <SkeletonBox progress={progress} width={196} height={48} radius={24} />
+        </View>
+
+        {/* Right Vertical Capsule Skeleton */}
+        <View style={[styles.playerSide, { right: effectiveRight }]}>
+          <SkeletonBox progress={progress} width={46} height={136} radius={23} />
+        </View>
+
+        {/* True Vertical & Horizontal Center Controls Skeleton */}
+        <View pointerEvents="none" style={styles.playerCenterWrap}>
+          <View style={styles.playerCenterRow}>
+            <SkeletonBox progress={progress} width={54} height={54} radius={27} />
+            <SkeletonBox progress={progress} width={74} height={74} radius={26} />
+            <SkeletonBox progress={progress} width={54} height={54} radius={27} />
           </View>
         </View>
-        <SkeletonBox progress={progress} width={196} height={48} radius={24} />
-      </View>
 
-      {/* Right Vertical Capsule Skeleton */}
-      <View style={[styles.playerSide, { right: Math.max(16, rightInset + 10) }]}>
-        <SkeletonBox progress={progress} width={46} height={136} radius={23} />
-      </View>
-
-      {/* True Vertical & Horizontal Center Controls Skeleton */}
-      <View pointerEvents="none" style={styles.playerCenterWrap}>
-        <View style={styles.playerCenterRow}>
-          <SkeletonBox progress={progress} width={54} height={54} radius={27} />
-          <SkeletonBox progress={progress} width={74} height={74} radius={26} />
-          <SkeletonBox progress={progress} width={54} height={54} radius={27} />
-        </View>
-      </View>
-
-      {/* Bottom Scrubber & Icon Pills Skeleton */}
-      <View style={styles.playerBottom}>
-        <SkeletonBox progress={progress} width={92} height={14} radius={7} />
-        <SkeletonBox progress={progress} width="100%" height={6} radius={3} />
-        <View style={styles.playerActionsRow}>
-          <View style={styles.rowGap10}>
-            <SkeletonBox progress={progress} width={68} height={38} radius={19} />
-            <SkeletonBox progress={progress} width={44} height={38} radius={19} />
-            <SkeletonBox progress={progress} width={44} height={38} radius={19} />
-            <SkeletonBox progress={progress} width={44} height={38} radius={19} />
-            <SkeletonBox progress={progress} width={44} height={38} radius={19} />
-          </View>
-          <View style={styles.rowGap10}>
-            <SkeletonBox progress={progress} width={66} height={38} radius={19} />
-            <SkeletonBox progress={progress} width={118} height={38} radius={19} />
+        {/* Bottom Scrubber & Icon Pills Skeleton */}
+        <View style={styles.playerBottom}>
+          <SkeletonBox progress={progress} width={92} height={14} radius={7} />
+          <SkeletonBox
+            progress={progress}
+            width="100%"
+            height={6}
+            radius={3}
+            maxSweep={sweepMax}
+          />
+          <View style={styles.playerActionsRow}>
+            <View style={styles.rowGap10}>
+              <SkeletonBox progress={progress} width={68} height={38} radius={19} />
+              <SkeletonBox progress={progress} width={44} height={38} radius={19} />
+              <SkeletonBox progress={progress} width={44} height={38} radius={19} />
+              <SkeletonBox progress={progress} width={44} height={38} radius={19} />
+              <SkeletonBox progress={progress} width={44} height={38} radius={19} />
+            </View>
+            <View style={styles.rowGap10}>
+              <SkeletonBox progress={progress} width={66} height={38} radius={19} />
+              <SkeletonBox progress={progress} width={118} height={38} radius={19} />
+            </View>
           </View>
         </View>
       </View>
@@ -334,7 +408,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 0,
     bottom: 0,
-    width: 140,
+    width: 200,
   },
   hubContainer: {
     flex: 1,
@@ -391,21 +465,34 @@ const styles = StyleSheet.create({
   },
   detailWrap: {
     flex: 1,
-    backgroundColor: COLORS.bg,
+    backgroundColor: 'transparent',
   },
   detailBody: {
     paddingHorizontal: 16,
     gap: 14,
   },
-  playerWrap: {
+  playerRoot: {
     position: 'absolute',
     top: 0,
     right: 0,
     bottom: 0,
     left: 0,
-    backgroundColor: '#07090F',
-    justifyContent: 'space-between',
+    backgroundColor: COLORS.bg,
     zIndex: 32,
+  },
+  playerWrap: {
+    backgroundColor: 'transparent',
+    justifyContent: 'space-between',
+  },
+  playerBackBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: 'rgba(20, 20, 20, 0.56)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.16)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   playerTop: {
     flexDirection: 'row',

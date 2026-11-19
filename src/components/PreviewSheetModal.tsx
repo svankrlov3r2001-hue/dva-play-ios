@@ -1,23 +1,26 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
+  Animated,
+  Easing,
   Image,
-  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, RADII } from '../constants/config';
 import { fetchPopupInfoApi, toggleWishlistApi } from '../services/api';
-import { PopupInfo } from '../types/models';
+import { MovieItem, PopupInfo } from '../types/models';
+import { AmbientAppBackground } from './AmbientAppBackground';
 import { GlassSurface } from './GlassSurface';
 import { SkeletonCrossfade } from './SkeletonCrossfade';
 import { PreviewSheetSkeleton } from './SkeletonLoaders';
@@ -25,6 +28,7 @@ import { PreviewSheetSkeleton } from './SkeletonLoaders';
 interface PreviewSheetModalProps {
   visible: boolean;
   videosId: number | null;
+  initialMovie?: MovieItem | null;
   obscuredByPlayer?: boolean;
   onClose: () => void;
   onPlay: (params: { videosId: number; streamCode: string; episodeId?: number; title: string }) => void;
@@ -34,17 +38,25 @@ interface PreviewSheetModalProps {
 export function PreviewSheetModal({
   visible,
   videosId,
+  initialMovie = null,
   obscuredByPlayer = false,
   onClose,
   onPlay,
   onOpenDetail,
 }: PreviewSheetModalProps) {
   const insets = useSafeAreaInsets();
+  const { width: winWidth, height: winHeight } = useWindowDimensions();
+  const maxSheetHeight = Math.round(Math.max(winWidth, winHeight) * 0.84);
   const [loading, setLoading] = useState(false);
   const [info, setInfo] = useState<PopupInfo | null>(null);
   const [inWishlist, setInWishlist] = useState(false);
   const [isMuted, setIsMuted] = useState(true);
   const [trailerActive, setTrailerActive] = useState(false);
+
+  const isOpen = visible && !obscuredByPlayer;
+  const backdropOpacity = useRef(new Animated.Value(0)).current;
+  const sheetTranslateY = useRef(new Animated.Value(360)).current;
+  const trailerOpacity = useRef(new Animated.Value(0)).current;
 
   const player = useVideoPlayer(null, (p) => {
     p.loop = true;
@@ -52,12 +64,45 @@ export function PreviewSheetModal({
   });
 
   useEffect(() => {
+    if (isOpen) {
+      backdropOpacity.setValue(0);
+      sheetTranslateY.setValue(320);
+      Animated.parallel([
+        Animated.timing(backdropOpacity, {
+          toValue: 1,
+          duration: 220,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+        Animated.timing(sheetTranslateY, {
+          toValue: 0,
+          duration: 260,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+      ]).start();
+    } else {
+      backdropOpacity.stopAnimation();
+      sheetTranslateY.stopAnimation();
+      backdropOpacity.setValue(0);
+      sheetTranslateY.setValue(320);
+      try {
+        player.pause();
+      } catch {}
+    }
+  }, [isOpen, backdropOpacity, sheetTranslateY, player]);
+
+  useEffect(() => {
     player.muted = isMuted;
   }, [isMuted, player]);
 
+  // Phase 1: Load movie metadata ONLY (never blocked by trailer check or video buffering)
   useEffect(() => {
     if (!visible || !videosId) {
+      setLoading(false);
+      setInfo(null);
       setTrailerActive(false);
+      trailerOpacity.setValue(0);
       try {
         player.pause();
       } catch {}
@@ -67,7 +112,9 @@ export function PreviewSheetModal({
     let cancelled = false;
     setLoading(true);
     setInfo(null);
+    setInWishlist(Boolean(initialMovie?.in_wishlist));
     setTrailerActive(false);
+    trailerOpacity.setValue(0);
     setIsMuted(true);
 
     (async () => {
@@ -76,38 +123,8 @@ export function PreviewSheetModal({
         if (cancelled) return;
         setInfo(res);
         setInWishlist(Boolean(res.in_wishlist));
-
-        // Probe HLS trailer gently; fallback to direct stream/fallback MP4
-        let chosenTrailer = res.url_trailer_fallback;
-        let isHls = false;
-        try {
-          const chk = await fetch('https://dangvietanh.io.vn/check_file_trailer', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ file: res.title_dot }),
-          });
-          if (chk.ok) {
-            const cJson = await chk.json();
-            if (cJson && (cJson.exists || cJson.status === 'ok' || cJson.url)) {
-              chosenTrailer = res.url_trailer_hls || res.url_trailer_stream;
-              isHls = true;
-            }
-          }
-        } catch {}
-
-        if (!cancelled && chosenTrailer) {
-          await player.replaceAsync({
-            uri: chosenTrailer,
-            contentType: isHls ? 'hls' : 'progressive',
-          });
-          if (!cancelled) {
-            player.muted = true;
-            player.play();
-            setTrailerActive(true);
-          }
-        }
       } catch {
-        // Keep image backdrop cleanly
+        // Keep modal resilient even if request fails
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -115,11 +132,81 @@ export function PreviewSheetModal({
 
     return () => {
       cancelled = true;
+    };
+  }, [visible, videosId, initialMovie?.in_wishlist, player, trailerOpacity]);
+
+  // Phase 2: Load & fade-in trailer asynchronously after movie metadata is ready
+  useEffect(() => {
+    if (!isOpen || !videosId || !info || info.videos_id !== videosId) {
+      return;
+    }
+
+    let cancelled = false;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      controller.abort();
+    }, 3500);
+
+    (async () => {
+      let chosenTrailer = info.url_trailer_fallback;
+      let isHls = false;
+
+      if (info.title_dot) {
+        try {
+          const chk = await fetch('https://dangvietanh.io.vn/check_file_trailer', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ file: info.title_dot }),
+            signal: controller.signal,
+          });
+          if (chk.ok) {
+            const cJson = await chk.json();
+            if (cJson && (cJson.exists || cJson.status === 'ok' || cJson.url)) {
+              chosenTrailer = info.url_trailer_hls || info.url_trailer_stream;
+              isHls = true;
+            }
+          }
+        } catch {
+          // Timeout or network issue: silently keep fallback MP4 or backdrop poster
+        } finally {
+          clearTimeout(timeoutId);
+        }
+      } else {
+        clearTimeout(timeoutId);
+      }
+
+      if (cancelled || !chosenTrailer) return;
+
+      try {
+        await player.replaceAsync({
+          uri: chosenTrailer,
+          contentType: isHls ? 'hls' : 'progressive',
+        });
+        if (!cancelled) {
+          player.muted = true;
+          player.play();
+          setTrailerActive(true);
+          Animated.timing(trailerOpacity, {
+            toValue: 1,
+            duration: 320,
+            easing: Easing.out(Easing.cubic),
+            useNativeDriver: true,
+          }).start();
+        }
+      } catch {
+        // Keep image backdrop cleanly
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timeoutId);
+      controller.abort();
       try {
         player.pause();
       } catch {}
     };
-  }, [visible, videosId, player]);
+  }, [isOpen, videosId, info, player, trailerOpacity]);
 
   const handleToggleWishlist = async () => {
     if (!videosId) return;
@@ -133,196 +220,242 @@ export function PreviewSheetModal({
   const progressPct = parseInt(String(info?.viewed_rate || '0').replace('%', ''), 10) || 0;
   const imdbVal = parseFloat(String(info?.imdb_rating || '0')) || 0;
   const starCount = Math.max(0, Math.min(5, Math.round(imdbVal / 2)));
+  const previewBackdropUri =
+    info?.image_poster_image || initialMovie?.poster_url || initialMovie?.thumbnail_url || '';
+
+  if (!isOpen) {
+    return null;
+  }
 
   return (
-    <Modal
-      visible={visible && !obscuredByPlayer}
-      transparent
-      animationType={obscuredByPlayer ? 'none' : 'slide'}
-      supportedOrientations={['portrait', 'landscape-left', 'landscape-right']}
-      onRequestClose={onClose}
-    >
-      <View style={styles.backdrop}>
+    <View style={styles.overlayRoot}>
+      <Animated.View style={[styles.backdrop, { opacity: backdropOpacity }]}>
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
-        <GlassSurface
-          intensity={65}
-          radius={34}
-          style={[styles.sheet, { paddingBottom: Math.max(24, insets.bottom + 14) }]}
+        <Animated.View
+          style={[
+            styles.sheetAnimWrap,
+            { maxHeight: maxSheetHeight, transform: [{ translateY: sheetTranslateY }] },
+          ]}
         >
-          <View style={styles.handleBar} />
-
-          {/* Backdrop / Live Trailer Header */}
-          <View style={styles.mediaBox}>
-            {info?.image_poster_image ? (
-              <Image
-                source={{ uri: info.image_poster_image }}
-                style={StyleSheet.absoluteFill}
-                resizeMode="cover"
-              />
-            ) : null}
-
-            {trailerActive ? (
-              <VideoView
-                player={player}
-                style={StyleSheet.absoluteFill}
-                contentFit="cover"
-                nativeControls={false}
-              />
-            ) : null}
-
-            <LinearGradient
-              colors={['rgba(7,9,15,0.12)', 'rgba(7,9,15,0.6)', '#0B0F19']}
-              style={StyleSheet.absoluteFill}
-            />
-
-            <TouchableOpacity style={styles.closeBtn} onPress={onClose}>
-              <Ionicons name="close" size={20} color="#FFF" />
-            </TouchableOpacity>
-
-            {trailerActive ? (
-              <TouchableOpacity
-                style={styles.muteBtn}
-                onPress={() => {
-                  Haptics.selectionAsync();
-                  setIsMuted((m) => !m);
-                }}
-              >
-                <Ionicons
-                  name={isMuted ? 'volume-mute' : 'volume-high'}
-                  size={18}
-                  color="#FFF"
-                />
-              </TouchableOpacity>
-            ) : null}
-          </View>
-
-          <SkeletonCrossfade
-            loading={loading}
-            intrinsicHeight
-            backgroundColor="transparent"
-            skeleton={<PreviewSheetSkeleton />}
+          <GlassSurface
+            intensity={68}
+            radius={34}
+            style={[
+              styles.sheet,
+              { maxHeight: maxSheetHeight, paddingBottom: Math.max(24, insets.bottom + 14) },
+            ]}
           >
-            {info ? (
-            <ScrollView
-              bounces={false}
-              showsVerticalScrollIndicator={false}
-              contentContainerStyle={styles.content}
-            >
-              {info.image_name && info.image_name !== 'false' ? (
+            <View pointerEvents="none" style={styles.sheetAmbientWrap}>
+              <AmbientAppBackground />
+            </View>
+            <View style={styles.handleBar} />
+
+            {/* Backdrop / Live Trailer Header with seamless bottom blur bridge */}
+            <View style={styles.mediaBox}>
+              {previewBackdropUri ? (
                 <Image
-                  source={{ uri: info.image_name }}
-                  style={styles.logoTitleImg}
-                  resizeMode="contain"
+                  source={{ uri: previewBackdropUri }}
+                  style={StyleSheet.absoluteFill}
+                  resizeMode="cover"
                 />
-              ) : (
-                <Text style={styles.titleText}>{info.title}</Text>
-              )}
-
-              <View style={styles.metaRow}>
-                <View style={styles.starsRow}>
-                  {[0, 1, 2, 3, 4].map((idx) => (
-                    <Ionicons
-                      key={idx}
-                      name={idx < starCount ? 'star' : 'star-outline'}
-                      size={15}
-                      color={COLORS.accentGold}
-                    />
-                  ))}
-                  {imdbVal > 0 ? (
-                    <Text style={styles.imdbText}>{imdbVal.toFixed(1)}</Text>
-                  ) : null}
-                </View>
-                {info.release ? (
-                  <Text style={styles.metaText}>{info.release.slice(0, 4)}</Text>
-                ) : null}
-                {info.runtime ? <Text style={styles.metaText}>{info.runtime}</Text> : null}
-                <View style={styles.qualityPill}>
-                  <Text style={styles.qualityText}>{info.video_quality || 'HD'}</Text>
-                </View>
-              </View>
-
-              {progressPct > 0 || info.time_remaining ? (
-                <View style={styles.progressSection}>
-                  <View style={styles.progressHeader}>
-                    <Text style={styles.progressLabel}>Tiến độ xem</Text>
-                    <Text style={styles.progressRemain}>
-                      {info.time_remaining || `${progressPct}%`}
-                    </Text>
-                  </View>
-                  <View style={styles.progressBarBg}>
-                    <View style={[styles.progressBarFill, { width: `${progressPct}%` }]} />
-                  </View>
-                </View>
               ) : null}
 
-              <Text style={styles.descText} numberOfLines={4}>
-                {info.description || 'Thưởng thức nội dung chất lượng cao trên Đặng Việt Anh.'}
-              </Text>
-
-              <View style={styles.actionRow}>
-                <TouchableOpacity
-                  activeOpacity={0.88}
-                  style={styles.playBtn}
-                  onPress={() => {
-                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                    onClose();
-                    onPlay({
-                      videosId: info.videos_id,
-                      streamCode: info.movies_url_getlink,
-                      episodeId: info.episode_id,
-                      title: info.title,
-                    });
-                  }}
-                >
-                  <Ionicons name="play" size={20} color="#FFF" />
-                  <Text style={styles.playBtnText}>
-                    {info.viewed_information || 'Xem ngay'}
-                  </Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.iconActionBtn}
-                  onPress={handleToggleWishlist}
-                >
-                  <Ionicons
-                    name={inWishlist ? 'bookmark' : 'bookmark-outline'}
-                    size={20}
-                    color={inWishlist ? COLORS.accent : '#FFF'}
+              {trailerActive ? (
+                <Animated.View style={[StyleSheet.absoluteFill, { opacity: trailerOpacity }]}>
+                  <VideoView
+                    player={player}
+                    style={StyleSheet.absoluteFill}
+                    contentFit="cover"
+                    nativeControls={false}
                   />
-                </TouchableOpacity>
+                </Animated.View>
+              ) : null}
 
+              <View pointerEvents="none" style={styles.mediaBottomBlur}>
+                <BlurView intensity={28} tint="dark" style={StyleSheet.absoluteFill} />
+              </View>
+              <LinearGradient
+                colors={[
+                  'rgba(7,9,15,0.08)',
+                  'rgba(10,9,15,0.16)',
+                  'rgba(13,10,16,0.72)',
+                  'rgba(13,10,16,0.96)',
+                ]}
+                locations={[0, 0.42, 0.76, 1]}
+                style={StyleSheet.absoluteFill}
+                pointerEvents="none"
+              />
+
+              <TouchableOpacity style={styles.closeBtn} onPress={onClose}>
+                <Ionicons name="close" size={20} color="#FFF" />
+              </TouchableOpacity>
+
+              {trailerActive ? (
                 <TouchableOpacity
-                  style={styles.detailBtn}
+                  style={styles.muteBtn}
                   onPress={() => {
                     Haptics.selectionAsync();
-                    onClose();
-                    onOpenDetail(info.videos_id);
+                    setIsMuted((m) => !m);
                   }}
                 >
-                  <Ionicons name="information-circle-outline" size={20} color="#FFF" />
-                  <Text style={styles.detailBtnText}>Chi tiết</Text>
+                  <Ionicons
+                    name={isMuted ? 'volume-mute' : 'volume-high'}
+                    size={18}
+                    color="#FFF"
+                  />
                 </TouchableOpacity>
-              </View>
-            </ScrollView>
-            ) : null}
-          </SkeletonCrossfade>
-        </GlassSurface>
-      </View>
-    </Modal>
+              ) : null}
+            </View>
+
+            <SkeletonCrossfade
+              loading={loading || !info}
+              intrinsicHeight
+              backgroundColor="transparent"
+              skeleton={<PreviewSheetSkeleton active={isOpen && (loading || !info)} />}
+            >
+              {info ? (
+                <ScrollView
+                  bounces={false}
+                  showsVerticalScrollIndicator={false}
+                  contentContainerStyle={styles.content}
+                >
+                  {info.image_name && info.image_name !== 'false' ? (
+                    <Image
+                      source={{ uri: info.image_name }}
+                      style={styles.logoTitleImg}
+                      resizeMode="contain"
+                    />
+                  ) : (
+                    <Text style={styles.titleText}>{info.title}</Text>
+                  )}
+
+                  <View style={styles.metaRow}>
+                    <View style={styles.starsRow}>
+                      {[0, 1, 2, 3, 4].map((idx) => (
+                        <Ionicons
+                          key={idx}
+                          name={idx < starCount ? 'star' : 'star-outline'}
+                          size={15}
+                          color={COLORS.accentGold}
+                        />
+                      ))}
+                      {imdbVal > 0 ? (
+                        <Text style={styles.imdbText}>{imdbVal.toFixed(1)}</Text>
+                      ) : null}
+                    </View>
+                    {info.release ? (
+                      <Text style={styles.metaText}>{info.release.slice(0, 4)}</Text>
+                    ) : null}
+                    {info.runtime ? <Text style={styles.metaText}>{info.runtime}</Text> : null}
+                    <View style={styles.qualityPill}>
+                      <Text style={styles.qualityText}>{info.video_quality || 'HD'}</Text>
+                    </View>
+                  </View>
+
+                  {progressPct > 0 || info.time_remaining ? (
+                    <View style={styles.progressSection}>
+                      <View style={styles.progressHeader}>
+                        <Text style={styles.progressLabel}>Tiến độ xem</Text>
+                        <Text style={styles.progressRemain}>
+                          {info.time_remaining || `${progressPct}%`}
+                        </Text>
+                      </View>
+                      <View style={styles.progressBarBg}>
+                        <View style={[styles.progressBarFill, { width: `${progressPct}%` }]} />
+                      </View>
+                    </View>
+                  ) : null}
+
+                  <Text style={styles.descText} numberOfLines={4}>
+                    {info.description || 'Thưởng thức nội dung chất lượng cao trên Đặng Việt Anh.'}
+                  </Text>
+
+                  <View style={styles.actionRow}>
+                    <TouchableOpacity
+                      activeOpacity={0.88}
+                      style={styles.playBtn}
+                      onPress={() => {
+                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                        try {
+                          player.pause();
+                        } catch {}
+                        onClose();
+                        onPlay({
+                          videosId: info.videos_id,
+                          streamCode: info.movies_url_getlink,
+                          episodeId: info.episode_id,
+                          title: info.title,
+                        });
+                      }}
+                    >
+                      <Ionicons name="play" size={20} color="#FFF" />
+                      <Text style={styles.playBtnText}>
+                        {info.viewed_information || 'Xem ngay'}
+                      </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={styles.iconActionBtn}
+                      onPress={handleToggleWishlist}
+                    >
+                      <Ionicons
+                        name={inWishlist ? 'bookmark' : 'bookmark-outline'}
+                        size={20}
+                        color={inWishlist ? COLORS.accent : '#FFF'}
+                      />
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={styles.detailBtn}
+                      onPress={() => {
+                        Haptics.selectionAsync();
+                        onClose();
+                        onOpenDetail(info.videos_id);
+                      }}
+                    >
+                      <Ionicons name="information-circle-outline" size={20} color="#FFF" />
+                      <Text style={styles.detailBtnText}>Chi tiết</Text>
+                    </TouchableOpacity>
+                  </View>
+                </ScrollView>
+              ) : null}
+            </SkeletonCrossfade>
+          </GlassSurface>
+        </Animated.View>
+      </Animated.View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  overlayRoot: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    zIndex: 600,
+  },
   backdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.62)',
     justifyContent: 'flex-end',
   },
+  sheetAnimWrap: {
+    width: '100%',
+  },
   sheet: {
-    maxHeight: '84%',
-    backgroundColor: 'rgba(11, 15, 25, 0.92)',
+    backgroundColor: 'rgba(13, 10, 16, 0.88)',
     borderBottomLeftRadius: 0,
     borderBottomRightRadius: 0,
+  },
+  sheetAmbientWrap: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    opacity: 0.72,
   },
   handleBar: {
     alignSelf: 'center',
@@ -339,6 +472,14 @@ const styles = StyleSheet.create({
     height: 215,
     backgroundColor: '#0A0D16',
     position: 'relative',
+    overflow: 'hidden',
+  },
+  mediaBottomBlur: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 54,
   },
   closeBtn: {
     position: 'absolute',
@@ -350,6 +491,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.55)',
     alignItems: 'center',
     justifyContent: 'center',
+    zIndex: 5,
   },
   muteBtn: {
     position: 'absolute',
@@ -361,15 +503,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.55)',
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  loaderBox: {
-    paddingVertical: 46,
-    alignItems: 'center',
-    gap: 12,
-  },
-  loadingText: {
-    color: COLORS.muted,
-    fontSize: 13,
+    zIndex: 5,
   },
   content: {
     paddingHorizontal: 20,

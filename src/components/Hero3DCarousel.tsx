@@ -1,21 +1,21 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
-  Dimensions,
   Image,
   PanResponder,
   StyleSheet,
   Text,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import { COLORS } from '../constants/config';
 import { MovieItem } from '../types/models';
-
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
+import { LazyImage } from './LazyImage';
 
 interface Hero3DCarouselProps {
   items: MovieItem[];
@@ -36,6 +36,8 @@ export function Hero3DCarousel({
   onToggleWishlist,
   onOpenDetail,
 }: Hero3DCarouselProps) {
+  const { width: winWidth, height: winHeight } = useWindowDimensions();
+  const portraitWidth = Math.min(winWidth, winHeight);
   const [activeIndex, setActiveIndex] = useState(0);
   const deckScale = useRef(new Animated.Value(1)).current;
   const infoFade = useRef(new Animated.Value(1)).current;
@@ -114,7 +116,7 @@ export function Hero3DCarousel({
   if (items.length === 0) return null;
 
   const activeItem = items[activeIndex] || items[0];
-  const cardW = Math.min(208, SCREEN_WIDTH * 0.54);
+  const cardW = Math.min(208, portraitWidth * 0.54);
   const cardH = Math.round(cardW * 1.44);
 
   const getRelativeOffset = (idx: number) => {
@@ -177,8 +179,8 @@ export function Hero3DCarousel({
           },
         ]}
       >
-        <Image
-          source={{ uri: item.thumbnail_url || item.poster_url }}
+        <LazyImage
+          uri={item.thumbnail_url || item.poster_url}
           style={styles.cardPoster}
           resizeMode="cover"
         />
@@ -217,22 +219,28 @@ export function Hero3DCarousel({
 
   return (
     <View style={[styles.shell, { paddingTop: topInset + 104 }]}>
-      {/* Blurred full-bleed ambient poster background matching DVA Play full-bleed hero */}
+      {/* Blurred full-bleed ambient poster background blending smoothly into app background */}
       <Image
         source={{ uri: activeItem.poster_url || activeItem.thumbnail_url }}
         style={styles.backdropImg}
-        blurRadius={18}
+        blurRadius={22}
         resizeMode="cover"
       />
+      <View pointerEvents="none" style={styles.bottomBlurBand}>
+        <BlurView intensity={28} tint="dark" style={StyleSheet.absoluteFill} />
+      </View>
       <LinearGradient
         colors={[
-          'rgba(7,9,15,0.52)',
-          'rgba(7,9,15,0.28)',
-          'rgba(7,9,15,0.88)',
-          '#07090F',
+          'rgba(7,9,15,0.42)',
+          'rgba(7,9,15,0.18)',
+          'rgba(12,9,16,0.52)',
+          'rgba(12,9,16,0.82)',
+          'rgba(12,9,16,0.34)',
+          'transparent',
         ]}
-        locations={[0, 0.35, 0.82, 1]}
+        locations={[0, 0.32, 0.62, 0.80, 0.92, 1]}
         style={StyleSheet.absoluteFill}
+        pointerEvents="none"
       />
 
       {/* 3D Perspective Poster Card Deck: Back layer renders side cards, Front layer always renders Center Active Card on top */}
@@ -373,16 +381,23 @@ const styles = StyleSheet.create({
     position: 'relative',
     overflow: 'hidden',
     paddingHorizontal: 18,
-    paddingBottom: 20,
-    marginBottom: 8,
+    paddingBottom: 18,
+    marginBottom: 0,
   },
   backdropImg: {
     position: 'absolute',
     top: 0,
     right: 0,
-    bottom: 0,
+    bottom: 28,
     left: 0,
-    opacity: 0.48,
+    opacity: 0.44,
+  },
+  bottomBlurBand: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 92,
   },
   deckArea: {
     width: '100%',

@@ -1,15 +1,16 @@
 import React from 'react';
-import { Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
-import { COLORS, RADII } from '../constants/config';
+import { COLORS } from '../constants/config';
 import { MovieItem } from '../types/models';
+import { LazyImage } from './LazyImage';
 
 interface MovieCardProps {
   item: MovieItem;
   layout?: 'vertical' | 'landscape' | 'top10' | 'watched' | 'theatrical' | 'grid';
   width?: number;
+  fullWidth?: boolean;
   onPress: (item: MovieItem) => void;
   onRemoveWatched?: (item: MovieItem) => void;
 }
@@ -18,11 +19,13 @@ export function MovieCard({
   item,
   layout = 'vertical',
   width,
+  fullWidth = false,
   onPress,
   onRemoveWatched,
 }: MovieCardProps) {
-  const titlePrimary = item.title_primary || item.title.split(' - ')[0] || item.title;
-  const titleSecondary = item.subtitle || item.title.split(' - ')[1] || '';
+  const rawTitle = String(item.title || '');
+  const titlePrimary = item.title_primary || rawTitle.split(' - ')[0] || rawTitle;
+  const titleSecondary = item.subtitle || rawTitle.split(' - ')[1] || '';
 
   if (layout === 'watched') {
     const cardW = width || 268;
@@ -37,11 +40,11 @@ export function MovieCard({
       <TouchableOpacity
         activeOpacity={0.86}
         onPress={() => onPress(item)}
-        style={[styles.watchedCard, { width: cardW }]}
+        style={[styles.watchedCard, fullWidth && { marginRight: 0 }, { width: cardW }]}
       >
         <View style={styles.landscapeImageWrap}>
-          <Image
-            source={{ uri: item.poster_url || item.thumbnail_url }}
+          <LazyImage
+            uri={item.poster_url || item.thumbnail_url}
             style={styles.fillImage}
             resizeMode="cover"
           />
@@ -67,8 +70,8 @@ export function MovieCard({
         </View>
 
         <View style={styles.watchedFooter}>
-          <Image
-            source={{ uri: item.thumbnail_url || item.poster_url }}
+          <LazyImage
+            uri={item.thumbnail_url || item.poster_url}
             style={styles.watchedMiniThumb}
             resizeMode="cover"
           />
@@ -103,8 +106,8 @@ export function MovieCard({
         style={[styles.theatricalCard, { width: cardW }]}
       >
         <View style={styles.theatricalHeroBox}>
-          <Image
-            source={{ uri: item.poster_url || item.thumbnail_url }}
+          <LazyImage
+            uri={item.poster_url || item.thumbnail_url}
             style={styles.fillImage}
             resizeMode="cover"
           />
@@ -116,8 +119,8 @@ export function MovieCard({
 
           <View style={styles.theatricalBottom}>
             <View style={styles.theatricalThumbWrap}>
-              <Image
-                source={{ uri: item.thumbnail_url || item.poster_url }}
+              <LazyImage
+                uri={item.thumbnail_url || item.poster_url}
                 style={styles.fillImage}
                 resizeMode="cover"
               />
@@ -163,8 +166,8 @@ export function MovieCard({
         style={[styles.landscapeCard, { width: cardW }]}
       >
         <View style={styles.landscapeImageWrap}>
-          <Image
-            source={{ uri: item.poster_url || item.thumbnail_url }}
+          <LazyImage
+            uri={item.poster_url || item.thumbnail_url}
             style={styles.fillImage}
             resizeMode="cover"
           />
@@ -210,8 +213,8 @@ export function MovieCard({
         style={[styles.top10Card, { width: cardW }]}
       >
         <View style={[styles.top10PosterWrap, { height: cardW * 1.48 }]}>
-          <Image
-            source={{ uri: item.thumbnail_url || item.poster_url }}
+          <LazyImage
+            uri={item.thumbnail_url || item.poster_url}
             style={styles.fillImage}
             resizeMode="cover"
           />
@@ -241,11 +244,15 @@ export function MovieCard({
     <TouchableOpacity
       activeOpacity={0.86}
       onPress={() => onPress(item)}
-      style={[styles.verticalCard, { width: cardW }]}
+      style={[
+        styles.verticalCard,
+        (layout === 'grid' || fullWidth) && styles.gridCardReset,
+        { width: cardW },
+      ]}
     >
       <View style={[styles.verticalImageWrap, { height: cardW * 1.48 }]}>
-        <Image
-          source={{ uri: item.thumbnail_url || item.poster_url }}
+        <LazyImage
+          uri={item.thumbnail_url || item.poster_url}
           style={styles.fillImage}
           resizeMode="cover"
         />
@@ -282,6 +289,9 @@ export function MovieCard({
 const styles = StyleSheet.create({
   verticalCard: {
     marginRight: 12,
+  },
+  gridCardReset: {
+    marginRight: 0,
   },
   verticalImageWrap: {
     width: '100%',

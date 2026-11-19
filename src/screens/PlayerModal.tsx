@@ -4,7 +4,6 @@ import {
   Animated,
   Easing,
   Image,
-  Modal,
   PanResponder,
   Pressable,
   ScrollView,
@@ -15,13 +14,13 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useVideoPlayer, VideoAirPlayButton, VideoView } from 'expo-video';
+import { isPictureInPictureSupported, useVideoPlayer, VideoAirPlayButton, VideoView } from 'expo-video';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import * as SecureStore from 'expo-secure-store';
 import * as Haptics from 'expo-haptics';
-import { StatusBar } from 'expo-status-bar';
 import { WebView } from 'react-native-webview';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { AmbientAppBackground } from '../components/AmbientAppBackground';
 import { GlassSurface } from '../components/GlassSurface';
 import { PlayerOverlayPanels, PlayerPanelType } from '../components/PlayerOverlayPanels';
 import { PlayerLandscapeSkeleton } from '../components/SkeletonLoaders';
@@ -193,7 +192,6 @@ export function PlayerModal({
   const { settings, updateSetting } = useSettings();
 
   const [deviceHglk, setDeviceHglk] = useState<string>(cachedDeviceHglk || '');
-  const [orientationReady, setOrientationReady] = useState(false);
   const [loading, setLoading] = useState(true);
   const [resolved, setResolved] = useState<StreamResolvedData | null>(null);
   const [mode, setMode] = useState<'native' | 'webview'>('native');
@@ -201,7 +199,8 @@ export function PlayerModal({
   const [nativeReady, setNativeReady] = useState(false);
   const [renderSkeleton, setRenderSkeleton] = useState(true);
   const webProgressRef = useRef({ position: 0, duration: 0 });
-  const skeletonOpacity = useRef(new Animated.Value(1)).current;
+  const skeletonOpacity = useRef(new Animated.Value(0)).current;
+  const skeletonShownAtRef = useRef(0);
   const [activeQuality, setActiveQuality] = useState<StreamQuality | null>(null);
   const [overrideStreamCode, setOverrideStreamCode] = useState<string | null>(null);
   const [hudVisible, setHudVisible] = useState(true);
@@ -222,10 +221,11 @@ export function PlayerModal({
   const [nextCountdownSec, setNextCountdownSec] = useState<number | null>(null);
   const [transitionLabel, setTransitionLabel] = useState('');
 
+  const videoViewRef = useRef<VideoView | null>(null);
+  const isInPipRef = useRef(false);
   const transitionOpacity = useRef(new Animated.Value(0)).current;
   const hudTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const closingRestoreTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSavedSecRef = useRef(0);
   const resumeAppliedRef = useRef(false);
   const failedQualityUrlsRef = useRef<Set<string>>(new Set());
@@ -250,11 +250,15 @@ export function PlayerModal({
     p.allowsExternalPlayback = true;
     p.timeUpdateEventInterval = 1;
     p.keepScreenOnWhilePlaying = true;
+    p.staysActiveInBackground = Boolean(settings.pipEnabled);
   });
 
-  const enforceLandscape = useCallback(() => {
-    ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE).catch(() => {});
-  }, []);
+  // Sync AVPlayer background audio/PiP playback flag with Settings toggle
+  useEffect(() => {
+    try {
+      player.staysActiveInBackground = Boolean(settings.pipEnabled);
+    } catch {}
+  }, [player, settings.pipEnabled]);
 
   // Preload device _hglk cookie token in background once on mount
   useEffect(() => {
@@ -271,54 +275,39 @@ export function PlayerModal({
     return subscribeOfflineDownloads(setOfflineItems);
   }, []);
 
-  // Strict Landscape lock before mounting Modal & restore Portrait after dismiss
+  // Reset player state on close; ensure _hglk & keep landscape locked while playing
   useEffect(() => {
     if (!visible) {
-      setOrientationReady(false);
       setActivePanel(null);
       setOverrideStreamCode(null);
       setNextPromptDismissed(false);
       setNextCountdownSec(null);
-      if (closingRestoreTimerRef.current) clearTimeout(closingRestoreTimerRef.current);
-      closingRestoreTimerRef.current = setTimeout(() => {
-        ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => {});
-      }, 360);
-      return () => {
-        if (closingRestoreTimerRef.current) {
-          clearTimeout(closingRestoreTimerRef.current);
-          closingRestoreTimerRef.current = null;
-        }
-      };
-    }
-
-    if (closingRestoreTimerRef.current) {
-      clearTimeout(closingRestoreTimerRef.current);
-      closingRestoreTimerRef.current = null;
+      setResolved(null);
+      setLoading(true);
+      setNativeReady(false);
+      setWebHudReady(false);
+      return;
     }
 
     let cancelled = false;
-    ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE).catch(() => {});
     const readyHglk = cachedDeviceHglk || deviceHglk;
     if (readyHglk) {
       if (!deviceHglk) setDeviceHglk(readyHglk);
-      setOrientationReady(true);
     } else {
       (async () => {
         try {
           const hglkVal = await getOrCreateDeviceHglk();
-          if (cancelled) return;
-          setDeviceHglk(hglkVal);
-          setOrientationReady(true);
+          if (!cancelled) setDeviceHglk(hglkVal);
         } catch {
           if (!cancelled) {
             setDeviceHglk((prev) => prev || cachedDeviceHglk || generateHglkToken(24));
-            setOrientationReady(true);
           }
         }
       })();
     }
 
     const sub = ScreenOrientation.addOrientationChangeListener((ev) => {
+      if (isInPipRef.current) return;
       const ori = ev.orientationInfo?.orientation;
       if (
         ori === ScreenOrientation.Orientation.PORTRAIT_UP ||
@@ -332,13 +321,7 @@ export function PlayerModal({
       cancelled = true;
       sub.remove();
     };
-  }, [visible]);
-
-  useEffect(() => {
-    if (visible && orientationReady && winHeight > winWidth) {
-      enforceLandscape();
-    }
-  }, [visible, orientationReady, winWidth, winHeight, enforceLandscape]);
+  }, [visible, deviceHglk]);
 
   const scheduleHideHud = useCallback(() => {
     if (hudTimerRef.current) clearTimeout(hudTimerRef.current);
@@ -930,27 +913,52 @@ export function PlayerModal({
 
   useEffect(() => {
     if (!visible) {
-      setRenderSkeleton(true);
-      skeletonOpacity.setValue(1);
-      return;
-    }
-    if (showPlayerSkeleton) {
       skeletonOpacity.stopAnimation();
+      skeletonOpacity.setValue(0);
+      skeletonShownAtRef.current = 0;
       setRenderSkeleton(true);
-      skeletonOpacity.setValue(1);
       return;
     }
-    skeletonOpacity.stopAnimation();
-    Animated.timing(skeletonOpacity, {
-      toValue: 0,
-      duration: 360,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: true,
-    }).start(({ finished }) => {
-      if (finished) {
-        setRenderSkeleton(false);
+
+    if (showPlayerSkeleton) {
+      if (skeletonShownAtRef.current === 0) {
+        skeletonShownAtRef.current = Date.now();
+        skeletonOpacity.setValue(0);
+      } else {
+        skeletonOpacity.stopAnimation();
       }
-    });
+      setRenderSkeleton(true);
+      Animated.timing(skeletonOpacity, {
+        toValue: 1,
+        duration: 240,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start();
+      return;
+    }
+
+    let cancelled = false;
+    const elapsed = skeletonShownAtRef.current > 0 ? Date.now() - skeletonShownAtRef.current : 280;
+    const waitMs = Math.max(0, 280 - elapsed);
+    const timer = setTimeout(() => {
+      if (cancelled) return;
+      skeletonOpacity.stopAnimation();
+      Animated.timing(skeletonOpacity, {
+        toValue: 0,
+        duration: 320,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start(({ finished }) => {
+        if (finished && !cancelled) {
+          setRenderSkeleton(false);
+        }
+      });
+    }, waitMs);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [visible, showPlayerSkeleton, skeletonOpacity]);
 
   useEffect(() => {
@@ -972,73 +980,71 @@ export function PlayerModal({
     duration > 0 ? formatClock(duration) : resolved?.movie?.runtime,
   ].filter(Boolean);
 
+  if (!visible) {
+    return null;
+  }
+
   return (
-    <Modal
-      visible={visible && orientationReady && Boolean(deviceHglk)}
-      animationType="none"
-      presentationStyle="fullScreen"
-      supportedOrientations={['landscape-left', 'landscape-right']}
-      onShow={enforceLandscape}
-      onOrientationChange={(e) => {
-        if (e.nativeEvent?.orientation === 'portrait') {
-          enforceLandscape();
-        }
-      }}
-      onDismiss={() => {
-        if (!visible) {
-          ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => {});
-        }
-      }}
-      onRequestClose={handleClose}
-    >
-      <StatusBar hidden style="light" />
+    <View style={styles.playerLayerRoot}>
       <View style={styles.stage}>
         {loading ? (
-          <View style={[styles.flex, { backgroundColor: COLORS.bg }]} />
+          <View style={[styles.flex, { backgroundColor: COLORS.bg }]}>
+            <AmbientAppBackground />
+          </View>
         ) : mode === 'webview' ? (
           <View style={[styles.flex, { backgroundColor: COLORS.bg }]}>
-            <WebView
-              source={{ uri: webviewSourceUrl }}
-              applicationNameForUserAgent="DVAPlayiOS/1.0"
-              injectedJavaScriptBeforeContentLoaded={cookieBootstrapJs}
-              allowsInlineMediaPlayback
-              allowsFullscreenVideo
-              mediaPlaybackRequiresUserAction={false}
-              contentInsetAdjustmentBehavior="never"
-              bounces={false}
-              sharedCookiesEnabled
-              thirdPartyCookiesEnabled
-              onMessage={(ev) => {
-                try {
-                  const data = JSON.parse(ev.nativeEvent.data || '{}');
-                  if (data.type === 'DVA_APP_PLAYER_READY') {
-                    setWebHudReady(true);
-                  } else if (data.type === 'DVA_APP_PLAYER_BACK') {
-                    handleClose();
-                  } else if (data.type === 'DVA_IOS_OPEN_CAST') {
-                    if (onOpenCast) onOpenCast();
-                  } else if (data.type === 'DVA_IOS_SWITCH_NATIVE' && resolved?.can_play_native) {
-                    setMode('native');
-                  } else if (data.type === 'DVA_IOS_PLAYER_PROGRESS') {
-                    webProgressRef.current = {
-                      position: Number(data.position) || 0,
-                      duration: Number(data.duration) || 0,
-                    };
-                  }
-                } catch {}
-              }}
-              style={[styles.flex, { backgroundColor: COLORS.bg }]}
-            />
+            {Boolean(deviceHglk) ? (
+              <WebView
+                source={{ uri: webviewSourceUrl }}
+                applicationNameForUserAgent="DVAPlayiOS/1.0"
+                injectedJavaScriptBeforeContentLoaded={cookieBootstrapJs}
+                allowsInlineMediaPlayback
+                allowsFullscreenVideo
+                allowsPictureInPictureMediaPlayback={settings.pipEnabled}
+                mediaPlaybackRequiresUserAction={false}
+                contentInsetAdjustmentBehavior="never"
+                bounces={false}
+                sharedCookiesEnabled
+                thirdPartyCookiesEnabled
+                onMessage={(ev) => {
+                  try {
+                    const data = JSON.parse(ev.nativeEvent.data || '{}');
+                    if (data.type === 'DVA_APP_PLAYER_READY') {
+                      setWebHudReady(true);
+                    } else if (data.type === 'DVA_APP_PLAYER_BACK') {
+                      handleClose();
+                    } else if (data.type === 'DVA_IOS_OPEN_CAST') {
+                      if (onOpenCast) onOpenCast();
+                    } else if (data.type === 'DVA_IOS_SWITCH_NATIVE' && resolved?.can_play_native) {
+                      setMode('native');
+                    } else if (data.type === 'DVA_IOS_PLAYER_PROGRESS') {
+                      webProgressRef.current = {
+                        position: Number(data.position) || 0,
+                        duration: Number(data.duration) || 0,
+                      };
+                    }
+                  } catch {}
+                }}
+                style={[styles.flex, { backgroundColor: COLORS.bg }]}
+              />
+            ) : null}
           </View>
         ) : (
           <View style={styles.flex}>
             <VideoView
+              ref={videoViewRef}
               player={player}
               style={StyleSheet.absoluteFill}
               contentFit={settings.videoFillMode || 'contain'}
               nativeControls={false}
               allowsPictureInPicture={settings.pipEnabled}
               startsPictureInPictureAutomatically={settings.pipEnabled}
+              onPictureInPictureStart={() => {
+                isInPipRef.current = true;
+              }}
+              onPictureInPictureStop={() => {
+                isInPipRef.current = false;
+              }}
             />
 
             {/* Subtle Contrast Boost Frame / Edge Vignette when Tăng độ tương phản is enabled */}
@@ -1196,6 +1202,29 @@ export function PlayerModal({
                     >
                       <Ionicons name="server-outline" size={19} color="#FFF" />
                     </TouchableOpacity>
+                    {settings.pipEnabled ? (
+                      <TouchableOpacity
+                        style={styles.capsuleIconBtn}
+                        onPress={async () => {
+                          Haptics.selectionAsync();
+                          scheduleHideHud();
+                          try {
+                            if (
+                              typeof isPictureInPictureSupported === 'function' &&
+                              !isPictureInPictureSupported()
+                            ) {
+                              showToast('Thiết bị hoặc Expo Go chưa hỗ trợ PiP — cần bản .ipa');
+                              return;
+                            }
+                            await videoViewRef.current?.startPictureInPicture();
+                          } catch {
+                            showToast('PiP yêu cầu bản cài .ipa độc lập hoặc bật PiP trong Cài đặt iPhone');
+                          }
+                        }}
+                      >
+                        <Ionicons name="albums-outline" size={18} color="#FFF" />
+                      </TouchableOpacity>
+                    ) : null}
                     <VideoAirPlayButton
                       tint="#FFFFFF"
                       activeTint={COLORS.accent}
@@ -1516,7 +1545,7 @@ export function PlayerModal({
           </View>
         )}
 
-        {renderSkeleton ? (
+        {renderSkeleton || showPlayerSkeleton ? (
           <Animated.View
             pointerEvents={showPlayerSkeleton ? 'auto' : 'none'}
             style={[styles.skeletonOverlay, { opacity: skeletonOpacity }]}
@@ -1524,24 +1553,26 @@ export function PlayerModal({
             <PlayerLandscapeSkeleton
               leftInset={Math.max(20, insets.left + 10)}
               rightInset={Math.max(20, insets.right + 10)}
+              active={visible && (renderSkeleton || showPlayerSkeleton)}
+              onBack={handleClose}
             />
-            <TouchableOpacity
-              onPress={handleClose}
-              style={[
-                styles.glassIconBtn,
-                { position: 'absolute', top: 14, left: Math.max(20, insets.left + 10), zIndex: 10 },
-              ]}
-            >
-              <Ionicons name="chevron-back" size={23} color="#FFF" />
-            </TouchableOpacity>
           </Animated.View>
         ) : null}
       </View>
-    </Modal>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  playerLayerRoot: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    zIndex: 9000,
+    backgroundColor: COLORS.bg,
+  },
   stage: {
     flex: 1,
     backgroundColor: COLORS.bg,
@@ -1553,7 +1584,7 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     zIndex: 50,
-    backgroundColor: COLORS.bg,
+    backgroundColor: 'transparent',
   },
   flex: {
     flex: 1,

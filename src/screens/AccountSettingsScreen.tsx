@@ -1,7 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Animated,
+  Easing,
   Image,
   Linking,
   ScrollView,
@@ -14,6 +16,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { AmbientAppBackground } from '../components/AmbientAppBackground';
 import { GlassSurface } from '../components/GlassSurface';
 import {
   APP_RELEASE_DATE,
@@ -47,18 +50,46 @@ const QUALITY_OPTIONS: ('auto' | '1080p' | '720p' | '360p')[] = [
   '360p',
 ];
 
-export function AccountSettingsScreen({ onOpenCast }: { onOpenCast: () => void }) {
+interface AccountSettingsScreenProps {
+  visible: boolean;
+  onClose: () => void;
+  onOpenCast: () => void;
+}
+
+export function AccountSettingsScreen({
+  visible,
+  onClose,
+  onOpenCast,
+}: AccountSettingsScreenProps) {
   const insets = useSafeAreaInsets();
-  const { user, logout } = useAuth();
+  const { user, logout, verifyBiometricsForEnable } = useAuth();
   const { settings, updateSetting } = useSettings();
   const [offlineItems, setOfflineItems] = useState<OfflineDownloadItem[]>([]);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [manifest, setManifest] = useState<VersionManifest | null>(null);
   const [changelogOpen, setChangelogOpen] = useState(false);
   const otaState = getOtaRuntimeState();
+  const enterAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    loadOfflineDownloads().then(setOfflineItems);
+    if (visible) {
+      enterAnim.setValue(0);
+      Animated.timing(enterAnim, {
+        toValue: 1,
+        duration: 220,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start();
+    } else {
+      enterAnim.stopAnimation();
+      enterAnim.setValue(0);
+    }
+  }, [visible, enterAnim]);
+
+  useEffect(() => {
+    loadOfflineDownloads()
+      .then(setOfflineItems)
+      .catch(() => setOfflineItems([]));
     return subscribeOfflineDownloads(setOfflineItems);
   }, []);
 
@@ -141,17 +172,46 @@ export function AccountSettingsScreen({ onOpenCast }: { onOpenCast: () => void }
     ]);
   };
 
+  if (!visible) {
+    return null;
+  }
+
+  const translateY = enterAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [44, 0],
+  });
+
   return (
-    <ScrollView
-      style={styles.container}
-      contentContainerStyle={{
-        paddingTop: insets.top + 12,
-        paddingHorizontal: 16,
-        paddingBottom: insets.bottom + 115,
-      }}
-      showsVerticalScrollIndicator={false}
+    <Animated.View
+      style={[
+        styles.overlayRoot,
+        { opacity: enterAnim, transform: [{ translateY }] },
+      ]}
     >
-      <Text style={styles.pageTitle}>Tài khoản &amp; Cài đặt</Text>
+      <AmbientAppBackground />
+      <View style={[styles.topHeader, { paddingTop: insets.top + 10 }]}>
+        <TouchableOpacity
+          activeOpacity={0.82}
+          style={styles.backBtn}
+          onPress={() => {
+            Haptics.selectionAsync();
+            onClose();
+          }}
+        >
+          <Ionicons name="chevron-back" size={21} color="#FFF" />
+        </TouchableOpacity>
+        <Text style={styles.pageTitle}>Tài khoản &amp; Cài đặt</Text>
+      </View>
+
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={{
+          paddingTop: 6,
+          paddingHorizontal: 16,
+          paddingBottom: Math.max(32, insets.bottom + 24),
+        }}
+        showsVerticalScrollIndicator={false}
+      >
 
       {/* Profile Card */}
       <GlassSurface intensity={52} radius={RADII.xl} style={styles.card}>
@@ -225,16 +285,36 @@ export function AccountSettingsScreen({ onOpenCast }: { onOpenCast: () => void }
         <SettingSwitchRow
           icon="albums-outline"
           label="Picture-in-Picture (PiP)"
-          desc="Thu nhỏ trình phát nổi khi thoát ra màn hình chính"
+          desc={
+            otaState.isExpoGo
+              ? 'Thu nhỏ trình phát nổi khi thoát (chạy đầy đủ trên bản .ipa độc lập)'
+              : 'Thu nhỏ trình phát nổi khi thoát ra màn hình chính'
+          }
           value={settings.pipEnabled}
           onChange={(v) => updateSetting('pipEnabled', v)}
         />
         <SettingSwitchRow
           icon="scan-outline"
           label="Khóa bằng Face ID / Touch ID"
-          desc="Yêu cầu xác thực sinh trắc học khi mở ứng dụng"
+          desc="Yêu cầu xác thực sinh trắc học khi mở lại hoặc quay lại ứng dụng"
           value={settings.faceIdEnabled}
-          onChange={(v) => updateSetting('faceIdEnabled', v)}
+          onChange={async (v) => {
+            if (!v) {
+              await updateSetting('faceIdEnabled', false);
+              return;
+            }
+            const res = await verifyBiometricsForEnable();
+            if (res.ok) {
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              await updateSetting('faceIdEnabled', true);
+            } else {
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+              Alert.alert(
+                'Không thể bật khóa Face ID',
+                res.reason || 'Vui lòng kiểm tra quyền Face ID hoặc mật mã trong Cài đặt iPhone.'
+              );
+            }
+          }}
         />
       </GlassSurface>
 
@@ -363,6 +443,7 @@ export function AccountSettingsScreen({ onOpenCast }: { onOpenCast: () => void }
         <Text style={styles.logoutTxt}>Đăng xuất tài khoản</Text>
       </TouchableOpacity>
     </ScrollView>
+    </Animated.View>
   );
 }
 
@@ -400,15 +481,40 @@ function SettingSwitchRow({
 }
 
 const styles = StyleSheet.create({
+  overlayRoot: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    zIndex: 550,
+    backgroundColor: COLORS.bg,
+  },
+  topHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingBottom: 10,
+  },
+  backBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.16)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   container: {
     flex: 1,
-    backgroundColor: COLORS.bg,
+    backgroundColor: 'transparent',
   },
   pageTitle: {
     color: '#FFF',
-    fontSize: 22,
+    fontSize: 21,
     fontWeight: '800',
-    marginBottom: 14,
   },
   card: {
     padding: 18,

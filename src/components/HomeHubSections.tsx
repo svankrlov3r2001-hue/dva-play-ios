@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
   FlatList,
-  Image,
   ScrollView,
   StyleSheet,
   Text,
@@ -14,6 +13,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import { COLORS } from '../constants/config';
 import { CountryHubRow, MovieItem, TopicItem } from '../types/models';
+import { LazyImage } from './LazyImage';
 import { MovieCard } from './MovieCard';
 
 const TOPIC_GRADIENTS: Record<TopicItem['theme'], [string, string]> = {
@@ -98,8 +98,8 @@ export function AnimeHeroSection({
     <View style={styles.animeWrapper}>
       <View style={styles.animeCard}>
         <BlurView intensity={45} tint="dark" style={StyleSheet.absoluteFill} />
-        <Image
-          source={{ uri: active.poster_url || active.thumbnail_url }}
+        <LazyImage
+          uri={active.poster_url || active.thumbnail_url}
           style={styles.animeBgImg}
           resizeMode="cover"
         />
@@ -221,8 +221,8 @@ export function AnimeHeroSection({
               }}
               style={[styles.thumbItem, isSelected && styles.thumbItemActive]}
             >
-              <Image
-                source={{ uri: item.thumbnail_url || item.poster_url }}
+              <LazyImage
+                uri={item.thumbnail_url || item.poster_url}
                 style={styles.thumbImg}
                 resizeMode="cover"
               />
@@ -287,6 +287,10 @@ export function CountryHubBoxSection({
               data={row.items}
               horizontal
               showsHorizontalScrollIndicator={false}
+              initialNumToRender={2}
+              maxToRenderPerBatch={2}
+              windowSize={3}
+              removeClippedSubviews
               keyExtractor={(m) => `${row.id}_${m.videos_id}`}
               renderItem={({ item }) => (
                 <MovieCard item={item} layout="landscape" width={226} onPress={onPressMovie} />
