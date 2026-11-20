@@ -392,17 +392,17 @@ private final class DvaLocalProxyRelay: @unchecked Sendable {
           if errno == EINTR { continue }
           break
         }
-        guard let self else {
+        guard let strongSelf = self else {
           _ = Darwin.close(cFd)
           break
         }
-        if self.isStopped {
+        if strongSelf.isStopped {
           _ = Darwin.close(cFd)
           break
         }
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        DispatchQueue.global(qos: .userInitiated).async {
           dvaHandleRelayClient(clientFd: cFd, upstreamSpec: specCopy) {
-            self?.markAuthFailure()
+            strongSelf.markAuthFailure()
           }
         }
       }
@@ -449,7 +449,7 @@ private func dvaMakeProxyConfiguration(_ spec: DvaProxySpec) -> ProxyConfigurati
     return nil
   }
   let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(spec.host), port: nwPort)
-  var proxyConfig = ProxyConfiguration(httpCONNECTProxy: endpoint, tlsOptions: nil)
+  let proxyConfig = ProxyConfiguration(httpCONNECTProxy: endpoint, tlsOptions: nil)
   if !spec.username.isEmpty || !spec.password.isEmpty {
     proxyConfig.applyCredential(username: spec.username, password: spec.password)
   }
