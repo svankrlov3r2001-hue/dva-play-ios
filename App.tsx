@@ -71,6 +71,7 @@ function RootAppContent() {
   const {
     user,
     bootstrapping,
+    authTransition,
     isLocked,
     lockPromptVisible,
     lockSeq,
@@ -150,16 +151,46 @@ function RootAppContent() {
     };
   }, [probeServerConnection]);
 
+  const prevAuthTransitionRef = useRef<'login' | 'logout' | null>(null);
+
   useEffect(() => {
-    if (splashVisible && !splashDismissing && splashMinDone && serverReady && !bootstrapping) {
+    if (
+      splashVisible &&
+      !splashDismissing &&
+      !authTransition &&
+      splashMinDone &&
+      serverReady &&
+      !bootstrapping
+    ) {
       setSplashDismissing(true);
     }
-  }, [splashVisible, splashDismissing, splashMinDone, serverReady, bootstrapping]);
+  }, [splashVisible, splashDismissing, authTransition, splashMinDone, serverReady, bootstrapping]);
+
+  useEffect(() => {
+    if (authTransition === 'login' || authTransition === 'logout') {
+      setSplashError(false);
+      setSplashStatusText(authTransition === 'login' ? 'Đang đăng nhập' : 'Đang đăng xuất');
+      setSplashDismissing(false);
+      setSplashVisible(true);
+      if (authTransition === 'logout') {
+        setAccountOpen(false);
+        setPreviewId(null);
+        setPreviewMovie(null);
+        setDetailId(null);
+        setCastVisible(false);
+        setActiveTab('home');
+      }
+    } else if (prevAuthTransitionRef.current !== null && authTransition === null) {
+      setSplashDismissing(true);
+    }
+    prevAuthTransitionRef.current = authTransition;
+  }, [authTransition]);
 
   useEffect(() => {
     if (!splashDismissing || !splashVisible) return;
     const t = setTimeout(() => {
       setSplashVisible(false);
+      setSplashDismissing(false);
     }, 440);
     return () => clearTimeout(t);
   }, [splashDismissing, splashVisible]);
@@ -461,39 +492,6 @@ function RootAppContent() {
       return <LoginScreen />;
     }
 
-    if (isLocked) {
-      return (
-        <View style={styles.lockContainer}>
-          <AmbientAppBackground />
-          {lockPromptVisible ? (
-            <GlassSurface intensity={55} radius={30} style={styles.lockCard}>
-              <Ionicons name="lock-closed" size={42} color={COLORS.accent} />
-              <Text style={styles.lockTitle}>Đã khóa bằng Face ID</Text>
-              <Text style={styles.lockSub}>Xác thực để tiếp tục xem phim trên Đặng Việt Anh</Text>
-              <TouchableOpacity style={styles.unlockBtn} onPress={unlockWithBiometrics}>
-                <Ionicons name="scan-outline" size={20} color="#FFF" />
-                <Text style={styles.unlockTxt}>Mở khóa ngay</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={logout} style={{ marginTop: 14 }}>
-                <Text style={styles.logoutLink}>Đăng xuất tài khoản</Text>
-              </TouchableOpacity>
-            </GlassSurface>
-          ) : (
-            <TouchableOpacity
-              activeOpacity={0.85}
-              onPress={() => {
-                attemptAutoUnlockWithBiometrics().catch(() => {});
-              }}
-              style={styles.scanningPill}
-            >
-              <Ionicons name="scan-outline" size={22} color={COLORS.accent} />
-              <Text style={styles.scanningText}>Đang quét Face ID...</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-      );
-    }
-
     const hidePortraitStage = playerPhase !== 'idle';
 
     return (
@@ -620,6 +618,49 @@ function RootAppContent() {
             closePlayerWithCurtain(() => setCastVisible(true));
           }}
         />
+
+        {isLocked ? (
+          <View style={[styles.lockOverlay, !lockPromptVisible && styles.lockOverlayScanning]}>
+            {lockPromptVisible ? (
+              <>
+                <AmbientAppBackground />
+                <GlassSurface intensity={55} radius={30} style={styles.lockCard}>
+                  <Ionicons name="lock-closed" size={42} color={COLORS.accent} />
+                  <Text style={styles.lockTitle}>Đã khóa bằng Face ID</Text>
+                  <Text style={styles.lockSub}>Xác thực để tiếp tục xem phim trên Đặng Việt Anh</Text>
+                  <TouchableOpacity style={styles.unlockBtn} onPress={unlockWithBiometrics}>
+                    <Ionicons name="scan-outline" size={20} color="#FFF" />
+                    <Text style={styles.unlockTxt}>Mở khóa ngay</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() => {
+                      if (playerPhase !== 'idle' || playerParams !== null) {
+                        clearTransitionTimers();
+                        queuedPlayerParamsRef.current = null;
+                        pendingAfterRestoreRef.current = undefined;
+                        setPlayerParams(null);
+                        setPlayerPhase('idle');
+                        ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => {});
+                      }
+                      logout();
+                    }}
+                    style={{ marginTop: 14 }}
+                  >
+                    <Text style={styles.logoutLink}>Đăng xuất tài khoản</Text>
+                  </TouchableOpacity>
+                </GlassSurface>
+              </>
+            ) : (
+              <TouchableOpacity
+                activeOpacity={1}
+                style={StyleSheet.absoluteFill}
+                onPress={() => {
+                  attemptAutoUnlockWithBiometrics().catch(() => {});
+                }}
+              />
+            )}
+          </View>
+        ) : null}
       </View>
     );
   };
@@ -670,15 +711,25 @@ const styles = StyleSheet.create({
   screenArea: {
     flex: 1,
   },
-  lockContainer: {
-    flex: 1,
+  lockOverlay: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    zIndex: 99999,
+    elevation: 99999,
     backgroundColor: COLORS.bg,
     alignItems: 'center',
     justifyContent: 'center',
     padding: 24,
   },
+  lockOverlayScanning: {
+    backgroundColor: 'transparent',
+  },
   lockCard: {
     width: '100%',
+    maxWidth: 380,
     padding: 28,
     alignItems: 'center',
     gap: 10,
@@ -712,22 +763,6 @@ const styles = StyleSheet.create({
   logoutLink: {
     color: COLORS.muted,
     fontSize: 13.5,
-    fontWeight: '600',
-  },
-  scanningPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingHorizontal: 20,
-    paddingVertical: 13,
-    borderRadius: 24,
-    backgroundColor: 'rgba(20, 20, 20, 0.72)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.14)',
-  },
-  scanningText: {
-    color: '#F8FAFC',
-    fontSize: 14,
     fontWeight: '600',
   },
 });

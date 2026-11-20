@@ -10,6 +10,10 @@ import {
   User,
   VersionManifest,
 } from '../types/models';
+import {
+  ProxyPreset,
+  ResolvedProxyPresetResponse,
+} from './proxyService';
 
 let activeToken: string | null = null;
 
@@ -27,6 +31,7 @@ async function apiRequest<T>(
   customUrl?: string
 ): Promise<T> {
   const url = customUrl ?? `${API_BASE_URL}/${endpoint}`;
+
   const headers: Record<string, string> = {
     Accept: 'application/json',
     ...((options.headers as Record<string, string>) || {}),
@@ -249,4 +254,20 @@ export async function castStopApi(roomId: string): Promise<any> {
 
 export async function checkOtaUpdateApi(): Promise<VersionManifest> {
   return apiRequest<VersionManifest>('', {}, `${OTA_MANIFEST_URL}?t=${Date.now()}`);
+}
+
+export async function fetchProxyPresetsApi(): Promise<{
+  success: boolean;
+  presets: ProxyPreset[];
+}> {
+  return apiRequest('proxy.php?action=presets');
+}
+
+export async function resolveProxyPresetApi(
+  presetId: string
+): Promise<ResolvedProxyPresetResponse> {
+  return apiRequest('proxy.php?action=resolve_preset', {
+    method: 'POST',
+    body: JSON.stringify({ preset_id: presetId }),
+  });
 }

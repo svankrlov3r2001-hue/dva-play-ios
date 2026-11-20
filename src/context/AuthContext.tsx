@@ -8,6 +8,8 @@ import {
   logoutApi,
   setApiAuthToken,
 } from '../services/api';
+import { loadProxyDraft, resetProxySession } from '../services/proxyService';
+import { SPLASH_MIN_DURATION_MS } from '../constants/config';
 import { AuthCookies, User } from '../types/models';
 import { useSettings } from './SettingsContext';
 
@@ -20,6 +22,7 @@ interface AuthContextValue {
   token: string | null;
   cookies: AuthCookies | null;
   bootstrapping: boolean;
+  authTransition: 'login' | 'logout' | null;
   isLocked: boolean;
   lockPromptVisible: boolean;
   lockSeq: number;
@@ -37,6 +40,7 @@ const AuthContext = createContext<AuthContextValue>({
   token: null,
   cookies: null,
   bootstrapping: true,
+  authTransition: null,
   isLocked: false,
   lockPromptVisible: false,
   lockSeq: 0,
@@ -81,6 +85,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [token, setToken] = useState<string | null>(null);
   const [cookies, setCookies] = useState<AuthCookies | null>(null);
   const [bootstrapping, setBootstrapping] = useState(true);
+  const [authTransition, setAuthTransition] = useState<'login' | 'logout' | null>(null);
   const [isLocked, setIsLocked] = useState(false);
   const [lockPromptVisible, setLockPromptVisible] = useState(false);
   const [lockSeq, setLockSeq] = useState(0);
@@ -263,6 +268,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     (async () => {
       try {
+        await loadProxyDraft().catch(() => {});
         const [savedToken, savedUserRaw, savedCookiesRaw] = await Promise.all([
           SecureStore.getItemAsync(KEY_TOKEN),
           SecureStore.getItemAsync(KEY_USER),
@@ -329,6 +335,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (!res.success || !res.token || !res.user) {
       throw new Error('Đăng nhập thất bại.');
     }
+    setAuthTransition('login');
     setApiAuthToken(res.token);
     setToken(res.token);
     setUser(res.user);
@@ -336,30 +343,46 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setLockPromptVisible(false);
     setIsLocked(false);
 
-    await Promise.all([
-      SecureStore.setItemAsync(KEY_TOKEN, res.token),
-      SecureStore.setItemAsync(KEY_USER, JSON.stringify(res.user)),
-      res.cookies
-        ? SecureStore.setItemAsync(KEY_COOKIES, JSON.stringify(res.cookies))
-        : SecureStore.deleteItemAsync(KEY_COOKIES),
-    ]);
+    try {
+      await Promise.all([
+        SecureStore.setItemAsync(KEY_TOKEN, res.token),
+        SecureStore.setItemAsync(KEY_USER, JSON.stringify(res.user)),
+        res.cookies
+          ? SecureStore.setItemAsync(KEY_COOKIES, JSON.stringify(res.cookies))
+          : SecureStore.deleteItemAsync(KEY_COOKIES),
+        new Promise((r) => setTimeout(r, SPLASH_MIN_DURATION_MS)),
+      ]);
+    } finally {
+      setAuthTransition(null);
+    }
   }, []);
 
   const logout = useCallback(async () => {
+    setAuthTransition('logout');
     try {
-      await logoutApi();
-    } catch {}
-    setApiAuthToken(null);
-    setToken(null);
-    setUser(null);
-    setCookies(null);
-    setLockPromptVisible(false);
-    setIsLocked(false);
-    await Promise.all([
-      SecureStore.deleteItemAsync(KEY_TOKEN),
-      SecureStore.deleteItemAsync(KEY_USER),
-      SecureStore.deleteItemAsync(KEY_COOKIES),
-    ]);
+      await Promise.all([
+        (async () => {
+          await resetProxySession().catch(() => {});
+          try {
+            await logoutApi();
+          } catch {}
+          setApiAuthToken(null);
+          setToken(null);
+          setUser(null);
+          setCookies(null);
+          setLockPromptVisible(false);
+          setIsLocked(false);
+          await Promise.all([
+            SecureStore.deleteItemAsync(KEY_TOKEN),
+            SecureStore.deleteItemAsync(KEY_USER),
+            SecureStore.deleteItemAsync(KEY_COOKIES),
+          ]);
+        })(),
+        new Promise((r) => setTimeout(r, SPLASH_MIN_DURATION_MS)),
+      ]);
+    } finally {
+      setAuthTransition(null);
+    }
   }, []);
 
   const refreshUser = useCallback(async () => {
@@ -379,6 +402,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         token,
         cookies,
         bootstrapping,
+        authTransition,
         isLocked,
         lockPromptVisible,
         lockSeq,

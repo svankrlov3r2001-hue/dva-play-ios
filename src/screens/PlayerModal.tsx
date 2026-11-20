@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Animated,
+  AppState,
   Easing,
   Image,
   PanResponder,
@@ -38,6 +39,12 @@ import {
   startOfflineDownload,
   subscribeOfflineDownloads,
 } from '../services/downloadService';
+import {
+  getProxyConfig,
+  isNativeProxySupported,
+  isProxyActiveForConfig,
+  subscribeProxyConfig,
+} from '../services/proxyService';
 import {
   EpisodeItem,
   OfflineDownloadItem,
@@ -188,8 +195,10 @@ export function PlayerModal({
 }: PlayerModalProps) {
   const insets = useSafeAreaInsets();
   const { width: winWidth, height: winHeight } = useWindowDimensions();
-  const { user, cookies } = useAuth();
+  const { user, cookies, isLocked } = useAuth();
   const { settings, updateSetting } = useSettings();
+  const isLockedRef = useRef(isLocked);
+  isLockedRef.current = isLocked;
 
   const [deviceHglk, setDeviceHglk] = useState<string>(cachedDeviceHglk || '');
   const [loading, setLoading] = useState(true);
@@ -215,6 +224,13 @@ export function PlayerModal({
   const [playbackRate, setPlaybackRate] = useState(1.0);
   const [inWishlist, setInWishlist] = useState(false);
   const [offlineItems, setOfflineItems] = useState<OfflineDownloadItem[]>([]);
+  const [proxyConfig, setProxyConfigState] = useState(() => getProxyConfig());
+  const isProxyActive = useMemo(
+    () => isNativeProxySupported() && isProxyActiveForConfig(proxyConfig),
+    [proxyConfig]
+  );
+  const isProxyActiveRef = useRef(isProxyActive);
+  isProxyActiveRef.current = isProxyActive;
   const [sleepMinutesLeft, setSleepMinutesLeft] = useState<number | null>(null);
   const [toastMsg, setToastMsg] = useState('');
   const [nextPromptDismissed, setNextPromptDismissed] = useState(false);
@@ -222,6 +238,7 @@ export function PlayerModal({
   const [transitionLabel, setTransitionLabel] = useState('');
 
   const videoViewRef = useRef<VideoView | null>(null);
+  const webViewRef = useRef<React.ComponentRef<typeof WebView> | null>(null);
   const isInPipRef = useRef(false);
   const transitionOpacity = useRef(new Animated.Value(0)).current;
   const hudTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -231,7 +248,16 @@ export function PlayerModal({
   const failedQualityUrlsRef = useRef<Set<string>>(new Set());
   const barWidthRef = useRef(400);
   const durationRef = useRef(0);
+
+  useEffect(() => {
+    return subscribeProxyConfig(setProxyConfigState);
+  }, []);
   const autoSwitchedForCodeRef = useRef<string>('');
+  const prevLockedRef = useRef(isLocked);
+  const wasPlayingBeforeLockRef = useRef(false);
+  const preBackgroundNativePlayingRef = useRef<boolean | null>(null);
+  const isPlayingRef = useRef(isPlaying);
+  isPlayingRef.current = isPlaying;
 
   barWidthRef.current = barWidth;
   durationRef.current = duration;
@@ -252,6 +278,155 @@ export function PlayerModal({
     p.keepScreenOnWhilePlaying = true;
     p.staysActiveInBackground = Boolean(settings.pipEnabled);
   });
+
+  // Pause both native and WebView playback whenever app is locked by Face ID
+  const pausePlaybackForLock = useCallback(() => {
+    try {
+      player.pause();
+    } catch {}
+    if (mode === 'webview') {
+      webViewRef.current?.injectJavaScript(`
+        (function() {
+          try {
+            window.__dvaAppLockedPaused = true;
+            if (typeof window.__dvaWasPlayingBeforeLock !== 'boolean') {
+              var playingNow = false;
+              try {
+                if (window.jwplayer) {
+                  var jwInst = window.jwplayer();
+                  var jwSt = jwInst && typeof jwInst.getState === 'function' ? jwInst.getState() : '';
+                  if (jwSt === 'playing' || jwSt === 'buffering') playingNow = true;
+                }
+              } catch (e) {}
+              if (!playingNow) {
+                var vidsCheck = document.getElementsByTagName('video');
+                for (var k = 0; k < vidsCheck.length; k++) {
+                  if (!vidsCheck[k].paused && !vidsCheck[k].ended) {
+                    playingNow = true;
+                    break;
+                  }
+                }
+              }
+              window.__dvaWasPlayingBeforeLock = playingNow;
+            }
+            if (window.jwplayer) {
+              var jw = window.jwplayer();
+              if (jw && typeof jw.pause === 'function') jw.pause();
+            }
+            var vids = document.getElementsByTagName('video');
+            for (var i = 0; i < vids.length; i++) {
+              vids[i].pause();
+            }
+          } catch (e) {}
+        })();
+        true;
+      `);
+    }
+  }, [player, mode]);
+
+  // Snapshot native playing state before backgrounding in case iOS pauses AVPlayer prior to Face ID lock
+  useEffect(() => {
+    if (!visible) {
+      preBackgroundNativePlayingRef.current = null;
+      return;
+    }
+    const sub = AppState.addEventListener('change', (nextState) => {
+      if (nextState !== 'active') {
+        if (!isLockedRef.current && mode === 'native' && !isInPipRef.current) {
+          const nativePlaying = Boolean((player as { playing?: boolean }).playing) || isPlayingRef.current;
+          preBackgroundNativePlayingRef.current = nativePlaying;
+        }
+      } else if (!isLockedRef.current) {
+        preBackgroundNativePlayingRef.current = null;
+      }
+    });
+    return () => {
+      sub.remove();
+    };
+  }, [visible, mode, player]);
+
+  useEffect(() => {
+    const wasLocked = prevLockedRef.current;
+    prevLockedRef.current = isLocked;
+
+    if (!visible) {
+      wasPlayingBeforeLockRef.current = false;
+      preBackgroundNativePlayingRef.current = null;
+      return;
+    }
+
+    if (!isLocked) {
+      const shouldResumeNative = wasLocked && wasPlayingBeforeLockRef.current;
+      wasPlayingBeforeLockRef.current = false;
+      preBackgroundNativePlayingRef.current = null;
+
+      if (mode === 'native' && shouldResumeNative) {
+        try {
+          player.play();
+        } catch {}
+      } else if (mode === 'webview') {
+        webViewRef.current?.injectJavaScript(`
+          (function() {
+            try {
+              window.__dvaAppLockedPaused = false;
+              var shouldResume = ${wasLocked ? 'Boolean(window.__dvaWasPlayingBeforeLock)' : 'false'};
+              window.__dvaWasPlayingBeforeLock = undefined;
+              if (shouldResume) {
+                if (window.jwplayer) {
+                  var jw = window.jwplayer();
+                  if (jw && typeof jw.play === 'function') {
+                    jw.play(true);
+                    return;
+                  }
+                }
+                var vids = document.getElementsByTagName('video');
+                for (var i = 0; i < vids.length; i++) {
+                  if (vids[i].paused && !vids[i].ended) {
+                    var pr = vids[i].play();
+                    if (pr && typeof pr.catch === 'function') pr.catch(function() {});
+                  }
+                }
+              }
+            } catch (e) {}
+          })();
+          true;
+        `);
+      }
+      return;
+    }
+
+    if (!wasLocked) {
+      if (mode === 'native') {
+        const snapshot = preBackgroundNativePlayingRef.current;
+        preBackgroundNativePlayingRef.current = null;
+        wasPlayingBeforeLockRef.current =
+          snapshot !== null
+            ? snapshot
+            : Boolean((player as { playing?: boolean }).playing) || isPlayingRef.current;
+      }
+    }
+
+    if (AppState.currentState === 'active') {
+      pausePlaybackForLock();
+    }
+
+    const lockGuardTimer = setInterval(() => {
+      if (AppState.currentState === 'active') {
+        pausePlaybackForLock();
+      }
+    }, 700);
+
+    const sub = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active' && isLockedRef.current) {
+        pausePlaybackForLock();
+      }
+    });
+
+    return () => {
+      clearInterval(lockGuardTimer);
+      sub.remove();
+    };
+  }, [visible, isLocked, mode, player, pausePlaybackForLock]);
 
   // Sync AVPlayer background audio/PiP playback flag with Settings toggle
   useEffect(() => {
@@ -477,7 +652,13 @@ export function PlayerModal({
         player.currentTime = resolved.resume_seconds;
       }
       player.playbackRate = playbackRate;
-      player.play();
+      if (isLockedRef.current) {
+        try {
+          player.pause();
+        } catch {}
+      } else {
+        player.play();
+      }
       Animated.timing(transitionOpacity, {
         toValue: 0,
         duration: 280,
@@ -541,22 +722,84 @@ export function PlayerModal({
     showToast,
   ]);
 
+  const resolveActiveEpisodeMeta = useCallback(() => {
+    let epNum = params?.episodeNumber || 0;
+    let sId = params?.seasonId ? String(params.seasonId) : '';
+    const eps = resolved?.episodes || [];
+    if (eps.length > 0) {
+      const idx = eps.findIndex(
+        (ep) =>
+          (activeStreamCode && ep.stream_code === activeStreamCode) ||
+          (params?.episodeId && ep.episodes_id === params.episodeId),
+      );
+      if (idx >= 0) {
+        const parseEpNum = (name?: string) => {
+          const str = String(name || '');
+          const mEp = str.match(/(?:tập|tap|episode|ep)\s*0*(\d+)/i);
+          if (mEp) return parseInt(mEp[1], 10);
+          const mAny = str.match(/0*(\d+)/);
+          return mAny ? parseInt(mAny[1], 10) : null;
+        };
+        const parsedNameNum = parseEpNum(eps[idx].episodes_name);
+        if (parsedNameNum && parsedNameNum > 0) {
+          epNum = parsedNameNum;
+        } else if (epNum <= 0) {
+          const firstN = parseEpNum(eps[0].episodes_name);
+          const lastN = parseEpNum(eps[eps.length - 1].episodes_name);
+          const isDesc = firstN !== null && lastN !== null && firstN > lastN;
+          epNum = isDesc ? eps.length - idx : idx + 1;
+        }
+        if (!sId && eps[idx].seasons_id) sId = String(eps[idx].seasons_id);
+      }
+    }
+    return { episodeNumber: epNum, seasonId: sId };
+  }, [params?.episodeNumber, params?.seasonId, params?.episodeId, resolved?.episodes, activeStreamCode]);
+
   // Save watch progress periodically
   useEffect(() => {
     if (!visible || !params || params.offlineUri || mode !== 'native') return;
+    const minValidPos = Math.max(5, resolved?.skip_intro_sec || 0);
+    if (
+      resolved?.resume_seconds &&
+      resolved.resume_seconds > minValidPos + 30 &&
+      currentTime < minValidPos + 10
+    ) {
+      return;
+    }
     if (Math.abs(currentTime - lastSavedSecRef.current) >= 15 && currentTime > 5) {
       lastSavedSecRef.current = currentTime;
+      const { episodeNumber, seasonId } = resolveActiveEpisodeMeta();
       saveWatchProgressApi({
         videos_id: resolved?.movie?.videos_id || params.videosId,
         stream_code: activeStreamCode,
         position_sec: currentTime,
         duration_sec: duration,
-        episode_number: params.episodeNumber || 0,
-        season_id: params.seasonId || '',
+        episode_number: episodeNumber,
+        season_id: seasonId,
         title: resolved?.movie?.title || params.title,
       }).catch(() => {});
     }
-  }, [visible, params, activeStreamCode, resolved?.movie, mode, currentTime, duration]);
+  }, [
+    visible,
+    params,
+    activeStreamCode,
+    resolved?.movie,
+    resolved?.skip_intro_sec,
+    resolved?.resume_seconds,
+    resolveActiveEpisodeMeta,
+    mode,
+    currentTime,
+    duration,
+  ]);
+
+  useEffect(() => {
+    if (visible && isProxyActive && mode === 'native' && !params?.offlineUri) {
+      try {
+        player.pause();
+      } catch {}
+      setMode('webview');
+    }
+  }, [visible, isProxyActive, mode, params?.offlineUri, player]);
 
   // Resolve stream & load subtitle cues when opening or switching episode/server
   useEffect(() => {
@@ -608,7 +851,7 @@ export function PlayerModal({
         setResolved(res);
         setInWishlist(Boolean(res.movie?.in_wishlist));
 
-        if (res.can_play_native && res.qualities.length > 0) {
+        if (!isProxyActiveRef.current && res.can_play_native && res.qualities.length > 0) {
           const preferred =
             settings.preferredQuality !== 'auto'
               ? res.qualities.find((q) => q.label.includes(settings.preferredQuality))
@@ -679,14 +922,21 @@ export function PlayerModal({
   const handleClose = () => {
     const posToSave = mode === 'native' ? currentTime : webProgressRef.current.position;
     const durToSave = mode === 'native' ? duration : webProgressRef.current.duration;
-    if (params && !params.offlineUri && posToSave > 5) {
+    const minValidPos = Math.max(5, resolved?.skip_intro_sec || 0);
+    const wouldOverwriteResumeWithIntro =
+      Boolean(resolved?.resume_seconds) &&
+      (resolved?.resume_seconds || 0) > minValidPos + 30 &&
+      posToSave <= minValidPos + 10;
+
+    if (params && !params.offlineUri && posToSave > 5 && !wouldOverwriteResumeWithIntro) {
+      const { episodeNumber, seasonId } = resolveActiveEpisodeMeta();
       saveWatchProgressApi({
         videos_id: resolved?.movie?.videos_id || params.videosId,
         stream_code: activeStreamCode,
         position_sec: posToSave,
         duration_sec: durToSave,
-        episode_number: params.episodeNumber || 0,
-        season_id: params.seasonId || '',
+        episode_number: episodeNumber,
+        season_id: seasonId,
         title: resolved?.movie?.title || params.title,
       }).catch(() => {});
     }
@@ -766,7 +1016,13 @@ export function PlayerModal({
     });
     player.currentTime = savedT;
     player.playbackRate = playbackRate;
-    player.play();
+    if (isLockedRef.current) {
+      try {
+        player.pause();
+      } catch {}
+    } else {
+      player.play();
+    }
   };
 
   const handleSelectSourceServer = (src: SourceItem) => {
@@ -862,6 +1118,7 @@ export function PlayerModal({
         ${cookieLines}
         localStorage.setItem('dva_ios_app_local', '1');
         localStorage.setItem('dva_play_app_local', '1');
+        localStorage.setItem('dva_ios_pip_enabled', ${JSON.stringify(settings.pipEnabled ? '1' : '0')});
         localStorage.setItem('may_chu_toi_uu_E1s5Km5Hv1Vf4Us', '1');
         localStorage.setItem('menu_3Gc4Ti8Bx1Mx8Wo_dangvietanh', ${JSON.stringify(settings.highContrastMode ? '1' : '0')});
         localStorage.setItem('Tự_Động_Chuyển_Tập_0Up6Ex8Ci5Zg6Te', ${JSON.stringify(autoNextStr)});
@@ -874,6 +1131,17 @@ export function PlayerModal({
         localStorage.setItem('st_toiuu_download', '0');
         localStorage.setItem('dvaplay_resolution', ${JSON.stringify(qualityStr)});
         sessionStorage.setItem('dva_app_current_movie_meta', ${JSON.stringify(JSON.stringify(playerMeta))});
+        if (${settings.pipEnabled ? 'true' : 'false'}) {
+          setInterval(function () {
+            var vids = document.getElementsByTagName('video');
+            for (var i = 0; i < vids.length; i++) {
+              vids[i].disablePictureInPicture = false;
+              vids[i].setAttribute('autopictureinpicture', '');
+              vids[i].setAttribute('playsinline', '');
+              vids[i].setAttribute('webkit-playsinline', '');
+            }
+          }, 1500);
+        }
       } catch (e) {}
       true;
     `;
@@ -995,7 +1263,10 @@ export function PlayerModal({
           <View style={[styles.flex, { backgroundColor: COLORS.bg }]}>
             {Boolean(deviceHglk) ? (
               <WebView
+                key={`wv-${proxyConfig.revision}-${isProxyActive ? 'p' : 'd'}`}
+                ref={webViewRef}
                 source={{ uri: webviewSourceUrl }}
+                incognito={isProxyActive}
                 applicationNameForUserAgent="DVAPlayiOS/1.0"
                 injectedJavaScriptBeforeContentLoaded={cookieBootstrapJs}
                 allowsInlineMediaPlayback
@@ -1011,11 +1282,20 @@ export function PlayerModal({
                     const data = JSON.parse(ev.nativeEvent.data || '{}');
                     if (data.type === 'DVA_APP_PLAYER_READY') {
                       setWebHudReady(true);
+                      if (isLockedRef.current) {
+                        pausePlaybackForLock();
+                      }
                     } else if (data.type === 'DVA_APP_PLAYER_BACK') {
                       handleClose();
                     } else if (data.type === 'DVA_IOS_OPEN_CAST') {
                       if (onOpenCast) onOpenCast();
-                    } else if (data.type === 'DVA_IOS_SWITCH_NATIVE' && resolved?.can_play_native) {
+                    } else if (data.type === 'DVA_IOS_TOGGLE_PIP') {
+                      Haptics.selectionAsync();
+                    } else if (
+                      data.type === 'DVA_IOS_SWITCH_NATIVE' &&
+                      resolved?.can_play_native &&
+                      !isProxyActiveRef.current
+                    ) {
                       setMode('native');
                     } else if (data.type === 'DVA_IOS_PLAYER_PROGRESS') {
                       webProgressRef.current = {

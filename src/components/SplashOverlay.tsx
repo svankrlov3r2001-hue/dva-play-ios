@@ -40,7 +40,11 @@ export function SplashOverlay({
   const dotPulse = useRef(new Animated.Value(0.65)).current;
 
   useEffect(() => {
-    if (!visible) return;
+    if (!visible || dismissing) return;
+    overlayOpacity.stopAnimation();
+    contentScale.stopAnimation();
+    overlayOpacity.setValue(0);
+    contentScale.setValue(0.92);
     Animated.parallel([
       Animated.timing(overlayOpacity, {
         toValue: 1,
@@ -55,7 +59,7 @@ export function SplashOverlay({
         useNativeDriver: true,
       }),
     ]).start();
-  }, [visible, overlayOpacity, contentScale]);
+  }, [visible, dismissing, overlayOpacity, contentScale]);
 
   useEffect(() => {
     if (!dismissing) return;

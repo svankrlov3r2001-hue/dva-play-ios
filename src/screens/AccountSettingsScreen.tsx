@@ -10,6 +10,7 @@ import {
   StyleSheet,
   Switch,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
@@ -29,7 +30,24 @@ import {
 } from '../constants/config';
 import { useAuth } from '../context/AuthContext';
 import { useSettings } from '../context/SettingsContext';
-import { checkOtaUpdateApi } from '../services/api';
+import {
+  checkOtaUpdateApi,
+  fetchProxyPresetsApi,
+  resolveProxyPresetApi,
+} from '../services/api';
+import {
+  disableProxyAsync,
+  enableProxyAsync,
+  getProxyConfig,
+  isNativeProxySupported,
+  normalizeCustomProxyInput,
+  ProxyPreset,
+  ProxyRuntimeConfig,
+  setProxyConfig,
+  subscribeProxyConfig,
+  testProxyDirectAsync,
+  warmManagedPresetAsync,
+} from '../services/proxyService';
 import {
   clearAllOfflineDownloads,
   formatBytes,
@@ -68,6 +86,18 @@ export function AccountSettingsScreen({
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [manifest, setManifest] = useState<VersionManifest | null>(null);
   const [changelogOpen, setChangelogOpen] = useState(false);
+  const [proxyCfg, setProxyCfg] = useState<ProxyRuntimeConfig>(() => getProxyConfig());
+  const [proxyPresets, setProxyPresets] = useState<ProxyPreset[]>([
+    { id: 'hanoi', name: 'Server Hà Nội', region: 'Hà Nội, Việt Nam', managed: true },
+  ]);
+  const [showProxyPass, setShowProxyPass] = useState(false);
+  const [applyingProxy, setApplyingProxy] = useState(false);
+  const [testingProxy, setTestingProxy] = useState(false);
+  const [proxyStatusMsg, setProxyStatusMsg] = useState<{
+    ok: boolean;
+    text: string;
+  } | null>(null);
+  const nativeProxyReady = isNativeProxySupported();
   const otaState = getOtaRuntimeState();
   const enterAnim = useRef(new Animated.Value(0)).current;
 
@@ -92,6 +122,142 @@ export function AccountSettingsScreen({
       .catch(() => setOfflineItems([]));
     return subscribeOfflineDownloads(setOfflineItems);
   }, []);
+
+  useEffect(() => {
+    return subscribeProxyConfig(setProxyCfg);
+  }, []);
+
+  useEffect(() => {
+    if (!visible) return;
+    fetchProxyPresetsApi()
+      .then((res) => {
+        if (res?.success && Array.isArray(res.presets) && res.presets.length > 0) {
+          setProxyPresets(res.presets);
+        }
+      })
+      .catch(() => {});
+    if (nativeProxyReady && !getProxyConfig().enabled) {
+      warmManagedPresetAsync(getProxyConfig().presetId || 'hanoi', resolveProxyPresetApi).catch(
+        () => {}
+      );
+    }
+  }, [visible, nativeProxyReady]);
+
+  const applyProxyOverride = async (override: Partial<ProxyRuntimeConfig>) => {
+    if (applyingProxy) return;
+    if (proxyCfg.enabled && nativeProxyReady) {
+      setApplyingProxy(true);
+      try {
+        await enableProxyAsync(resolveProxyPresetApi, override);
+      } catch (err: any) {
+        await disableProxyAsync().catch(() => {});
+        setProxyStatusMsg({
+          ok: false,
+          text: err?.message || 'Không thể áp dụng kết nối Proxy.',
+        });
+      } finally {
+        setApplyingProxy(false);
+      }
+    } else {
+      setProxyConfig(override);
+    }
+  };
+
+  const handleToggleProxy = async (nextVal: boolean) => {
+    if (applyingProxy) return;
+    setProxyStatusMsg(null);
+    if (!nextVal) {
+      Haptics.selectionAsync();
+      setApplyingProxy(true);
+      try {
+        await disableProxyAsync();
+      } finally {
+        setApplyingProxy(false);
+      }
+      return;
+    }
+
+    if (!nativeProxyReady) {
+      Alert.alert(
+        'Cần cập nhật ứng dụng (v1.0.16)',
+        'Tính năng kết nối Proxy trực tiếp trên iPhone yêu cầu cài đặt bản ứng dụng iOS mới nhất (v1.0.16).'
+      );
+      return;
+    }
+
+    if (
+      proxyCfg.mode === 'custom' &&
+      !normalizeCustomProxyInput(proxyCfg.customHost, proxyCfg.customPort)
+    ) {
+      Alert.alert(
+        'Thiếu thông tin Proxy',
+        'Vui lòng nhập đầy đủ Địa chỉ IP/Host và Cổng (1 - 65535) trước khi bật Proxy tự cấu hình.'
+      );
+      return;
+    }
+
+    setApplyingProxy(true);
+    try {
+      await enableProxyAsync(resolveProxyPresetApi);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (err: any) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      setProxyStatusMsg({
+        ok: false,
+        text: err?.message || 'Không thể bật kết nối Proxy.',
+      });
+    } finally {
+      setApplyingProxy(false);
+    }
+  };
+
+  const handleTestProxyConnection = async () => {
+    setProxyStatusMsg(null);
+    if (!nativeProxyReady) {
+      setProxyStatusMsg({
+        ok: false,
+        text: 'Cần cài đặt bản ứng dụng iOS mới nhất (v1.0.16) để kiểm tra Proxy trực tiếp trên iPhone.',
+      });
+      return;
+    }
+    if (
+      proxyCfg.mode === 'custom' &&
+      !normalizeCustomProxyInput(proxyCfg.customHost, proxyCfg.customPort)
+    ) {
+      setProxyStatusMsg({
+        ok: false,
+        text: 'Vui lòng nhập đúng IP/Host và Cổng (1 - 65535).',
+      });
+      return;
+    }
+
+    setTestingProxy(true);
+    try {
+      const res = await testProxyDirectAsync(proxyCfg, resolveProxyPresetApi);
+      if (res.success) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        const suffix = !res.managed && res.exit_ip ? ` • IP: ${res.exit_ip}` : '';
+        setProxyStatusMsg({
+          ok: true,
+          text: `Đã kết nối ${res.label} • ${res.latency_ms} ms${suffix}`,
+        });
+      } else {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        setProxyStatusMsg({
+          ok: false,
+          text: res.error || 'Không thể kết nối qua proxy này.',
+        });
+      }
+    } catch (err: any) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      setProxyStatusMsg({
+        ok: false,
+        text: err?.message || 'Kiểm tra kết nối thất bại.',
+      });
+    } finally {
+      setTestingProxy(false);
+    }
+  };
 
   const totalBytes = offlineItems.reduce((acc, i) => acc + (i.size_bytes || 0), 0);
 
@@ -210,6 +376,7 @@ export function AccountSettingsScreen({
           paddingHorizontal: 16,
           paddingBottom: Math.max(32, insets.bottom + 24),
         }}
+        keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
 
@@ -312,6 +479,257 @@ export function AccountSettingsScreen({
             }
           }}
         />
+      </GlassSurface>
+
+      {/* Proxy Connection Card */}
+      <GlassSurface intensity={45} radius={RADII.xl} style={styles.card}>
+        <View style={styles.proxyHeaderRow}>
+          <View style={styles.rowLeft}>
+            <Ionicons name="globe-outline" size={20} color="#FFF" />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.settingLabel}>Kết nối Proxy</Text>
+              <Text style={styles.settingDesc}>
+                Tự động tắt mỗi khi thoát ứng dụng
+              </Text>
+            </View>
+          </View>
+          <Switch
+            value={proxyCfg.enabled}
+            onValueChange={handleToggleProxy}
+            disabled={applyingProxy}
+            trackColor={{ false: 'rgba(255,255,255,0.16)', true: COLORS.accent }}
+            thumbColor="#FFF"
+          />
+        </View>
+
+        {!nativeProxyReady ? (
+          <View style={styles.proxyNoticeBanner}>
+            <Ionicons name="information-circle-outline" size={16} color="#FDE68A" />
+            <Text style={styles.proxyNoticeTxt}>
+              Cần cài đặt bản ứng dụng iOS mới nhất (v1.0.16) để bật kết nối Proxy trực tiếp trên
+              iPhone.
+            </Text>
+          </View>
+        ) : null}
+
+        <View style={styles.proxyModeRow}>
+          <TouchableOpacity
+            style={[
+              styles.qualityChip,
+              proxyCfg.mode === 'preset' && styles.qualityChipActive,
+            ]}
+            onPress={() => {
+              Haptics.selectionAsync();
+              setProxyStatusMsg(null);
+              applyProxyOverride({ mode: 'preset' });
+            }}
+          >
+            <Text
+              style={[
+                styles.qualityTxt,
+                proxyCfg.mode === 'preset' && { color: '#FFF' },
+              ]}
+            >
+              Máy chủ sẵn có
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[
+              styles.qualityChip,
+              proxyCfg.mode === 'custom' && styles.qualityChipActive,
+            ]}
+            onPress={async () => {
+              Haptics.selectionAsync();
+              setProxyStatusMsg(null);
+              const validCustom = Boolean(
+                normalizeCustomProxyInput(proxyCfg.customHost, proxyCfg.customPort)
+              );
+              if (proxyCfg.enabled && validCustom) {
+                await applyProxyOverride({ mode: 'custom' });
+              } else {
+                if (proxyCfg.enabled && !validCustom) {
+                  await disableProxyAsync().catch(() => {});
+                }
+                setProxyConfig({ mode: 'custom', enabled: false });
+              }
+            }}
+          >
+            <Text
+              style={[
+                styles.qualityTxt,
+                proxyCfg.mode === 'custom' && { color: '#FFF' },
+              ]}
+            >
+              Proxy tự cấu hình
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        {proxyCfg.mode === 'preset' ? (
+          <View style={styles.presetList}>
+            {proxyPresets.map((preset) => {
+              const selected = proxyCfg.presetId === preset.id;
+              return (
+                <TouchableOpacity
+                  key={preset.id}
+                  activeOpacity={0.85}
+                  style={[styles.presetCard, selected && styles.presetCardActive]}
+                  onPress={() => {
+                    Haptics.selectionAsync();
+                    setProxyStatusMsg(null);
+                    applyProxyOverride({
+                      mode: 'preset',
+                      presetId: preset.id,
+                      presetName: preset.name,
+                    });
+                  }}
+                >
+                  <View style={{ flex: 1 }}>
+                    <View style={styles.presetTitleRow}>
+                      <Text style={styles.presetName}>{preset.name}</Text>
+                      <View style={styles.presetBadge}>
+                        <Ionicons name="lock-closed" size={10} color="#93C5FD" />
+                        <Text style={styles.presetBadgeTxt}>
+                          Máy chủ cấp sẵn • Ẩn thông tin
+                        </Text>
+                      </View>
+                    </View>
+                    <Text style={styles.presetRegion}>{preset.region}</Text>
+                  </View>
+                  <Ionicons
+                    name={selected ? 'checkmark-circle' : 'ellipse-outline'}
+                    size={21}
+                    color={selected ? COLORS.accent : COLORS.muted}
+                  />
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        ) : (
+          <View style={styles.customProxyForm}>
+            <View style={styles.customRowPair}>
+              <View style={{ flex: 2 }}>
+                <Text style={styles.inputLabel}>Địa chỉ IP / Host</Text>
+                <TextInput
+                  style={styles.proxyInput}
+                  value={proxyCfg.customHost}
+                  onChangeText={(txt) =>
+                    setProxyConfig({ customHost: txt.trim(), enabled: false })
+                  }
+                  placeholder="Ví dụ: 203.0.113.10"
+                  placeholderTextColor="rgba(255,255,255,0.36)"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.inputLabel}>Cổng (Port)</Text>
+                <TextInput
+                  style={styles.proxyInput}
+                  value={proxyCfg.customPort}
+                  onChangeText={(txt) =>
+                    setProxyConfig({
+                      customPort: txt.replace(/[^0-9]/g, ''),
+                      enabled: false,
+                    })
+                  }
+                  placeholder="8080"
+                  placeholderTextColor="rgba(255,255,255,0.36)"
+                  keyboardType="number-pad"
+                  maxLength={5}
+                />
+              </View>
+            </View>
+
+            <View style={styles.customRowPair}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.inputLabel}>Tài khoản (TK)</Text>
+                <TextInput
+                  style={styles.proxyInput}
+                  value={proxyCfg.customUsername}
+                  onChangeText={(txt) =>
+                    setProxyConfig({ customUsername: txt, enabled: false })
+                  }
+                  placeholder="Không bắt buộc"
+                  placeholderTextColor="rgba(255,255,255,0.36)"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.inputLabel}>Mật khẩu (MK)</Text>
+                <View style={styles.passwordInputWrap}>
+                  <TextInput
+                    style={styles.passwordInputField}
+                    value={proxyCfg.customPassword}
+                    onChangeText={(txt) =>
+                      setProxyConfig({ customPassword: txt, enabled: false })
+                    }
+                    placeholder="Không bắt buộc"
+                    placeholderTextColor="rgba(255,255,255,0.36)"
+                    secureTextEntry={!showProxyPass}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                  <TouchableOpacity
+                    onPress={() => setShowProxyPass((v) => !v)}
+                    hitSlop={8}
+                    style={{ paddingLeft: 6 }}
+                  >
+                    <Ionicons
+                      name={showProxyPass ? 'eye-outline' : 'eye-off-outline'}
+                      size={17}
+                      color={COLORS.muted}
+                    />
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+          </View>
+        )}
+
+        <View style={styles.proxyFooterRow}>
+          <TouchableOpacity
+            style={styles.testProxyBtn}
+            onPress={handleTestProxyConnection}
+            disabled={testingProxy}
+          >
+            {testingProxy ? (
+              <ActivityIndicator size="small" color="#FFF" />
+            ) : (
+              <>
+                <Ionicons name="pulse-outline" size={16} color="#FFF" />
+                <Text style={styles.testProxyBtnTxt}>Kiểm tra kết nối</Text>
+              </>
+            )}
+          </TouchableOpacity>
+
+          {proxyStatusMsg ? (
+            <View
+              style={[
+                styles.proxyStatusPill,
+                proxyStatusMsg.ok
+                  ? styles.proxyStatusOk
+                  : styles.proxyStatusErr,
+              ]}
+            >
+              <Ionicons
+                name={proxyStatusMsg.ok ? 'checkmark-circle' : 'alert-circle'}
+                size={14}
+                color={proxyStatusMsg.ok ? '#30D158' : '#FCA5A5'}
+              />
+              <Text
+                style={[
+                  styles.proxyStatusTxt,
+                  { color: proxyStatusMsg.ok ? '#D8FFE2' : '#FECACA' },
+                ]}
+                numberOfLines={2}
+              >
+                {proxyStatusMsg.text}
+              </Text>
+            </View>
+          ) : null}
+        </View>
       </GlassSurface>
 
       {/* Offline & TV Cast Card */}
@@ -668,5 +1086,169 @@ const styles = StyleSheet.create({
     color: '#FCA5A5',
     fontSize: 15,
     fontWeight: '700',
+  },
+  proxyHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  proxyNoticeBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 12,
+    backgroundColor: 'rgba(245, 158, 11, 0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(253, 230, 138, 0.3)',
+  },
+  proxyNoticeTxt: {
+    flex: 1,
+    color: '#FDE68A',
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '600',
+  },
+  proxyModeRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 14,
+  },
+  presetList: {
+    marginTop: 12,
+    gap: 8,
+  },
+  presetCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  presetCardActive: {
+    backgroundColor: 'rgba(229, 9, 20, 0.14)',
+    borderColor: 'rgba(229, 9, 20, 0.65)',
+  },
+  presetTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  presetName: {
+    color: '#FFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  presetBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 999,
+    backgroundColor: 'rgba(59, 130, 246, 0.18)',
+    borderWidth: 1,
+    borderColor: 'rgba(147, 197, 253, 0.25)',
+  },
+  presetBadgeTxt: {
+    color: '#BFDBFE',
+    fontSize: 10.5,
+    fontWeight: '600',
+  },
+  presetRegion: {
+    color: COLORS.muted,
+    fontSize: 12,
+    marginTop: 3,
+  },
+  customProxyForm: {
+    marginTop: 12,
+    gap: 10,
+  },
+  customRowPair: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  inputLabel: {
+    color: COLORS.textSecondary,
+    fontSize: 11.5,
+    fontWeight: '600',
+    marginBottom: 5,
+  },
+  proxyInput: {
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.07)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+    paddingHorizontal: 12,
+    color: '#FFF',
+    fontSize: 13,
+  },
+  passwordInputWrap: {
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.07)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  passwordInputField: {
+    flex: 1,
+    color: '#FFF',
+    fontSize: 13,
+    paddingVertical: 0,
+  },
+  proxyFooterRow: {
+    marginTop: 12,
+    gap: 10,
+  },
+  testProxyBtn: {
+    height: 40,
+    borderRadius: 14,
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.16)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+  },
+  testProxyBtnTxt: {
+    color: '#FFF',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  proxyStatusPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  proxyStatusOk: {
+    backgroundColor: 'rgba(48, 209, 88, 0.12)',
+    borderColor: 'rgba(48, 209, 88, 0.35)',
+  },
+  proxyStatusErr: {
+    backgroundColor: 'rgba(239, 68, 68, 0.14)',
+    borderColor: 'rgba(239, 68, 68, 0.35)',
+  },
+  proxyStatusTxt: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: '600',
   },
 });
