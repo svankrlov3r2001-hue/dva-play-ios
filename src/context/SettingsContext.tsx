@@ -17,6 +17,11 @@ const DEFAULT_SETTINGS: AppSettings = {
   subtitleBgOpacity: 0.55,
   highContrastMode: false,
   videoFillMode: 'contain',
+  autoDownloadCurrentOnWatch: false,
+  autoDownloadNextCount: 0,
+  preferOfflineWhenOnline: true,
+  offlineDownloadFormat: 'auto',
+  offlineDownloadConcurrency: 3,
 };
 
 interface SettingsContextValue {

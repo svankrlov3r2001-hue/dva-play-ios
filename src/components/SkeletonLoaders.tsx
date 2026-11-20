@@ -12,7 +12,6 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { COLORS, RADII } from '../constants/config';
-import { AmbientAppBackground } from './AmbientAppBackground';
 
 /**
  * Per-skeleton-instance native 60fps shimmer loop.
@@ -325,7 +324,6 @@ export function PlayerLandscapeSkeleton({
 
   return (
     <View style={styles.playerRoot}>
-      <AmbientAppBackground />
       <View
         style={[
           styles.playerWrap,
@@ -477,7 +475,7 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     left: 0,
-    backgroundColor: COLORS.bg,
+    backgroundColor: '#000000',
     zIndex: 32,
   },
   playerWrap: {

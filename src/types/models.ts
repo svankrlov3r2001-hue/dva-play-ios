@@ -229,6 +229,9 @@ export interface StreamMemberInfo {
 export interface StreamResolvedData {
   success: boolean;
   stream_code: string;
+  server_movie_title?: string;
+  server_tap_phim?: string;
+  server_file_key?: string;
   title?: string;
   episode_title?: string;
   can_play_native: boolean;
@@ -250,21 +253,54 @@ export interface StreamResolvedData {
   member?: StreamMemberInfo | null;
 }
 
+export interface OfflineSubtitleTrack {
+  lang: string;
+  label: string;
+  local_uri: string;
+  relative_path: string;
+}
+
+export type OfflineDownloadStatus =
+  | 'queued'
+  | 'preparing'
+  | 'downloading'
+  | 'paused'
+  | 'completed'
+  | 'failed';
+
 export interface OfflineDownloadItem {
   id: string;
   videos_id: number;
   episode_id: number;
+  episode_number?: number;
   stream_code: string;
   title: string;
   episode_title?: string;
+  server_movie_title?: string;
+  server_file_key?: string;
+  media_format?: 'hls' | 'mp4';
+  preferred_format?: 'auto' | 'hls' | 'mp4';
   poster_url: string;
   thumbnail_url: string;
+  local_poster_uri?: string;
   local_uri: string;
+  local_dir?: string;
+  relative_entry?: string;
   remote_url: string;
+  subtitles?: OfflineSubtitleTrack[];
+  duration_sec?: number;
+  skip_intro_sec?: number;
+  end_credits_sec?: number;
+  resume_sec?: number;
+  total_segments?: number;
+  completed_segments?: number;
   size_bytes: number;
   progress: number;
-  status: 'downloading' | 'completed' | 'failed';
+  status: OfflineDownloadStatus;
+  status_text?: string;
+  error_message?: string;
   created_at: string;
+  updated_at?: string;
 }
 
 export interface AppSettings {
@@ -280,6 +316,11 @@ export interface AppSettings {
   subtitleBgOpacity: number;
   highContrastMode: boolean;
   videoFillMode: 'contain' | 'cover';
+  autoDownloadCurrentOnWatch: boolean;
+  autoDownloadNextCount: number;
+  preferOfflineWhenOnline: boolean;
+  offlineDownloadFormat: 'auto' | 'hls' | 'mp4';
+  offlineDownloadConcurrency: number;
 }
 
 export interface VersionHistoryEntry {

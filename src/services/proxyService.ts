@@ -39,12 +39,15 @@ export interface ResolvedProxyPresetResponse {
 
 export interface ProxyTestResult {
   success: boolean;
+  timedOut?: boolean;
   latency_ms: number;
   label: string;
   managed: boolean;
   exit_ip?: string | null;
   error?: string | null;
 }
+
+export const PROXY_PROBE_TIMEOUT_MS = 3000;
 
 export type ResolvePresetFetcher = (presetId: string) => Promise<ResolvedProxyPresetResponse>;
 
@@ -499,28 +502,49 @@ export async function enableProxyAsync(
 
 export async function testProxyDirectAsync(
   cfg: ProxyRuntimeConfig,
-  resolvePresetFn: ResolvePresetFetcher
+  resolvePresetFn: ResolvePresetFetcher,
+  timeoutMs: number = PROXY_PROBE_TIMEOUT_MS
 ): Promise<ProxyTestResult> {
   const bridge = getNativeProxyBridge();
   if (!bridge || !isNativeProxySupported()) {
     return {
       success: false,
+      timedOut: false,
       latency_ms: 0,
       label: cfg.mode === 'preset' ? cfg.presetName : `${cfg.customHost}:${cfg.customPort}`,
       managed: cfg.mode === 'preset',
       exit_ip: null,
-      error: 'Cần cài đặt phiên bản iOS mới nhất (v1.0.17) để kiểm tra Proxy trực tiếp trên iPhone.',
+      error: 'Cần cài đặt phiên bản iOS mới nhất (v1.0.17+) để kiểm tra Proxy trực tiếp trên iPhone.',
     };
   }
 
   const { endpoint, label, managed } = await resolveEndpointForConfig(cfg, resolvePresetFn);
-  const rawJson = await bridge.dvaTestProxy(
-    endpoint.host,
-    endpoint.port,
-    endpoint.username,
-    endpoint.password,
-    `${API_BASE_URL}/auth.php?action=status`
-  );
+  const effectiveTimeout = Math.max(1500, timeoutMs);
+  let timerId: ReturnType<typeof setTimeout> | null = null;
+  const rawJson = await Promise.race<string>([
+    bridge.dvaTestProxy(
+      endpoint.host,
+      endpoint.port,
+      endpoint.username,
+      endpoint.password,
+      managed ? '' : `${API_BASE_URL}/auth.php?action=status`
+    ),
+    new Promise<string>((resolve) => {
+      timerId = setTimeout(() => {
+        resolve(
+          JSON.stringify({
+            success: false,
+            timed_out: true,
+            latency_ms: effectiveTimeout,
+            error: `Quá thời gian chờ (${Math.round(effectiveTimeout / 1000)}s).`,
+          })
+        );
+      }, effectiveTimeout);
+    }),
+  ]);
+  if (timerId !== null) {
+    clearTimeout(timerId);
+  }
 
   let parsed: any = null;
   try {
@@ -530,18 +554,24 @@ export async function testProxyDirectAsync(
   }
 
   if (!parsed || !parsed.success) {
+    const errText = String(parsed?.error || 'Không thể kết nối qua proxy này.');
+    const isTimeout =
+      Boolean(parsed?.timed_out) ||
+      /timed?\s*out|quá thời gian/i.test(errText);
     return {
       success: false,
+      timedOut: isTimeout,
       latency_ms: Number(parsed?.latency_ms) || 0,
       label,
       managed,
       exit_ip: null,
-      error: parsed?.error || 'Không thể kết nối qua proxy này.',
+      error: errText,
     };
   }
 
   return {
     success: true,
+    timedOut: false,
     latency_ms: Math.max(1, Number(parsed.latency_ms) || 1),
     label,
     managed,

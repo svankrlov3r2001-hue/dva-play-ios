@@ -9,6 +9,7 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import { COLORS } from '../constants/config';
@@ -19,7 +20,9 @@ interface SplashOverlayProps {
   dismissing: boolean;
   statusText: string;
   hasError: boolean;
+  offlineCount?: number;
   onRetry: () => void;
+  onOpenOfflineMode?: () => void;
 }
 
 /**
@@ -30,7 +33,9 @@ export function SplashOverlay({
   dismissing,
   statusText,
   hasError,
+  offlineCount = 0,
   onRetry,
+  onOpenOfflineMode,
 }: SplashOverlayProps) {
   const { width: winWidth, height: winHeight } = useWindowDimensions();
   const portraitWidth = Math.min(winWidth, winHeight);
@@ -181,16 +186,36 @@ export function SplashOverlay({
         </View>
 
         {hasError ? (
-          <TouchableOpacity
-            activeOpacity={0.85}
-            style={styles.retryBtn}
-            onPress={() => {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              onRetry();
-            }}
-          >
-            <Text style={styles.retryText}>Thử lại ngay</Text>
-          </TouchableOpacity>
+          <View style={styles.errorActions}>
+            <TouchableOpacity
+              activeOpacity={0.85}
+              style={styles.retryBtn}
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                onRetry();
+              }}
+            >
+              <Text style={styles.retryText}>Thử lại ngay</Text>
+            </TouchableOpacity>
+
+            {onOpenOfflineMode ? (
+              <TouchableOpacity
+                activeOpacity={0.85}
+                style={styles.offlineBtn}
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                  onOpenOfflineMode();
+                }}
+              >
+                <Ionicons name="cloud-offline-outline" size={17} color="#FFFFFF" />
+                <Text style={styles.offlineBtnText}>
+                  {offlineCount > 0
+                    ? `Xem phim ngoại tuyến (${offlineCount})`
+                    : 'Mở kho phim ngoại tuyến'}
+                </Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
         ) : null}
       </Animated.View>
     </Animated.View>
@@ -267,9 +292,13 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     textAlign: 'center',
   },
-  retryBtn: {
+  errorActions: {
+    alignItems: 'center',
+    gap: 10,
     marginTop: 2,
-    paddingHorizontal: 20,
+  },
+  retryBtn: {
+    paddingHorizontal: 22,
     paddingVertical: 10,
     borderRadius: 999,
     backgroundColor: 'rgba(229, 9, 20, 0.25)',
@@ -280,5 +309,21 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 13.5,
     fontWeight: '700',
+  },
+  offlineBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  offlineBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13.5,
+    fontWeight: '600',
   },
 });

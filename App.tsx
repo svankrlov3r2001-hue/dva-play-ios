@@ -41,6 +41,10 @@ import { MovieDetailScreen } from './src/screens/MovieDetailScreen';
 import { PlayerLaunchParams, PlayerModal } from './src/screens/PlayerModal';
 import { SearchScreen } from './src/screens/SearchScreen';
 import { checkAuthStatusApi } from './src/services/api';
+import {
+  loadOfflineDownloads,
+  subscribeOfflineDownloads,
+} from './src/services/downloadService';
 import { runSilentBackgroundOtaSync } from './src/services/otaService';
 import { EpisodeItem, MovieItem, OfflineDownloadItem } from './src/types/models';
 
@@ -87,6 +91,10 @@ function RootAppContent() {
   const [serverReady, setServerReady] = useState(false);
   const [splashError, setSplashError] = useState(false);
   const [splashStatusText, setSplashStatusText] = useState('Đang kết nối...');
+  const [offlineModeActive, setOfflineModeActive] = useState(false);
+  const [offlineItems, setOfflineItems] = useState<OfflineDownloadItem[]>([]);
+  const offlineModeActiveRef = useRef(false);
+  offlineModeActiveRef.current = offlineModeActive;
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [activeTab, setActiveTab] = useState<AppTabKey>('home');
@@ -124,17 +132,22 @@ function RootAppContent() {
       setSplashStatusText('Đang kết nối...');
       setServerReady(true);
     } catch {
+      if (offlineModeActiveRef.current) return;
       setServerReady(false);
       setSplashError(true);
       setSplashStatusText('Lỗi kết nối tới máy chủ., Đang thử lại...');
       retryTimerRef.current = setTimeout(() => {
-        probeServerConnection();
+        if (!offlineModeActiveRef.current) {
+          probeServerConnection();
+        }
       }, SPLASH_AUTO_RETRY_MS);
     }
   }, []);
 
   useEffect(() => {
     ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => {});
+    loadOfflineDownloads().then(setOfflineItems).catch(() => {});
+    return subscribeOfflineDownloads(setOfflineItems);
   }, []);
 
   useEffect(() => {
@@ -453,7 +466,10 @@ function RootAppContent() {
     }
   };
 
-  const handlePlayOffline = (offline: OfflineDownloadItem) => {
+  const handlePlayOffline = (
+    offline: OfflineDownloadItem,
+    seriesEpisodes?: OfflineDownloadItem[]
+  ) => {
     launchPlayerWithCurtain({
       videosId: offline.videos_id,
       streamCode: offline.stream_code,
@@ -461,7 +477,25 @@ function RootAppContent() {
       title: offline.title,
       episodeTitle: offline.episode_title,
       offlineUri: offline.local_uri,
+      offlineItem: offline,
+      offlineEpisodes: seriesEpisodes,
     });
+  };
+
+  const handleSwitchOfflineItem = (offline: OfflineDownloadItem) => {
+    setPlayerParams((prev) =>
+      prev
+        ? {
+            ...prev,
+            streamCode: offline.stream_code,
+            episodeId: offline.episode_id,
+            title: offline.title,
+            episodeTitle: offline.episode_title,
+            offlineUri: offline.local_uri,
+            offlineItem: offline,
+          }
+        : null
+    );
   };
 
   const handleSwitchEpisode = (ep: EpisodeItem, epIndex: number) => {
@@ -479,7 +513,105 @@ function RootAppContent() {
     );
   };
 
+  const renderLockOverlay = () => {
+    if (!isLocked) return null;
+    return (
+      <View style={[styles.lockOverlay, !lockPromptVisible && styles.lockOverlayScanning]}>
+        {lockPromptVisible ? (
+          <>
+            <AmbientAppBackground />
+            <GlassSurface intensity={55} radius={30} style={styles.lockCard}>
+              <Ionicons name="lock-closed" size={42} color={COLORS.accent} />
+              <Text style={styles.lockTitle}>Đã khóa bằng Face ID</Text>
+              <Text style={styles.lockSub}>Xác thực để tiếp tục xem phim trên Đặng Việt Anh</Text>
+              <TouchableOpacity style={styles.unlockBtn} onPress={unlockWithBiometrics}>
+                <Ionicons name="scan-outline" size={20} color="#FFF" />
+                <Text style={styles.unlockTxt}>Mở khóa ngay</Text>
+              </TouchableOpacity>
+              {!offlineModeActive ? (
+                <TouchableOpacity
+                  onPress={() => {
+                    if (playerPhase !== 'idle' || playerParams !== null) {
+                      clearTransitionTimers();
+                      queuedPlayerParamsRef.current = null;
+                      pendingAfterRestoreRef.current = undefined;
+                      setPlayerParams(null);
+                      setPlayerPhase('idle');
+                      ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => {});
+                    }
+                    logout();
+                  }}
+                  style={{ marginTop: 14 }}
+                >
+                  <Text style={styles.logoutLink}>Đăng xuất tài khoản</Text>
+                </TouchableOpacity>
+              ) : null}
+            </GlassSurface>
+          </>
+        ) : (
+          <TouchableOpacity
+            activeOpacity={1}
+            style={StyleSheet.absoluteFill}
+            onPress={() => {
+              attemptAutoUnlockWithBiometrics().catch(() => {});
+            }}
+          />
+        )}
+      </View>
+    );
+  };
+
   const renderMainContent = () => {
+    const hidePortraitStage = playerPhase !== 'idle';
+
+    if (offlineModeActive) {
+      return (
+        <View style={[styles.root, hidePortraitStage && { backgroundColor: '#000000' }]}>
+          <SafeAreaInsetsContext.Provider value={activePortraitInsets}>
+            <Animated.View
+              style={[
+                styles.portraitStage,
+                {
+                  width: portraitWidth,
+                  height: portraitHeight,
+                  display: hidePortraitStage ? 'none' : 'flex',
+                  opacity: portraitOpacity,
+                },
+              ]}
+              pointerEvents={hidePortraitStage ? 'none' : 'auto'}
+            >
+              <AmbientAppBackground />
+              <View style={styles.screenArea}>
+                <LibraryScreen
+                  offlineOnlyMode
+                  onOpenPreview={() => {}}
+                  onPlayOffline={handlePlayOffline}
+                  onReconnectOnline={() => {
+                    offlineModeActiveRef.current = false;
+                    setOfflineModeActive(false);
+                    setSplashError(false);
+                    setSplashStatusText('Đang kết nối lại...');
+                    setSplashDismissing(false);
+                    setSplashVisible(true);
+                    probeServerConnection();
+                  }}
+                />
+              </View>
+            </Animated.View>
+          </SafeAreaInsetsContext.Provider>
+
+          <PlayerModal
+            visible={playerPhase === 'active' && playerParams !== null}
+            params={playerParams}
+            onClose={() => closePlayerWithCurtain()}
+            onSwitchOfflineItem={handleSwitchOfflineItem}
+          />
+
+          {renderLockOverlay()}
+        </View>
+      );
+    }
+
     if (bootstrapping) {
       return (
         <View style={styles.root}>
@@ -492,10 +624,8 @@ function RootAppContent() {
       return <LoginScreen />;
     }
 
-    const hidePortraitStage = playerPhase !== 'idle';
-
     return (
-      <View style={styles.root}>
+      <View style={[styles.root, hidePortraitStage && { backgroundColor: '#000000' }]}>
         <SafeAreaInsetsContext.Provider value={activePortraitInsets}>
           <Animated.View
             style={[
@@ -607,6 +737,7 @@ function RootAppContent() {
           params={playerParams}
           onClose={() => closePlayerWithCurtain()}
           onSwitchEpisode={handleSwitchEpisode}
+          onSwitchOfflineItem={handleSwitchOfflineItem}
           onOpenCast={() => {
             if (playerParams) {
               setCastMovie({
@@ -619,54 +750,15 @@ function RootAppContent() {
           }}
         />
 
-        {isLocked ? (
-          <View style={[styles.lockOverlay, !lockPromptVisible && styles.lockOverlayScanning]}>
-            {lockPromptVisible ? (
-              <>
-                <AmbientAppBackground />
-                <GlassSurface intensity={55} radius={30} style={styles.lockCard}>
-                  <Ionicons name="lock-closed" size={42} color={COLORS.accent} />
-                  <Text style={styles.lockTitle}>Đã khóa bằng Face ID</Text>
-                  <Text style={styles.lockSub}>Xác thực để tiếp tục xem phim trên Đặng Việt Anh</Text>
-                  <TouchableOpacity style={styles.unlockBtn} onPress={unlockWithBiometrics}>
-                    <Ionicons name="scan-outline" size={20} color="#FFF" />
-                    <Text style={styles.unlockTxt}>Mở khóa ngay</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    onPress={() => {
-                      if (playerPhase !== 'idle' || playerParams !== null) {
-                        clearTransitionTimers();
-                        queuedPlayerParamsRef.current = null;
-                        pendingAfterRestoreRef.current = undefined;
-                        setPlayerParams(null);
-                        setPlayerPhase('idle');
-                        ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => {});
-                      }
-                      logout();
-                    }}
-                    style={{ marginTop: 14 }}
-                  >
-                    <Text style={styles.logoutLink}>Đăng xuất tài khoản</Text>
-                  </TouchableOpacity>
-                </GlassSurface>
-              </>
-            ) : (
-              <TouchableOpacity
-                activeOpacity={1}
-                style={StyleSheet.absoluteFill}
-                onPress={() => {
-                  attemptAutoUnlockWithBiometrics().catch(() => {});
-                }}
-              />
-            )}
-          </View>
-        ) : null}
+        {renderLockOverlay()}
       </View>
     );
   };
 
+  const completedOfflineCount = offlineItems.filter((i) => i.status === 'completed').length;
+
   return (
-    <View style={styles.root}>
+    <View style={[styles.root, playerPhase !== 'idle' && { backgroundColor: '#000000' }]}>
       <StatusBar hidden={playerPhase !== 'idle'} style="light" />
       {renderMainContent()}
       <SplashOverlay
@@ -674,10 +766,21 @@ function RootAppContent() {
         dismissing={splashDismissing}
         statusText={splashStatusText}
         hasError={splashError}
+        offlineCount={completedOfflineCount}
         onRetry={() => {
           setSplashError(false);
           setSplashStatusText('Đang kết nối lại...');
           probeServerConnection();
+        }}
+        onOpenOfflineMode={() => {
+          if (retryTimerRef.current) {
+            clearTimeout(retryTimerRef.current);
+            retryTimerRef.current = null;
+          }
+          offlineModeActiveRef.current = true;
+          setOfflineModeActive(true);
+          setSplashError(false);
+          setSplashDismissing(true);
         }}
       />
     </View>

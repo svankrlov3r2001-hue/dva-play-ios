@@ -442,6 +442,378 @@ private final class DvaLocalProxyRelay: @unchecked Sendable {
   }
 }
 
+private func dvaMimeTypeForExtension(_ ext: String) -> String {
+  switch ext.lowercased() {
+  case "m3u8":
+    return "application/vnd.apple.mpegurl"
+  case "ts":
+    return "video/mp2t"
+  case "m4s":
+    return "video/iso.segment"
+  case "mp4":
+    return "video/mp4"
+  case "vtt":
+    return "text/vtt; charset=utf-8"
+  case "jpg", "jpeg":
+    return "image/jpeg"
+  case "png":
+    return "image/png"
+  case "webp":
+    return "image/webp"
+  case "key":
+    return "application/octet-stream"
+  default:
+    return "application/octet-stream"
+  }
+}
+
+private func dvaSendHttpText(
+  clientFd: Int32,
+  statusLine: String,
+  body: String = "",
+  extraHeaders: [String] = []
+) {
+  let bodyBytes = Array(body.utf8)
+  var lines = [
+    "HTTP/1.1 \\(statusLine)",
+    "Access-Control-Allow-Origin: *",
+    "Access-Control-Allow-Methods: GET, HEAD, OPTIONS",
+    "Access-Control-Allow-Headers: Range, Origin, Content-Type, Accept",
+    "Access-Control-Expose-Headers: Content-Length, Content-Range, Accept-Ranges",
+    "Accept-Ranges: bytes",
+    "Cache-Control: no-cache",
+    "Content-Type: text/plain; charset=utf-8",
+    "Content-Length: \\(bodyBytes.count)",
+    "Connection: close"
+  ]
+  if !extraHeaders.isEmpty {
+    lines.append(contentsOf: extraHeaders)
+  }
+  var payload = Array((lines.joined(separator: "\\r\\n") + "\\r\\n\\r\\n").utf8)
+  if !bodyBytes.isEmpty {
+    payload.append(contentsOf: bodyBytes)
+  }
+  _ = dvaWriteAll(clientFd, payload)
+}
+
+private func dvaParseByteRange(_ rangeHeader: String, fileSize: Int64) -> (start: Int64, end: Int64)? {
+  guard fileSize > 0 else { return nil }
+  let trimmed = rangeHeader.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard trimmed.lowercased().hasPrefix("bytes=") else { return nil }
+  let rawSpec = String(trimmed.dropFirst(6)).split(separator: ",").first.map(String.init) ?? ""
+  let parts = rawSpec.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false)
+  guard parts.count == 2 else { return nil }
+  let startStr = String(parts[0]).trimmingCharacters(in: .whitespaces)
+  let endStr = String(parts[1]).trimmingCharacters(in: .whitespaces)
+
+  if startStr.isEmpty {
+    guard let suffixLen = Int64(endStr), suffixLen > 0 else { return nil }
+    let start = max(Int64(0), fileSize - suffixLen)
+    return (start, fileSize - 1)
+  }
+
+  guard let start = Int64(startStr), start >= 0, start < fileSize else {
+    return nil
+  }
+  if endStr.isEmpty {
+    return (start, fileSize - 1)
+  }
+  guard let reqEnd = Int64(endStr) else { return nil }
+  let end = min(reqEnd, fileSize - 1)
+  guard end >= start else { return nil }
+  return (start, end)
+}
+
+private func dvaHandleMediaClient(clientFd: Int32, rootDirURL: URL) {
+  dvaConfigureSocketNoSigPipe(clientFd)
+  dvaSetSocketTimeouts(clientFd, seconds: 15)
+  defer {
+    _ = Darwin.shutdown(clientFd, SHUT_RDWR)
+    _ = Darwin.close(clientFd)
+  }
+
+  var reqBuf = [UInt8]()
+  reqBuf.reserveCapacity(1024)
+  var temp = [UInt8](repeating: 0, count: 2048)
+  var headerEndIndex: Int? = nil
+
+  while reqBuf.count < 16384 {
+    let n = temp.withUnsafeMutableBytes { rawBuf -> Int in
+      guard let base = rawBuf.baseAddress else { return -1 }
+      return Darwin.recv(clientFd, base, rawBuf.count, 0)
+    }
+    if n < 0 {
+      if errno == EINTR { continue }
+      return
+    }
+    if n == 0 {
+      return
+    }
+    reqBuf.append(contentsOf: temp[0..<n])
+    if reqBuf.count >= 4 {
+      for i in 0...(reqBuf.count - 4) {
+        if reqBuf[i] == 13 && reqBuf[i + 1] == 10 && reqBuf[i + 2] == 13 && reqBuf[i + 3] == 10 {
+          headerEndIndex = i
+          break
+        }
+      }
+    }
+    if headerEndIndex != nil {
+      break
+    }
+  }
+
+  guard let endIdx = headerEndIndex else { return }
+  let headerStr = String(decoding: reqBuf[0..<endIdx], as: UTF8.self)
+  let headerLines = headerStr.components(separatedBy: "\\r\\n")
+  guard let requestLine = headerLines.first else {
+    dvaSendHttpText(clientFd: clientFd, statusLine: "400 Bad Request", body: "Bad Request")
+    return
+  }
+
+  let reqTokens = requestLine.split(separator: " ", omittingEmptySubsequences: true)
+  guard reqTokens.count >= 2 else {
+    dvaSendHttpText(clientFd: clientFd, statusLine: "400 Bad Request", body: "Bad Request")
+    return
+  }
+
+  let method = String(reqTokens[0]).uppercased()
+  let rawTarget = String(reqTokens[1])
+
+  if method == "OPTIONS" {
+    dvaSendHttpText(clientFd: clientFd, statusLine: "204 No Content")
+    return
+  }
+
+  guard method == "GET" || method == "HEAD" else {
+    dvaSendHttpText(clientFd: clientFd, statusLine: "405 Method Not Allowed", body: "Method Not Allowed")
+    return
+  }
+
+  let pathOnly = rawTarget.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? rawTarget
+  guard pathOnly.hasPrefix("/offline/") else {
+    dvaSendHttpText(clientFd: clientFd, statusLine: "404 Not Found", body: "Not Found")
+    return
+  }
+
+  let rawRelPath = String(pathOnly.dropFirst("/offline/".count))
+  guard let decodedRelPath = rawRelPath.removingPercentEncoding,
+        !decodedRelPath.isEmpty,
+        !decodedRelPath.hasPrefix("/"),
+        !decodedRelPath.contains("..") else {
+    dvaSendHttpText(clientFd: clientFd, statusLine: "403 Forbidden", body: "Forbidden")
+    return
+  }
+
+  let candidateURL = rootDirURL.appendingPathComponent(decodedRelPath).standardizedFileURL
+  let basePrefix = rootDirURL.path.hasSuffix("/") ? rootDirURL.path : (rootDirURL.path + "/")
+  guard candidateURL.path.hasPrefix(basePrefix) else {
+    dvaSendHttpText(clientFd: clientFd, statusLine: "403 Forbidden", body: "Forbidden")
+    return
+  }
+
+  var isDir: ObjCBool = false
+  guard FileManager.default.fileExists(atPath: candidateURL.path, isDirectory: &isDir),
+        !isDir.boolValue else {
+    dvaSendHttpText(clientFd: clientFd, statusLine: "404 Not Found", body: "Not Found")
+    return
+  }
+
+  guard let attrs = try? FileManager.default.attributesOfItem(atPath: candidateURL.path),
+        let sizeNumber = attrs[.size] as? NSNumber else {
+    dvaSendHttpText(clientFd: clientFd, statusLine: "404 Not Found", body: "Not Found")
+    return
+  }
+  let fileSize = sizeNumber.int64Value
+
+  var rangeHeaderValue: String? = nil
+  for line in headerLines.dropFirst() {
+    if let colonIdx = line.firstIndex(of: ":") {
+      let key = line[..<colonIdx].trimmingCharacters(in: .whitespaces).lowercased()
+      if key == "range" {
+        rangeHeaderValue = line[line.index(after: colonIdx)...].trimmingCharacters(in: .whitespaces)
+        break
+      }
+    }
+  }
+
+  let mimeType = dvaMimeTypeForExtension(candidateURL.pathExtension)
+  var startOffset: Int64 = 0
+  var endOffset: Int64 = fileSize > 0 ? (fileSize - 1) : -1
+  var isPartial = false
+
+  if let rangeHeaderValue {
+    if let parsed = dvaParseByteRange(rangeHeaderValue, fileSize: fileSize) {
+      startOffset = parsed.start
+      endOffset = parsed.end
+      isPartial = true
+    } else {
+      dvaSendHttpText(
+        clientFd: clientFd,
+        statusLine: "416 Range Not Satisfiable",
+        extraHeaders: ["Content-Range: bytes */\\(fileSize)"]
+      )
+      return
+    }
+  }
+
+  let contentLength: Int64 = (fileSize > 0 && endOffset >= startOffset) ? (endOffset - startOffset + 1) : 0
+  var respHeaders = [
+    isPartial ? "HTTP/1.1 206 Partial Content" : "HTTP/1.1 200 OK",
+    "Access-Control-Allow-Origin: *",
+    "Access-Control-Allow-Methods: GET, HEAD, OPTIONS",
+    "Access-Control-Allow-Headers: Range, Origin, Content-Type, Accept",
+    "Access-Control-Expose-Headers: Content-Length, Content-Range, Accept-Ranges",
+    "Accept-Ranges: bytes",
+    "Cache-Control: no-cache",
+    "Content-Type: \\(mimeType)",
+    "Content-Length: \\(contentLength)",
+    "Connection: close"
+  ]
+  if isPartial {
+    respHeaders.append("Content-Range: bytes \\(startOffset)-\\(endOffset)/\\(fileSize)")
+  }
+  let headerBytes = Array((respHeaders.joined(separator: "\\r\\n") + "\\r\\n\\r\\n").utf8)
+  guard dvaWriteAll(clientFd, headerBytes) else { return }
+
+  if method == "HEAD" || contentLength <= 0 {
+    return
+  }
+
+  guard let fh = FileHandle(forReadingAtPath: candidateURL.path) else {
+    return
+  }
+  defer {
+    try? fh.close()
+  }
+
+  do {
+    try fh.seek(toOffset: UInt64(startOffset))
+    dvaSetSocketTimeouts(clientFd, seconds: 120)
+    var remaining = contentLength
+    while remaining > 0 {
+      let chunkSize = Int(min(Int64(65536), remaining))
+      guard let data = try fh.read(upToCount: chunkSize), !data.isEmpty else {
+        break
+      }
+      let sentOk = dvaWriteAll(clientFd, Array(data))
+      if !sentOk {
+        break
+      }
+      remaining -= Int64(data.count)
+    }
+  } catch {}
+}
+
+/**
+ * In-app loopback HTTP/1.1 range & CORS media server on 127.0.0.1:<localPort>
+ * serving downloaded HLS (.m3u8/.ts), MP4, VTT subtitles, and posters directly from disk.
+ */
+private final class DvaLocalMediaServer: @unchecked Sendable {
+  let rootDirURL: URL
+  var rootDirPath: String { rootDirURL.path }
+  private(set) var localPort: UInt16 = 0
+  private var listenFd: Int32 = -1
+  private let lock = NSLock()
+  private var stopped = false
+
+  init?(rootPath: String) {
+    let cleanRoot = rootPath.hasSuffix("/") && rootPath.count > 1 ? String(rootPath.dropLast()) : rootPath
+    let rootURL = URL(fileURLWithPath: cleanRoot).standardizedFileURL
+    self.rootDirURL = rootURL
+
+    let fd = Darwin.socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
+    if fd < 0 {
+      return nil
+    }
+    dvaConfigureSocketNoSigPipe(fd)
+    var reuse: Int32 = 1
+    _ = Darwin.setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
+
+    var addr = sockaddr_in()
+    addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+    addr.sin_family = sa_family_t(AF_INET)
+    addr.sin_port = 0
+    addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+
+    let bindRes = withUnsafePointer(to: &addr) {
+      $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+        Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+      }
+    }
+    if bindRes != 0 || Darwin.listen(fd, 128) != 0 {
+      _ = Darwin.close(fd)
+      return nil
+    }
+
+    var boundAddr = sockaddr_in()
+    var boundLen = socklen_t(MemoryLayout<sockaddr_in>.size)
+    let nameRes = withUnsafeMutablePointer(to: &boundAddr) {
+      $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+        Darwin.getsockname(fd, $0, &boundLen)
+      }
+    }
+    if nameRes != 0 {
+      _ = Darwin.close(fd)
+      return nil
+    }
+    self.localPort = UInt16(bigEndian: boundAddr.sin_port)
+    if self.localPort == 0 {
+      _ = Darwin.close(fd)
+      return nil
+    }
+    self.listenFd = fd
+
+    DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+      while true {
+        let cFd = Darwin.accept(fd, nil, nil)
+        if cFd < 0 {
+          if errno == EINTR { continue }
+          break
+        }
+        guard let strongSelf = self else {
+          _ = Darwin.close(cFd)
+          break
+        }
+        if strongSelf.isStopped {
+          _ = Darwin.close(cFd)
+          break
+        }
+        let targetRoot = strongSelf.rootDirURL
+        DispatchQueue.global(qos: .userInitiated).async {
+          dvaHandleMediaClient(clientFd: cFd, rootDirURL: targetRoot)
+        }
+      }
+    }
+  }
+
+  private var isStopped: Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    return stopped
+  }
+
+  func stop() {
+    lock.lock()
+    if stopped {
+      lock.unlock()
+      return
+    }
+    stopped = true
+    let fd = listenFd
+    listenFd = -1
+    lock.unlock()
+    if fd >= 0 {
+      _ = Darwin.shutdown(fd, SHUT_RDWR)
+      _ = Darwin.close(fd)
+    }
+  }
+
+  deinit {
+    stop()
+  }
+}
+
 #if canImport(Network)
 @available(iOS 17.0, macOS 14.0, tvOS 17.0, *)
 private func dvaMakeProxyConfiguration(_ spec: DvaProxySpec) -> ProxyConfiguration? {
@@ -449,7 +821,8 @@ private func dvaMakeProxyConfiguration(_ spec: DvaProxySpec) -> ProxyConfigurati
     return nil
   }
   let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(spec.host), port: nwPort)
-  let proxyConfig = ProxyConfiguration(httpCONNECTProxy: endpoint, tlsOptions: nil)
+  var proxyConfig = ProxyConfiguration(httpCONNECTProxy: endpoint, tlsOptions: nil)
+  proxyConfig.excludedDomains = ["127.0.0.1", "localhost"]
   if !spec.username.isEmpty || !spec.password.isEmpty {
     proxyConfig.applyCredential(username: spec.username, password: spec.password)
   }
@@ -524,8 +897,8 @@ private func dvaRunProxyProbe(
   config.urlCache = nil
   config.httpShouldSetCookies = false
   config.httpCookieStorage = nil
-  config.timeoutIntervalForRequest = 8
-  config.timeoutIntervalForResource = 10
+  config.timeoutIntervalForRequest = 3
+  config.timeoutIntervalForResource = 3.5
 
 #if canImport(Network)
   if #available(iOS 17.0, macOS 14.0, tvOS 17.0, *) {
@@ -562,7 +935,7 @@ private func dvaRunProxyProbe(
 #endif
 
   var req = URLRequest(url: url)
-  req.timeoutInterval = 8
+  req.timeoutInterval = 3
   req.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
 
   let startNs = DispatchTime.now().uptimeNanoseconds
@@ -641,6 +1014,7 @@ private func dvaRunProxyProbe(
     `public final class ExpoFetchModule: Module {
   private var dvaProxySpec: DvaProxySpec?
   private var dvaActiveRelay: DvaLocalProxyRelay?
+  private var dvaMediaServer: DvaLocalMediaServer?
   private var dvaSessionInitialized = false
   private lazy var urlSession = createURLSession()`
   );
@@ -650,12 +1024,48 @@ private func dvaRunProxyProbe(
     `    OnDestroy {
       dvaActiveRelay?.stop()
       dvaActiveRelay = nil
+      dvaMediaServer?.stop()
+      dvaMediaServer = nil
       dvaProxySpec = nil
       if dvaSessionInitialized {
         urlSession.invalidateAndCancel()
       }
       dvaApplyWebKitProxy(nil) {}
     }
+
+    AsyncFunction("dvaStartOfflineMediaServer") { (rootDirPath: String) -> Int in
+      var cleanPath = rootDirPath.trimmingCharacters(in: .whitespacesAndNewlines)
+      if cleanPath.hasPrefix("file://"), let fileUrl = URL(string: cleanPath) {
+        cleanPath = fileUrl.path
+      }
+      if cleanPath.hasSuffix("/") && cleanPath.count > 1 {
+        cleanPath = String(cleanPath.dropLast())
+      }
+      guard !cleanPath.isEmpty else {
+        return 0
+      }
+      let stdPath = URL(fileURLWithPath: cleanPath).standardizedFileURL.path
+      if let existing = self.dvaMediaServer, existing.rootDirPath == stdPath, existing.localPort > 0 {
+        return Int(existing.localPort)
+      }
+      self.dvaMediaServer?.stop()
+      self.dvaMediaServer = nil
+      guard let server = DvaLocalMediaServer(rootPath: stdPath) else {
+        return 0
+      }
+      self.dvaMediaServer = server
+      return Int(server.localPort)
+    }.runOnQueue(fetchRequestQueue)
+
+    AsyncFunction("dvaGetOfflineMediaServerPort") { () -> Int in
+      return Int(self.dvaMediaServer?.localPort ?? 0)
+    }.runOnQueue(fetchRequestQueue)
+
+    AsyncFunction("dvaStopOfflineMediaServer") { () -> Bool in
+      self.dvaMediaServer?.stop()
+      self.dvaMediaServer = nil
+      return true
+    }.runOnQueue(fetchRequestQueue)
 
     Function("dvaIsProxySupported") { () -> Bool in
 #if canImport(Network)

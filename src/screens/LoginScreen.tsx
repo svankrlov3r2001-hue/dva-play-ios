@@ -22,6 +22,7 @@ import { useAuth } from '../context/AuthContext';
 export function LoginScreen() {
   const insets = useSafeAreaInsets();
   const { login } = useAuth();
+  const verticalPad = Math.max(insets.top + 56, insets.bottom + 28);
   const [identity, setIdentity] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -86,22 +87,11 @@ export function LoginScreen() {
         <ScrollView
           contentContainerStyle={[
             styles.scrollContent,
-            { paddingTop: insets.top + 66, paddingBottom: insets.bottom + 28 },
+            { paddingTop: verticalPad, paddingBottom: verticalPad },
           ]}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          {/* .dva-login-brand-panel */}
-          <View style={styles.brandPanel}>
-            <Image
-              source={require('../../assets/splash-logo.png')}
-              style={styles.brandLogo}
-              resizeMode="contain"
-            />
-            <Text style={styles.brandTitle}>Đặng Việt Anh</Text>
-            <Text style={styles.brandSlogan}>Xem phim mọi lúc, mọi nơi</Text>
-          </View>
-
           {/* .dva-login-card (Apple Liquid Glass container border-radius: 40px) */}
           <View style={styles.cardWrap}>
             <BlurView intensity={58} tint="dark" style={StyleSheet.absoluteFill} />
@@ -244,32 +234,6 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     paddingHorizontal: 22,
     justifyContent: 'center',
-    gap: 20,
-  },
-  brandPanel: {
-    alignItems: 'center',
-    textAlign: 'center',
-    gap: 10,
-  },
-  brandLogo: {
-    width: 88,
-    height: 88,
-    borderRadius: 24,
-  },
-  brandTitle: {
-    color: '#FFFFFF',
-    fontSize: 30,
-    fontWeight: '600',
-    letterSpacing: -0.4,
-    textShadowColor: 'rgba(0, 0, 0, 0.55)',
-    textShadowRadius: 16,
-    textShadowOffset: { width: 0, height: 4 },
-  },
-  brandSlogan: {
-    color: 'rgba(245, 246, 250, 0.84)',
-    fontSize: 15.5,
-    fontWeight: '400',
-    letterSpacing: 0.2,
   },
   cardWrap: {
     borderRadius: 40,

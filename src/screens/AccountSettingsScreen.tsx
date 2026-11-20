@@ -41,8 +41,10 @@ import {
   getProxyConfig,
   isNativeProxySupported,
   normalizeCustomProxyInput,
+  PROXY_PROBE_TIMEOUT_MS,
   ProxyPreset,
   ProxyRuntimeConfig,
+  ProxyTestResult,
   setProxyConfig,
   subscribeProxyConfig,
   syncProxyPresetsFromDbAsync,
@@ -67,6 +69,14 @@ const QUALITY_OPTIONS: ('auto' | '1080p' | '720p' | '360p')[] = [
   '720p',
   '360p',
 ];
+
+type PresetProbeStatus = 'testing' | 'ok' | 'timeout' | 'error';
+
+interface PresetProbeState {
+  status: PresetProbeStatus;
+  latencyMs?: number;
+  error?: string;
+}
 
 interface AccountSettingsScreenProps {
   visible: boolean;
@@ -94,10 +104,12 @@ export function AccountSettingsScreen({
   const [applyingProxy, setApplyingProxy] = useState(false);
   const [reloadingPresets, setReloadingPresets] = useState(false);
   const [testingProxy, setTestingProxy] = useState(false);
+  const [presetProbeMap, setPresetProbeMap] = useState<Record<string, PresetProbeState>>({});
   const [proxyStatusMsg, setProxyStatusMsg] = useState<{
     ok: boolean;
     text: string;
   } | null>(null);
+  const probeRunIdRef = useRef(0);
   const nativeProxyReady = isNativeProxySupported();
   const otaState = getOtaRuntimeState();
   const enterAnim = useRef(new Animated.Value(0)).current;
@@ -129,6 +141,9 @@ export function AccountSettingsScreen({
   }, []);
 
   const handleReloadPresets = useCallback(async (isManual: boolean = false) => {
+    probeRunIdRef.current++;
+    setTestingProxy(false);
+    setPresetProbeMap({});
     setReloadingPresets(true);
     if (isManual) {
       Haptics.selectionAsync();
@@ -161,7 +176,11 @@ export function AccountSettingsScreen({
   }, []);
 
   useEffect(() => {
-    if (!visible) return;
+    if (!visible) {
+      probeRunIdRef.current++;
+      setTestingProxy(false);
+      return;
+    }
     handleReloadPresets(false);
   }, [visible, handleReloadPresets]);
 
@@ -234,50 +253,164 @@ export function AccountSettingsScreen({
   };
 
   const handleTestProxyConnection = async () => {
+    if (testingProxy) return;
     setProxyStatusMsg(null);
     if (!nativeProxyReady) {
       setProxyStatusMsg({
         ok: false,
-        text: 'Cần cài đặt bản ứng dụng iOS mới nhất (v1.0.17) để kiểm tra Proxy trực tiếp trên iPhone.',
-      });
-      return;
-    }
-    if (
-      proxyCfg.mode === 'custom' &&
-      !normalizeCustomProxyInput(proxyCfg.customHost, proxyCfg.customPort)
-    ) {
-      setProxyStatusMsg({
-        ok: false,
-        text: 'Vui lòng nhập đúng IP/Host và Cổng (1 - 65535).',
+        text: 'Cần cài đặt bản ứng dụng iOS mới nhất (v1.0.17+) để kiểm tra Proxy trực tiếp trên iPhone.',
       });
       return;
     }
 
+    if (proxyCfg.mode === 'custom') {
+      if (!normalizeCustomProxyInput(proxyCfg.customHost, proxyCfg.customPort)) {
+        setProxyStatusMsg({
+          ok: false,
+          text: 'Vui lòng nhập đúng IP/Host và Cổng (1 - 65535).',
+        });
+        return;
+      }
+
+      setTestingProxy(true);
+      try {
+        const res = await testProxyDirectAsync(
+          proxyCfg,
+          resolveProxyPresetApi,
+          PROXY_PROBE_TIMEOUT_MS
+        );
+        if (res.success) {
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          const suffix = !res.managed && res.exit_ip ? ` • IP: ${res.exit_ip}` : '';
+          setProxyStatusMsg({
+            ok: true,
+            text: `Đã kết nối ${res.label} • ${res.latency_ms} ms${suffix}`,
+          });
+        } else {
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+          setProxyStatusMsg({
+            ok: false,
+            text: res.error || 'Không thể kết nối qua proxy này.',
+          });
+        }
+      } catch (err: any) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        setProxyStatusMsg({
+          ok: false,
+          text: err?.message || 'Kiểm tra kết nối thất bại.',
+        });
+      } finally {
+        setTestingProxy(false);
+      }
+      return;
+    }
+
+    const listToProbe = [...proxyPresets];
+    if (listToProbe.length === 0) {
+      setProxyStatusMsg({
+        ok: false,
+        text: 'Hiện chưa có máy chủ sẵn có nào đang bật để kiểm tra.',
+      });
+      return;
+    }
+
+    const runId = ++probeRunIdRef.current;
     setTestingProxy(true);
+    setPresetProbeMap({});
+
+    let okCount = 0;
+    let timeoutCount = 0;
+    let fastest: { name: string; latencyMs: number } | null = null;
+    let firstErrorMsg = '';
+
     try {
-      const res = await testProxyDirectAsync(proxyCfg, resolveProxyPresetApi);
-      if (res.success) {
+      for (const preset of listToProbe) {
+        if (probeRunIdRef.current !== runId) return;
+
+        setPresetProbeMap((prev) => ({
+          ...prev,
+          [preset.id]: { status: 'testing' },
+        }));
+
+        let res: ProxyTestResult;
+        try {
+          res = await testProxyDirectAsync(
+            {
+              ...proxyCfg,
+              mode: 'preset',
+              presetId: preset.id,
+              presetName: preset.name,
+            },
+            resolveProxyPresetApi,
+            PROXY_PROBE_TIMEOUT_MS
+          );
+        } catch (err: any) {
+          res = {
+            success: false,
+            timedOut: false,
+            latency_ms: 0,
+            label: preset.name,
+            managed: true,
+            exit_ip: null,
+            error: err?.message || 'Kiểm tra kết nối thất bại.',
+          };
+        }
+
+        if (probeRunIdRef.current !== runId) return;
+
+        if (res.success) {
+          okCount++;
+          if (!fastest || res.latency_ms < fastest.latencyMs) {
+            fastest = { name: preset.name, latencyMs: res.latency_ms };
+          }
+          setPresetProbeMap((prev) => ({
+            ...prev,
+            [preset.id]: { status: 'ok', latencyMs: res.latency_ms },
+          }));
+        } else if (res.timedOut) {
+          timeoutCount++;
+          if (!firstErrorMsg) {
+            firstErrorMsg = res.error || 'Quá thời gian chờ (3s).';
+          }
+          setPresetProbeMap((prev) => ({
+            ...prev,
+            [preset.id]: { status: 'timeout', error: res.error || undefined },
+          }));
+        } else {
+          if (!firstErrorMsg) {
+            firstErrorMsg = res.error || 'Không thể kết nối qua proxy này.';
+          }
+          setPresetProbeMap((prev) => ({
+            ...prev,
+            [preset.id]: { status: 'error', error: res.error || undefined },
+          }));
+        }
+      }
+
+      if (probeRunIdRef.current !== runId) return;
+
+      if (okCount > 0 && fastest) {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        const suffix = !res.managed && res.exit_ip ? ` • IP: ${res.exit_ip}` : '';
         setProxyStatusMsg({
           ok: true,
-          text: `Đã kết nối ${res.label} • ${res.latency_ms} ms${suffix}`,
+          text: `Đã kiểm tra ${listToProbe.length} máy chủ (${okCount} hoạt động) • Nhanh nhất: ${fastest.name} (${fastest.latencyMs} ms)`,
         });
       } else {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
         setProxyStatusMsg({
           ok: false,
-          text: res.error || 'Không thể kết nối qua proxy này.',
+          text:
+            timeoutCount === listToProbe.length
+              ? `Tất cả ${listToProbe.length} máy chủ đều quá thời gian chờ (${Math.round(
+                  PROXY_PROBE_TIMEOUT_MS / 1000
+                )}s).`
+              : firstErrorMsg || 'Không thể kết nối qua các máy chủ sẵn có.',
         });
       }
-    } catch (err: any) {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      setProxyStatusMsg({
-        ok: false,
-        text: err?.message || 'Kiểm tra kết nối thất bại.',
-      });
     } finally {
-      setTestingProxy(false);
+      if (probeRunIdRef.current === runId) {
+        setTestingProxy(false);
+      }
     }
   };
 
@@ -612,6 +745,7 @@ export function AccountSettingsScreen({
             ) : (
               proxyPresets.map((preset) => {
                 const selected = proxyCfg.presetId === preset.id;
+                const probe = presetProbeMap[preset.id];
                 return (
                   <TouchableOpacity
                     key={preset.id}
@@ -627,23 +761,75 @@ export function AccountSettingsScreen({
                       });
                     }}
                   >
-                    <View style={{ flex: 1 }}>
-                      <View style={styles.presetTitleRow}>
-                        <Text style={styles.presetName}>{preset.name}</Text>
-                        <View style={styles.presetBadge}>
-                          <Ionicons name="lock-closed" size={10} color="#93C5FD" />
-                          <Text style={styles.presetBadgeTxt}>
-                            Máy chủ cấp sẵn • Ẩn thông tin
-                          </Text>
-                        </View>
-                      </View>
-                      <Text style={styles.presetRegion}>{preset.region}</Text>
+                    <View style={{ flex: 1, paddingRight: 8 }}>
+                      <Text style={styles.presetName} numberOfLines={1}>
+                        {preset.name}
+                      </Text>
+                      <Text style={styles.presetRegion} numberOfLines={1}>
+                        {preset.region}
+                      </Text>
                     </View>
-                    <Ionicons
-                      name={selected ? 'checkmark-circle' : 'ellipse-outline'}
-                      size={21}
-                      color={selected ? COLORS.accent : COLORS.muted}
-                    />
+                    <View style={styles.presetRightWrap}>
+                      {probe ? (
+                        <View
+                          style={[
+                            styles.presetLatencyPill,
+                            probe.status === 'testing'
+                              ? styles.presetLatencyTesting
+                              : probe.status === 'ok'
+                              ? styles.presetLatencyOk
+                              : probe.status === 'timeout'
+                              ? styles.presetLatencyTimeout
+                              : styles.presetLatencyErr,
+                          ]}
+                        >
+                          {probe.status === 'testing' ? (
+                            <>
+                              <ActivityIndicator
+                                size="small"
+                                color="#93C5FD"
+                                style={styles.presetLatencySpinner}
+                              />
+                              <Text style={[styles.presetLatencyTxt, { color: '#BFDBFE' }]}>
+                                Đang đo
+                              </Text>
+                            </>
+                          ) : probe.status === 'ok' ? (
+                            <>
+                              <View
+                                style={[styles.presetLatencyDot, { backgroundColor: '#30D158' }]}
+                              />
+                              <Text style={[styles.presetLatencyTxt, { color: '#4ADE80' }]}>
+                                {probe.latencyMs} ms
+                              </Text>
+                            </>
+                          ) : probe.status === 'timeout' ? (
+                            <>
+                              <View
+                                style={[styles.presetLatencyDot, { backgroundColor: '#F59E0B' }]}
+                              />
+                              <Text style={[styles.presetLatencyTxt, { color: '#FDE68A' }]}>
+                                Quá 3s
+                              </Text>
+                            </>
+                          ) : (
+                            <>
+                              <View
+                                style={[styles.presetLatencyDot, { backgroundColor: '#EF4444' }]}
+                              />
+                              <Text style={[styles.presetLatencyTxt, { color: '#FCA5A5' }]}>
+                                Lỗi
+                              </Text>
+                            </>
+                          )}
+                        </View>
+                      ) : null}
+                      <Ionicons
+                        name={selected ? 'checkmark-circle' : 'ellipse-outline'}
+                        size={21}
+                        color={selected ? COLORS.accent : COLORS.muted}
+                      />
+                    </View>
                   </TouchableOpacity>
                 );
               })
@@ -739,7 +925,10 @@ export function AccountSettingsScreen({
             disabled={testingProxy}
           >
             {testingProxy ? (
-              <ActivityIndicator size="small" color="#FFF" />
+              <>
+                <ActivityIndicator size="small" color="#FFF" />
+                <Text style={styles.testProxyBtnTxt}>Đang kiểm tra...</Text>
+              </>
             ) : (
               <>
                 <Ionicons name="pulse-outline" size={16} color="#FFF" />
@@ -811,6 +1000,110 @@ export function AccountSettingsScreen({
             <Text style={styles.subtleBtnTxt}>Dọn sạch</Text>
           </TouchableOpacity>
         </View>
+
+        <View style={styles.switchRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.settingLabel}>Tự động tải tập đang xem</Text>
+            <Text style={styles.settingDesc}>Lưu tập đang phát để xem lại không cần mạng</Text>
+          </View>
+          <Switch
+            value={settings.autoDownloadCurrentOnWatch}
+            onValueChange={(v) => {
+              Haptics.selectionAsync();
+              updateSetting('autoDownloadCurrentOnWatch', v);
+            }}
+            trackColor={{ false: 'rgba(255,255,255,0.2)', true: COLORS.accent }}
+            thumbColor="#FFF"
+          />
+        </View>
+
+        <View style={styles.switchRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.settingLabel}>Tải thêm tập tiếp theo</Text>
+            <Text style={styles.settingDesc}>
+              {settings.autoDownloadNextCount > 0
+                ? `Tự động tải trước ${settings.autoDownloadNextCount} tập tiếp theo khi xem`
+                : 'Đang tắt tự động tải tập tiếp theo'}
+            </Text>
+          </View>
+          <View style={styles.offlineStepperRow}>
+            <TouchableOpacity
+              style={styles.offlineStepBtn}
+              onPress={() => {
+                Haptics.selectionAsync();
+                updateSetting(
+                  'autoDownloadNextCount',
+                  Math.max(0, (settings.autoDownloadNextCount || 0) - 1)
+                );
+              }}
+            >
+              <Ionicons name="remove" size={16} color="#FFF" />
+            </TouchableOpacity>
+            <Text style={styles.offlineStepVal}>{settings.autoDownloadNextCount || 0}</Text>
+            <TouchableOpacity
+              style={styles.offlineStepBtn}
+              onPress={() => {
+                Haptics.selectionAsync();
+                updateSetting(
+                  'autoDownloadNextCount',
+                  Math.min(20, (settings.autoDownloadNextCount || 0) + 1)
+                );
+              }}
+            >
+              <Ionicons name="add" size={16} color="#FFF" />
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        <View style={styles.switchRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.settingLabel}>Ưu tiên phát từ máy khi có mạng</Text>
+            <Text style={styles.settingDesc}>Tự dùng tệp ngoại tuyến đã tải để mở tức thì</Text>
+          </View>
+          <Switch
+            value={settings.preferOfflineWhenOnline}
+            onValueChange={(v) => {
+              Haptics.selectionAsync();
+              updateSetting('preferOfflineWhenOnline', v);
+            }}
+            trackColor={{ false: 'rgba(255,255,255,0.2)', true: COLORS.accent }}
+            thumbColor="#FFF"
+          />
+        </View>
+
+        <View style={[styles.settingBlock, { marginTop: 8, marginBottom: 2 }]}>
+          <Text style={styles.settingLabel}>Định dạng tải ngoại tuyến</Text>
+          <View style={styles.qualityRow}>
+            {(
+              [
+                { key: 'auto', label: 'Tự động' },
+                { key: 'hls', label: 'HLS' },
+                { key: 'mp4', label: 'MP4' },
+              ] as const
+            ).map((opt) => (
+              <TouchableOpacity
+                key={opt.key}
+                style={[
+                  styles.qualityChip,
+                  settings.offlineDownloadFormat === opt.key && styles.qualityChipActive,
+                ]}
+                onPress={() => {
+                  Haptics.selectionAsync();
+                  updateSetting('offlineDownloadFormat', opt.key);
+                }}
+              >
+                <Text
+                  style={[
+                    styles.qualityTxt,
+                    settings.offlineDownloadFormat === opt.key && { color: '#FFF' },
+                  ]}
+                >
+                  {opt.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
       </GlassSurface>
 
       {/* Updates & Changelog Card */}
@@ -819,7 +1112,7 @@ export function AccountSettingsScreen({
           <View style={{ flex: 1, paddingRight: 10 }}>
             <Text style={styles.settingLabel}>Cập nhật ứng dụng</Text>
             <Text style={styles.settingDesc}>
-              Phiên bản v{APP_VERSION} (Bản dựng {APP_VERSION_CODE}) • Phát hành {APP_RELEASE_DATE}
+              Phiên bản v{APP_VERSION} • Phát hành {APP_RELEASE_DATE}
             </Text>
           </View>
           <TouchableOpacity
@@ -1206,37 +1499,60 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(229, 9, 20, 0.14)',
     borderColor: 'rgba(229, 9, 20, 0.65)',
   },
-  presetTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
   presetName: {
     color: '#FFF',
     fontSize: 14,
     fontWeight: '700',
   },
-  presetBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 999,
-    backgroundColor: 'rgba(59, 130, 246, 0.18)',
-    borderWidth: 1,
-    borderColor: 'rgba(147, 197, 253, 0.25)',
-  },
-  presetBadgeTxt: {
-    color: '#BFDBFE',
-    fontSize: 10.5,
-    fontWeight: '600',
-  },
   presetRegion: {
     color: COLORS.muted,
     fontSize: 12,
     marginTop: 3,
+  },
+  presetRightWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  presetLatencyPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  presetLatencyTesting: {
+    backgroundColor: 'rgba(59, 130, 246, 0.14)',
+    borderColor: 'rgba(147, 197, 253, 0.28)',
+  },
+  presetLatencyOk: {
+    backgroundColor: 'rgba(48, 209, 88, 0.14)',
+    borderColor: 'rgba(48, 209, 88, 0.35)',
+  },
+  presetLatencyTimeout: {
+    backgroundColor: 'rgba(245, 158, 11, 0.16)',
+    borderColor: 'rgba(253, 230, 138, 0.32)',
+  },
+  presetLatencyErr: {
+    backgroundColor: 'rgba(239, 68, 68, 0.14)',
+    borderColor: 'rgba(239, 68, 68, 0.35)',
+  },
+  presetLatencyDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  presetLatencySpinner: {
+    transform: [{ scale: 0.7 }],
+    marginVertical: -2,
+    marginHorizontal: -2,
+  },
+  presetLatencyTxt: {
+    fontSize: 11.5,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
   },
   customProxyForm: {
     marginTop: 12,
@@ -1319,5 +1635,29 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 12,
     fontWeight: '600',
+  },
+  offlineStepperRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 14,
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+  },
+  offlineStepBtn: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  offlineStepVal: {
+    color: '#FFF',
+    fontSize: 13.5,
+    fontWeight: '700',
+    minWidth: 22,
+    textAlign: 'center',
   },
 });

@@ -2,7 +2,7 @@
   "expo": {
     "name": "Đặng Việt Anh",
     "slug": "dva-play-ios",
-    "version": "1.0.17",
+    "version": "1.0.20",
     "runtimeVersion": "1.0.0",
     "orientation": "default",
     "icon": "./assets/icon.png",
@@ -22,14 +22,15 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.dangvietanh.dvaplay",
-      "buildNumber": "18",
+      "buildNumber": "21",
       "infoPlist": {
         "LSApplicationQueriesSchemes": ["altstore", "sidestore"],
         "NSFaceIDUsageDescription": "Sử dụng Face ID để mở khóa nhanh ứng dụng Đặng Việt Anh.",
         "NSCameraUsageDescription": "Sử dụng Camera để quét mã QR DVA Cast chiếu phim lên TV.",
         "NSPhotoLibraryAddUsageDescription": "Cho phép lưu tệp video đã tải vào thư viện hoặc Tệp trên iPhone.",
         "NSAppTransportSecurity": {
-          "NSAllowsArbitraryLoads": true
+          "NSAllowsArbitraryLoads": true,
+          "NSAllowsLocalNetworking": true
         },
         "UIBackgroundModes": ["audio", "fetch"],
         "ITSAppUsesNonExemptEncryption": false

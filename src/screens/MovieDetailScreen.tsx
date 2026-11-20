@@ -6,7 +6,6 @@ import {
   Easing,
   Image,
   ScrollView,
-  Share,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -19,17 +18,16 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AmbientAppBackground } from '../components/AmbientAppBackground';
 import { GlassSurface } from '../components/GlassSurface';
 import { MovieCard } from '../components/MovieCard';
+import { OfflineDownloadSheet } from '../components/OfflineDownloadSheet';
 import { SkeletonCrossfade } from '../components/SkeletonCrossfade';
 import { MovieDetailSkeleton } from '../components/SkeletonLoaders';
-import { COLORS, RADII, SITE_BASE_URL } from '../constants/config';
+import { COLORS, RADII } from '../constants/config';
 import {
   fetchMovieDetailsApi,
-  resolveStreamApi,
   toggleWishlistApi,
 } from '../services/api';
 import {
   loadOfflineDownloads,
-  startOfflineDownload,
   subscribeOfflineDownloads,
 } from '../services/downloadService';
 import {
@@ -80,7 +78,7 @@ export function MovieDetailScreen({
   const [activeTab, setActiveTab] = useState<'episodes' | 'cast' | 'related'>('episodes');
   const [inWishlist, setInWishlist] = useState(false);
   const [offlineItems, setOfflineItems] = useState<OfflineDownloadItem[]>([]);
-  const [downloadingNow, setDownloadingNow] = useState(false);
+  const [offlineSheetOpen, setOfflineSheetOpen] = useState(false);
   const enterAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -137,56 +135,14 @@ export function MovieDetailScreen({
     } catch {}
   };
 
-  const handleShare = async () => {
-    if (!movie) return;
-    try {
-      await Share.share({
-        title: movie.title,
-        message: `Xem "${movie.title}" trên Đặng Việt Anh: ${SITE_BASE_URL}/dva_play/watch.php?id=${movie.videos_id}`,
-      });
-    } catch {}
-  };
-
-  const handleDownload = async (ep?: EpisodeItem) => {
-    if (!movie) return;
-    const code = ep?.stream_code || movie.stream_code;
-    if (!code) {
-      Alert.alert('Thông báo', 'Phim này chưa có nguồn để tải về.');
-      return;
-    }
-
-    setDownloadingNow(true);
-    try {
-      const resolved = await resolveStreamApi(code, movie.videos_id);
-      if (!resolved.download_mp4_url) {
-        Alert.alert(
-          'Nguồn phát chưa hỗ trợ tải trực tiếp',
-          'Luồng phim hiện tại chỉ phát trực tuyến (HLS/Embed). Bạn vẫn có thể xem trực tiếp ngay.'
-        );
-        return;
-      }
-      Alert.alert('Bắt đầu tải xuống', `Đang tải "${movie.title}" vào bộ nhớ trong (tab Tủ phim → Offline).`);
-      startOfflineDownload({
-        videos_id: movie.videos_id,
-        episode_id: ep?.episodes_id || 0,
-        stream_code: code,
-        title: movie.title,
-        episode_title: ep?.episodes_name,
-        poster_url: movie.poster_url,
-        thumbnail_url: movie.thumbnail_url,
-        remote_url: resolved.download_mp4_url,
-      }).catch((e: any) => {
-        Alert.alert('Lỗi tải xuống', e?.message || 'Tải tệp thất bại.');
-      });
-    } catch (e: any) {
-      Alert.alert('Lỗi', e?.message || 'Không thể lấy liên kết tải.');
-    } finally {
-      setDownloadingNow(false);
-    }
-  };
-
   const currentSeason = movie?.seasons?.[selectedSeasonIdx];
   const seasonEpisodes = currentSeason?.episodes || movie?.episodes || [];
+
+  const handleOpenOfflineSheet = () => {
+    if (!movie) return;
+    Haptics.selectionAsync();
+    setOfflineSheetOpen(true);
+  };
 
   const handlePlayPrimary = () => {
     if (!movie) return;
@@ -274,9 +230,6 @@ export function MovieDetailScreen({
                 <TouchableOpacity style={styles.roundGlassBtn} onPress={onClose}>
                   <Ionicons name="arrow-back" size={21} color="#FFF" />
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.roundGlassBtn} onPress={handleShare}>
-                  <Ionicons name="share-outline" size={20} color="#FFF" />
-                </TouchableOpacity>
               </View>
 
               <View style={styles.posterSummary}>
@@ -361,30 +314,36 @@ export function MovieDetailScreen({
 
                 <TouchableOpacity
                   style={styles.quickBtn}
-                  disabled={downloadingNow}
-                  onPress={() => handleDownload(seasonEpisodes[0])}
+                  onPress={handleOpenOfflineSheet}
                 >
-                  {downloadingNow ? (
-                    <ActivityIndicator size="small" color="#FFF" />
-                  ) : (
-                    <Ionicons
-                      name={
-                        offlineStatusForMovie?.status === 'completed'
-                          ? 'checkmark-circle'
+                  <Ionicons
+                    name={
+                      offlineStatusForMovie?.status === 'completed'
+                        ? 'checkmark-circle'
+                        : offlineStatusForMovie?.status === 'downloading' ||
+                            offlineStatusForMovie?.status === 'preparing' ||
+                            offlineStatusForMovie?.status === 'queued'
+                          ? 'cloud-download'
                           : 'cloud-download-outline'
-                      }
-                      size={21}
-                      color={
-                        offlineStatusForMovie?.status === 'completed' ? COLORS.success : '#FFF'
-                      }
-                    />
-                  )}
+                    }
+                    size={21}
+                    color={
+                      offlineStatusForMovie?.status === 'completed'
+                        ? COLORS.success
+                        : offlineStatusForMovie?.status === 'downloading'
+                          ? '#5AC8FA'
+                          : '#FFF'
+                    }
+                  />
                   <Text style={styles.quickBtnLabel}>
-                    {offlineStatusForMovie?.status === 'downloading'
+                    {offlineStatusForMovie?.status === 'downloading' ||
+                    offlineStatusForMovie?.status === 'preparing'
                       ? `${offlineStatusForMovie.progress}%`
-                      : offlineStatusForMovie?.status === 'completed'
-                      ? 'Đã tải'
-                      : 'Tải Offline'}
+                      : offlineStatusForMovie?.status === 'queued'
+                        ? 'Chờ tải'
+                        : offlineStatusForMovie?.status === 'completed'
+                          ? 'Đã tải'
+                          : 'Tải Offline'}
                   </Text>
                 </TouchableOpacity>
 
@@ -580,6 +539,24 @@ export function MovieDetailScreen({
           ) : null}
         </SkeletonCrossfade>
         {obscuredByPlayer ? <View style={styles.playerLaunchVeil} /> : null}
+        {movie ? (
+          <OfflineDownloadSheet
+            visible={offlineSheetOpen}
+            onClose={() => setOfflineSheetOpen(false)}
+            videosId={movie.videos_id}
+            title={movie.title}
+            posterUrl={movie.poster_url}
+            thumbnailUrl={movie.thumbnail_url}
+            currentStreamCode={
+              movie.watch_history?.last_stream_code ||
+              seasonEpisodes[0]?.stream_code ||
+              movie.stream_code
+            }
+            currentEpisodeTitle={seasonEpisodes[0]?.episodes_name}
+            currentEpisodeId={seasonEpisodes[0]?.episodes_id}
+            episodes={seasonEpisodes}
+          />
+        ) : null}
       </View>
     </Animated.View>
   );
@@ -605,7 +582,7 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     left: 0,
-    backgroundColor: COLORS.bg,
+    backgroundColor: '#000000',
     zIndex: 999,
   },
   center: {
