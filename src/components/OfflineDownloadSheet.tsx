@@ -13,9 +13,9 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { BlurView } from 'expo-blur';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { GlassSurface } from './GlassSurface';
 import { COLORS } from '../constants/config';
 import { useSettings } from '../context/SettingsContext';
 import { fetchMovieDetailsApi } from '../services/api';
@@ -157,6 +157,12 @@ export function OfflineDownloadSheet({
     ? findItemForEpisode(targetStreamCode)
     : null;
 
+  const isCurrentCompleted = currentDownloadItem?.status === 'completed';
+  const isCurrentActive =
+    currentDownloadItem?.status === 'downloading' ||
+    currentDownloadItem?.status === 'preparing' ||
+    currentDownloadItem?.status === 'queued';
+
   const nextTargets = useMemo(() => {
     if (!isSeries || !targetStreamCode) return [];
     return getCurrentAndNextEpisodes(
@@ -165,6 +171,30 @@ export function OfflineDownloadSheet({
       settings.autoDownloadNextCount
     );
   }, [isSeries, orderedEpisodes, targetStreamCode, settings.autoDownloadNextCount]);
+
+  const pendingNextEpisodes = useMemo(() => {
+    if (!isSeries || !targetStreamCode || (settings.autoDownloadNextCount || 0) <= 0) return [];
+    return nextTargets.filter((ep) => {
+      if (ep.stream_code === targetStreamCode) return false;
+      const ex = offlineItems.find(
+        (i) => i.videos_id === videosId && i.stream_code === ep.stream_code
+      );
+      return !ex || ex.status === 'failed' || ex.status === 'paused';
+    });
+  }, [isSeries, targetStreamCode, settings.autoDownloadNextCount, nextTargets, offlineItems, videosId]);
+
+  const handleDownloadNextPendingOnly = async () => {
+    if (pendingNextEpisodes.length === 0) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    setSubmittingBatch(true);
+    try {
+      await enqueueEpisodeBatch(pendingNextEpisodes.map((ep) => buildEnqueueReq(ep)));
+    } catch (e: any) {
+      Alert.alert('Lỗi tải ngoại tuyến', e?.message || 'Không thể đưa vào hàng chờ.');
+    } finally {
+      setSubmittingBatch(false);
+    }
+  };
 
   const handleDownloadCurrentAndNext = async (includeNext: boolean) => {
     if (!targetStreamCode) {
@@ -230,7 +260,7 @@ export function OfflineDownloadSheet({
         <View style={styles.statusBannerOk}>
           <Ionicons name="checkmark-circle" size={16} color="#30D158" />
           <Text style={styles.statusBannerTxt}>
-            Đã lưu trên máy • {(item.media_format || 'mp4').toUpperCase()} • {formatBytes(item.size_bytes)}
+            Đã lưu trên máy • {formatBytes(item.size_bytes)}
           </Text>
           <TouchableOpacity
             onPress={() =>
@@ -294,37 +324,60 @@ export function OfflineDownloadSheet({
       {renderStatusPill(currentDownloadItem)}
 
       {/* Primary Action Buttons */}
-      <View style={{ gap: 7 }}>
-        <TouchableOpacity
-          activeOpacity={0.85}
-          disabled={submittingBatch}
-          style={styles.primaryBtn}
-          onPress={() => handleDownloadCurrentAndNext(true)}
-        >
-          {submittingBatch ? (
-            <ActivityIndicator size="small" color="#FFF" />
-          ) : (
-            <Ionicons name="cloud-download-outline" size={18} color="#FFF" />
-          )}
-          <Text style={styles.primaryBtnTxt} numberOfLines={1}>
-            {isSeries && settings.autoDownloadNextCount > 0
-              ? `Tải tập hiện tại + ${Math.max(0, nextTargets.length - 1)} tập tiếp theo`
-              : isSeries
-                ? 'Tải tập hiện tại về máy'
-                : 'Tải phim này về máy'}
-          </Text>
-        </TouchableOpacity>
-
-        {isSeries && settings.autoDownloadNextCount > 0 ? (
+      {!isCurrentCompleted && !isCurrentActive ? (
+        <View style={{ gap: 7 }}>
           <TouchableOpacity
-            activeOpacity={0.8}
-            style={styles.secondaryBtn}
-            onPress={() => handleDownloadCurrentAndNext(false)}
+            activeOpacity={0.85}
+            disabled={submittingBatch}
+            style={styles.primaryBtn}
+            onPress={() => handleDownloadCurrentAndNext(true)}
           >
-            <Text style={styles.secondaryBtnTxt}>Chỉ tải tập hiện tại</Text>
+            {submittingBatch ? (
+              <ActivityIndicator size="small" color="#FFF" />
+            ) : (
+              <Ionicons name="cloud-download-outline" size={18} color="#FFF" />
+            )}
+            <Text style={styles.primaryBtnTxt} numberOfLines={1}>
+              {isSeries && settings.autoDownloadNextCount > 0
+                ? `Tải tập hiện tại + ${Math.max(0, nextTargets.length - 1)} tập tiếp theo`
+                : isSeries
+                  ? 'Tải tập hiện tại về máy'
+                  : 'Tải phim này về máy'}
+            </Text>
           </TouchableOpacity>
-        ) : null}
-      </View>
+
+          {isSeries && settings.autoDownloadNextCount > 0 ? (
+            <TouchableOpacity
+              activeOpacity={0.8}
+              disabled={submittingBatch}
+              style={styles.secondaryBtn}
+              onPress={() => handleDownloadCurrentAndNext(false)}
+            >
+              <Text style={styles.secondaryBtnTxt}>Chỉ tải tập hiện tại</Text>
+            </TouchableOpacity>
+          ) : null}
+        </View>
+      ) : isSeries && settings.autoDownloadNextCount > 0 && pendingNextEpisodes.length > 0 ? (
+        <View style={{ gap: 7 }}>
+          <TouchableOpacity
+            activeOpacity={0.85}
+            disabled={submittingBatch}
+            style={styles.primaryBtn}
+            onPress={handleDownloadNextPendingOnly}
+          >
+            {submittingBatch ? (
+              <ActivityIndicator size="small" color="#FFF" />
+            ) : (
+              <Ionicons name="cloud-download-outline" size={18} color="#FFF" />
+            )}
+            <Text style={styles.primaryBtnTxt} numberOfLines={1}>
+              {isCurrentCompleted
+                ? `Tải ${pendingNextEpisodes.length} tập tiếp theo về máy`
+                : `Tải thêm ${pendingNextEpisodes.length} tập tiếp theo`}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
 
       {/* Auto-download & priority toggles */}
       <View style={styles.glassGroup}>
@@ -391,7 +444,7 @@ export function OfflineDownloadSheet({
         <View style={styles.settingRow}>
           <View style={{ flex: 1, paddingRight: 8 }}>
             <Text style={styles.settingTitle}>Ưu tiên phát từ máy khi có mạng</Text>
-            <Text style={styles.settingSub}>Tự dùng tệp HLS/MP4 đã tải để phát tức thì</Text>
+            <Text style={styles.settingSub}>Tự dùng dữ liệu phim đã lưu để phát tức thì</Text>
           </View>
           <Switch
             value={settings.preferOfflineWhenOnline}
@@ -402,37 +455,6 @@ export function OfflineDownloadSheet({
             trackColor={{ false: 'rgba(255,255,255,0.2)', true: COLORS.accent }}
             thumbColor="#FFF"
           />
-        </View>
-
-        <View style={styles.rowDivider} />
-
-        <View style={styles.formatRow}>
-          <Text style={styles.settingTitle}>Định dạng ưu tiên</Text>
-          <View style={styles.formatChips}>
-            {(
-              [
-                { key: 'auto', label: 'Tự động' },
-                { key: 'hls', label: 'HLS' },
-                { key: 'mp4', label: 'MP4' },
-              ] as const
-            ).map((opt) => {
-              const active = settings.offlineDownloadFormat === opt.key;
-              return (
-                <TouchableOpacity
-                  key={opt.key}
-                  style={[styles.presetChip, active && styles.presetChipActive]}
-                  onPress={() => {
-                    Haptics.selectionAsync();
-                    updateSetting('offlineDownloadFormat', opt.key);
-                  }}
-                >
-                  <Text style={[styles.presetTxt, active && styles.presetTxtActive]}>
-                    {opt.label}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
         </View>
       </View>
     </ScrollView>
@@ -486,7 +508,7 @@ export function OfflineDownloadSheet({
                   {item ? (
                     <Text style={styles.epMeta} numberOfLines={1}>
                       {item.status === 'completed'
-                        ? `${(item.media_format || 'mp4').toUpperCase()} • ${formatBytes(item.size_bytes)}`
+                        ? formatBytes(item.size_bytes)
                         : item.status_text || `${item.progress}%`}
                     </Text>
                   ) : null}
@@ -509,9 +531,9 @@ export function OfflineDownloadSheet({
   if (!visible) return null;
 
   const cardWidth = isLandscape
-    ? Math.min(720, winWidth - Math.max(40, insets.left + insets.right + 20))
-    : Math.min(460, winWidth - 28);
-  const cardHeight = isLandscape ? Math.min(342, winHeight - 24) : Math.min(winHeight * 0.82, 640);
+    ? Math.min(740, winWidth - Math.max(40, insets.left + insets.right + 20))
+    : Math.min(460, winWidth - 24);
+  const cardHeight = isLandscape ? Math.min(354, winHeight - 20) : Math.min(winHeight * 0.84, 660);
 
   return (
     <Modal
@@ -523,7 +545,10 @@ export function OfflineDownloadSheet({
     >
       <View style={styles.modalBackdrop}>
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
-        <View
+        <GlassSurface
+          variant="liquid"
+          radius={40}
+          intensity={82}
           style={[
             styles.cardWrap,
             {
@@ -532,9 +557,6 @@ export function OfflineDownloadSheet({
             },
           ]}
         >
-          <BlurView intensity={70} tint="dark" style={StyleSheet.absoluteFill} />
-          <View style={styles.cardTint} />
-
           <View style={styles.cardInner}>
             <View style={styles.header}>
               <View style={{ flex: 1, paddingRight: 10 }}>
@@ -547,7 +569,7 @@ export function OfflineDownloadSheet({
                 </Text>
               </View>
               <TouchableOpacity style={styles.closeBtn} onPress={onClose}>
-                <Ionicons name="close" size={18} color="#FFF" />
+                <Ionicons name="close" size={22} color="#FFF" />
               </TouchableOpacity>
             </View>
 
@@ -559,14 +581,14 @@ export function OfflineDownloadSheet({
             ) : (
               <ScrollView
                 showsVerticalScrollIndicator={false}
-                contentContainerStyle={{ gap: 12, paddingBottom: Math.max(10, insets.bottom) }}
+                contentContainerStyle={{ gap: 14, paddingBottom: Math.max(12, insets.bottom) }}
               >
                 {renderControlsColumn()}
                 {renderEpisodesColumn()}
               </ScrollView>
             )}
           </View>
-        </View>
+        </GlassSurface>
       </View>
     </Modal>
   );
@@ -575,53 +597,38 @@ export function OfflineDownloadSheet({
 const styles = StyleSheet.create({
   modalBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.56)',
+    backgroundColor: 'rgba(0, 0, 0, 0.26)',
     alignItems: 'center',
     justifyContent: 'center',
   },
   cardWrap: {
     borderRadius: 40,
-    overflow: 'hidden',
-    backgroundColor: 'rgba(20, 20, 20, 0.2)',
-    shadowColor: '#000',
-    shadowOpacity: 0.5,
-    shadowRadius: 28,
-    shadowOffset: { width: 0, height: 18 },
-    elevation: 20,
-  },
-  cardTint: {
-    position: 'absolute',
-    top: 0,
-    right: 0,
-    bottom: 0,
-    left: 0,
-    backgroundColor: 'rgba(20, 20, 20, 0.42)',
   },
   cardInner: {
     flex: 1,
-    paddingHorizontal: 18,
-    paddingVertical: 14,
+    paddingHorizontal: 26,
+    paddingVertical: 22,
   },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 10,
+    marginBottom: 14,
   },
   headerTitle: {
     color: '#FFF',
-    fontSize: 16.5,
+    fontSize: 18,
     fontWeight: '700',
   },
   headerSub: {
     color: COLORS.textSecondary,
-    fontSize: 12,
+    fontSize: 12.5,
     marginTop: 2,
   },
   closeBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     backgroundColor: 'rgba(255,255,255,0.12)',
     alignItems: 'center',
     justifyContent: 'center',
@@ -629,7 +636,7 @@ const styles = StyleSheet.create({
   landscapeCols: {
     flex: 1,
     flexDirection: 'row',
-    gap: 12,
+    gap: 16,
   },
   landscapeColLeft: {
     flex: 1.15,
@@ -639,50 +646,51 @@ const styles = StyleSheet.create({
   },
   colHeading: {
     color: COLORS.textSecondary,
-    fontSize: 12,
+    fontSize: 12.5,
     fontWeight: '700',
-    marginBottom: 6,
+    marginBottom: 8,
   },
   epColumn: {
     flex: 1,
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    borderRadius: 24,
-    padding: 10,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderRadius: 26,
+    paddingHorizontal: 15,
+    paddingVertical: 13,
   },
   primaryBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
-    height: 42,
-    borderRadius: 21,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: COLORS.accent,
-    paddingHorizontal: 14,
+    paddingHorizontal: 16,
   },
   primaryBtnTxt: {
     color: '#FFF',
-    fontSize: 13,
+    fontSize: 13.5,
     fontWeight: '700',
   },
   secondaryBtn: {
-    height: 34,
-    borderRadius: 17,
+    height: 36,
+    borderRadius: 18,
     backgroundColor: 'rgba(255,255,255,0.1)',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 12,
+    paddingHorizontal: 14,
   },
   secondaryBtnTxt: {
     color: '#FFF',
-    fontSize: 12,
+    fontSize: 12.5,
     fontWeight: '600',
   },
   glassGroup: {
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    borderRadius: 24,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    gap: 8,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderRadius: 26,
+    paddingHorizontal: 15,
+    paddingVertical: 13,
+    gap: 9,
   },
   settingRow: {
     flexDirection: 'row',
@@ -835,10 +843,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 11,
-    paddingVertical: 8,
-    borderRadius: 16,
-    backgroundColor: 'rgba(255,255,255,0.06)',
+    paddingHorizontal: 13,
+    paddingVertical: 10,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255,255,255,0.07)',
   },
   epRowCurrent: {
     backgroundColor: 'rgba(229, 9, 20, 0.2)',

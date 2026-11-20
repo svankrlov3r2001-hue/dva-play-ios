@@ -31,6 +31,9 @@ interface AuthContextValue {
   unlockWithBiometrics: () => Promise<boolean>;
   attemptAutoUnlockWithBiometrics: () => Promise<boolean>;
   verifyBiometricsForEnable: () => Promise<{ ok: boolean; reason?: string }>;
+  verifyBiometricsForAction: (
+    promptMessage: string
+  ) => Promise<{ ok: boolean; reason?: string; biometricLabel: string }>;
   lockAppNow: () => void;
   refreshUser: () => Promise<void>;
 }
@@ -49,6 +52,7 @@ const AuthContext = createContext<AuthContextValue>({
   unlockWithBiometrics: async () => true,
   attemptAutoUnlockWithBiometrics: async () => true,
   verifyBiometricsForEnable: async () => ({ ok: true }),
+  verifyBiometricsForAction: async () => ({ ok: true, biometricLabel: 'Face ID' }),
   lockAppNow: () => {},
   refreshUser: async () => {},
 });
@@ -143,6 +147,50 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       isAuthenticatingRef.current = false;
     }
   }, [runBiometricPrompt]);
+
+  const verifyBiometricsForAction = useCallback(
+    async (
+      promptMessage: string
+    ): Promise<{ ok: boolean; reason?: string; biometricLabel: string }> => {
+      const types = await LocalAuthentication.supportedAuthenticationTypesAsync().catch(
+        () => [] as LocalAuthentication.AuthenticationType[]
+      );
+      const biometricLabel = types.includes(LocalAuthentication.AuthenticationType.FACIAL_RECOGNITION)
+        ? 'Face ID'
+        : types.includes(LocalAuthentication.AuthenticationType.FINGERPRINT)
+          ? 'Touch ID'
+          : 'Sinh trắc học';
+
+      const support = await checkBiometricSupportAsync();
+      if (!support.supported) {
+        return { ok: false, reason: support.reason, biometricLabel };
+      }
+
+      isAuthenticatingRef.current = true;
+      try {
+        const res = await runBiometricPrompt(promptMessage, false);
+        if (res.success) {
+          lastUnlockAtRef.current = Date.now();
+          return { ok: true, biometricLabel };
+        }
+        return {
+          ok: false,
+          reason: `Xác thực ${biometricLabel} đã bị hủy hoặc không khớp.`,
+          biometricLabel,
+        };
+      } catch (e: any) {
+        return {
+          ok: false,
+          reason: e?.message || `Không thể mở hộp thoại xác thực ${biometricLabel}.`,
+          biometricLabel,
+        };
+      } finally {
+        lastAuthEndedAtRef.current = Date.now();
+        isAuthenticatingRef.current = false;
+      }
+    },
+    [runBiometricPrompt]
+  );
 
   const unlockWithBiometrics = useCallback(async (): Promise<boolean> => {
     if (isAuthenticatingRef.current) {
@@ -411,6 +459,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         unlockWithBiometrics,
         attemptAutoUnlockWithBiometrics,
         verifyBiometricsForEnable,
+        verifyBiometricsForAction,
         lockAppNow,
         refreshUser,
       }}

@@ -292,6 +292,8 @@ export interface OfflineDownloadItem {
   skip_intro_sec?: number;
   end_credits_sec?: number;
   resume_sec?: number;
+  resume_updated_at?: number;
+  resume_sync_pending?: boolean;
   total_segments?: number;
   completed_segments?: number;
   size_bytes: number;

@@ -100,6 +100,7 @@ interface HomeScreenProps {
   onOpenDetail: (videosId: number) => void;
   onPlayDirect: (item: MovieItem) => void;
   onOpenCast: () => void;
+  onOpenQuickLoginQr: () => void;
   onOpenAccount: () => void;
   onNavigateExplore?: () => void;
 }
@@ -109,6 +110,7 @@ export function HomeScreen({
   onOpenDetail,
   onPlayDirect,
   onOpenCast,
+  onOpenQuickLoginQr,
   onOpenAccount,
   onNavigateExplore,
 }: HomeScreenProps) {
@@ -362,6 +364,16 @@ export function HomeScreen({
             </TouchableOpacity>
 
             <View style={styles.headerActions}>
+              <TouchableOpacity
+                style={styles.iconCircle}
+                accessibilityLabel="Quét QR đăng nhập nhanh"
+                onPress={() => {
+                  Haptics.selectionAsync();
+                  onOpenQuickLoginQr();
+                }}
+              >
+                <Ionicons name="qr-code-outline" size={18} color="#FFF" />
+              </TouchableOpacity>
               <TouchableOpacity
                 style={styles.iconCircle}
                 onPress={() => {

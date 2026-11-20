@@ -29,6 +29,7 @@ import {
 import {
   loadOfflineDownloads,
   subscribeOfflineDownloads,
+  syncOnlineProgressToOffline,
 } from '../services/downloadService';
 import {
   EpisodeItem,
@@ -106,6 +107,18 @@ export function MovieDetailScreen({
       setMovie(res.movie);
       setRelated(res.related || []);
       setInWishlist(Boolean(res.movie?.in_wishlist));
+      if (
+        res.movie?.watch_history?.resume_seconds > 2 &&
+        res.movie.watch_history.last_stream_code
+      ) {
+        void syncOnlineProgressToOffline({
+          streamCode: res.movie.watch_history.last_stream_code,
+          videosId: res.movie.videos_id,
+          episodeId: res.movie.watch_history.last_episode_id,
+          positionSec: res.movie.watch_history.resume_seconds,
+          flushDisk: true,
+        });
+      }
     } catch (err: any) {
       Alert.alert('Lỗi', err?.message || 'Không thể tải chi tiết phim.');
     } finally {
@@ -343,7 +356,7 @@ export function MovieDetailScreen({
                         ? 'Chờ tải'
                         : offlineStatusForMovie?.status === 'completed'
                           ? 'Đã tải'
-                          : 'Tải Offline'}
+                          : 'Tải ngoại tuyến'}
                   </Text>
                 </TouchableOpacity>
 

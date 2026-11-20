@@ -61,7 +61,10 @@ async function apiRequest<T>(
 
   if (!res.ok) {
     const errMsg = json?.error || json?.message || `Lỗi máy chủ (${res.status})`;
-    throw new Error(errMsg);
+    const apiErr = new Error(errMsg) as Error & { code?: string; status?: number };
+    apiErr.code = json?.code || json?.err;
+    apiErr.status = res.status;
+    throw apiErr;
   }
   return json as T;
 }
@@ -224,10 +227,81 @@ export async function saveWatchProgressApi(payload: {
   });
 }
 
-export async function castPairApi(pairCode: string): Promise<any> {
+export async function fetchWatchProgressApi(
+  streamCode: string,
+  videosId?: number
+): Promise<{
+  success: boolean;
+  stream_code: string;
+  resume_seconds: number;
+  updated_at: number;
+}> {
+  const qs = new URLSearchParams({ action: 'get_progress', stream_code: streamCode });
+  if (videosId) qs.append('videos_id', String(videosId));
+  return apiRequest(`stream_resolve.php?${qs.toString()}`);
+}
+
+export async function fetchBatchWatchProgressApi(
+  items: { stream_code: string; videos_id?: number }[]
+): Promise<{
+  success: boolean;
+  progress: Record<string, { resume_seconds: number; updated_at: number }>;
+}> {
+  return apiRequest('stream_resolve.php?action=batch_progress', {
+    method: 'POST',
+    body: JSON.stringify({ items }),
+  });
+}
+
+export interface QrPendingDevice {
+  key: string;
+  formatted_key: string;
+  device: string;
+  ip: string;
+  expires_at: string;
+}
+
+export async function fetchQrPendingDevicesApi(): Promise<{
+  success: boolean;
+  devices: QrPendingDevice[];
+}> {
+  return apiRequest(`auth.php?action=qr_pending_devices&_t=${Date.now()}`);
+}
+
+export async function claimQuickLoginQrApi(qrLoginKey: string): Promise<{
+  success: boolean;
+  key: string;
+  formatted_key: string;
+  device: string;
+  ip: string;
+}> {
+  return apiRequest('auth.php?action=qr_scan_claim', {
+    method: 'POST',
+    body: JSON.stringify({ qr_login_key: qrLoginKey }),
+  });
+}
+
+export async function approveQuickLoginQrApi(
+  qrLoginKey: string,
+  method: 'biometric' | 'password',
+  password?: string
+): Promise<{
+  success: boolean;
+  message: string;
+  key: string;
+  formatted_key: string;
+  device: string;
+}> {
+  return apiRequest('auth.php?action=qr_approve', {
+    method: 'POST',
+    body: JSON.stringify({ qr_login_key: qrLoginKey, method, password }),
+  });
+}
+
+export async function castPairApi(code: string): Promise<any> {
   return apiRequest('cast.php?action=pair', {
     method: 'POST',
-    body: JSON.stringify({ pair_code: pairCode }),
+    body: JSON.stringify({ code, pair_code: code }),
   });
 }
 
@@ -238,17 +312,17 @@ export async function castPushApi(payload: Record<string, any>): Promise<any> {
   });
 }
 
-export async function castStatusApi(roomId: string): Promise<any> {
+export async function castStatusApi(senderToken: string): Promise<any> {
   return apiRequest('cast.php?action=status', {
     method: 'POST',
-    body: JSON.stringify({ room_id: roomId }),
+    body: JSON.stringify({ sender_token: senderToken }),
   });
 }
 
-export async function castStopApi(roomId: string): Promise<any> {
+export async function castStopApi(senderToken: string): Promise<any> {
   return apiRequest('cast.php?action=stop', {
     method: 'POST',
-    body: JSON.stringify({ room_id: roomId }),
+    body: JSON.stringify({ sender_token: senderToken }),
   });
 }
 

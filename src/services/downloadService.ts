@@ -8,7 +8,11 @@ import {
   StreamResolvedData,
   StreamSubtitle,
 } from '../types/models';
-import { resolveStreamApi } from './api';
+import {
+  fetchBatchWatchProgressApi,
+  resolveStreamApi,
+  saveWatchProgressApi,
+} from './api';
 import { buildLocalOfflineUrl } from './localMediaServer';
 
 const OFFLINE_DIR = `${FileSystem.documentDirectory ?? ''}dva_offline/`;
@@ -747,7 +751,7 @@ async function downloadHlsItem(
     total_segments: totalSegments,
     completed_segments: 0,
     progress: 0,
-    status_text: `Đang tải HLS (0/${totalSegments})`,
+    status_text: `Đang tải (0/${totalSegments})`,
   });
 
   const emitProgress = (force = false) => {
@@ -865,7 +869,7 @@ async function downloadMp4Item(
           media_format: 'mp4',
           progress: pct,
           size_bytes: dp.totalBytesWritten,
-          status_text: `Đang tải MP4 ${pct}% • ${speedMbps.toFixed(1)} MB/s`,
+          status_text: `Đang tải ${pct}% • ${speedMbps.toFixed(1)} MB/s`,
         });
       }
     );
@@ -906,7 +910,7 @@ async function downloadMp4Item(
     }
   }
 
-  throw lastErr || new Error('Không thể tải tệp MP4.');
+  throw lastErr || new Error('Không thể tải dữ liệu phim ngoại tuyến.');
 }
 
 async function downloadSubtitlesAndPoster(
@@ -1364,21 +1368,180 @@ export async function clearAllOfflineDownloads(): Promise<void> {
   await persistIndex([]);
 }
 
+const lastResumeDiskFlushById = new Map<string, number>();
+let isFlushingPendingProgress = false;
+
 export async function saveOfflineResumePosition(
   id: string,
   positionSec: number,
-  durationSec?: number
+  durationSec?: number,
+  opts?: { fromOnline?: boolean; flushDisk?: boolean }
 ): Promise<void> {
   if (!id || !Number.isFinite(positionSec)) return;
+  await loadOfflineDownloads();
   const idx = cachedItems.findIndex((i) => i.id === id);
   if (idx < 0) return;
   const nextResume = Math.max(0, Math.floor(positionSec));
   const nextDur =
     durationSec && durationSec > 0 ? Math.floor(durationSec) : cachedItems[idx].duration_sec;
-  const updated = cachedItems.map((it) =>
-    it.id === id ? { ...it, resume_sec: nextResume, duration_sec: nextDur } : it
+  const now = Date.now();
+  const nextPending = opts?.fromOnline ? false : true;
+  cachedItems = cachedItems.map((it) =>
+    it.id === id
+      ? {
+          ...it,
+          resume_sec: nextResume,
+          duration_sec: nextDur,
+          resume_updated_at: now,
+          resume_sync_pending: nextPending,
+        }
+      : it
   );
-  await persistIndex(updated);
+  const lastFlush = lastResumeDiskFlushById.get(id) || 0;
+  if (opts?.flushDisk || now - lastFlush >= 8000) {
+    lastResumeDiskFlushById.set(id, now);
+    await persistIndex(cachedItems);
+  } else {
+    notifyListeners();
+  }
+}
+
+export async function syncOnlineProgressToOffline(params: {
+  streamCode?: string;
+  videosId?: number;
+  episodeId?: number;
+  positionSec: number;
+  durationSec?: number;
+  flushDisk?: boolean;
+}): Promise<void> {
+  const pos = Math.floor(params.positionSec || 0);
+  if (pos <= 2) return;
+  await loadOfflineDownloads();
+  const matched = cachedItems.find(
+    (i) =>
+      i.status === 'completed' &&
+      ((params.streamCode && i.stream_code === params.streamCode) ||
+        (params.videosId &&
+          i.videos_id === params.videosId &&
+          (!params.episodeId || i.episode_id === params.episodeId)))
+  );
+  if (!matched || matched.resume_sync_pending) return;
+  await saveOfflineResumePosition(matched.id, pos, params.durationSec, {
+    fromOnline: true,
+    flushDisk: params.flushDisk,
+  });
+}
+
+export async function syncOfflineItemProgressToServer(
+  itemOrId: OfflineDownloadItem | string
+): Promise<boolean> {
+  await loadOfflineDownloads();
+  const item =
+    typeof itemOrId === 'string'
+      ? cachedItems.find((i) => i.id === itemOrId)
+      : itemOrId;
+  if (
+    !item ||
+    !item.videos_id ||
+    !item.stream_code ||
+    !item.resume_sec ||
+    item.resume_sec <= 2
+  ) {
+    return false;
+  }
+  try {
+    const res = await saveWatchProgressApi({
+      videos_id: item.videos_id,
+      stream_code: item.stream_code,
+      position_sec: Math.floor(item.resume_sec),
+      duration_sec: Math.floor(item.duration_sec || 0),
+      episode_number: item.episode_number || 0,
+      title: item.title,
+    });
+    if (res?.success) {
+      cachedItems = cachedItems.map((it) =>
+        it.id === item.id ? { ...it, resume_sync_pending: false } : it
+      );
+      await persistIndex(cachedItems);
+      return true;
+    }
+  } catch {}
+  return false;
+}
+
+export async function flushPendingOfflineProgressToServer(): Promise<number> {
+  if (isFlushingPendingProgress) return 0;
+  isFlushingPendingProgress = true;
+  let syncedCount = 0;
+  try {
+    await loadOfflineDownloads();
+    const pendingItems = cachedItems.filter(
+      (it) =>
+        it.status === 'completed' &&
+        it.resume_sync_pending === true &&
+        (it.resume_sec || 0) > 2 &&
+        it.videos_id > 0 &&
+        Boolean(it.stream_code)
+    );
+    for (const item of pendingItems) {
+      const ok = await syncOfflineItemProgressToServer(item);
+      if (ok) syncedCount++;
+    }
+  } catch {} finally {
+    isFlushingPendingProgress = false;
+  }
+  return syncedCount;
+}
+
+export async function pullOnlineProgressForOfflineItems(): Promise<number> {
+  let updatedCount = 0;
+  try {
+    await loadOfflineDownloads();
+    const candidates = cachedItems
+      .filter(
+        (it) =>
+          it.status === 'completed' &&
+          !it.resume_sync_pending &&
+          Boolean(it.stream_code)
+      )
+      .slice(0, 100);
+    if (candidates.length === 0) return 0;
+    const res = await fetchBatchWatchProgressApi(
+      candidates.map((it) => ({
+        stream_code: it.stream_code,
+        videos_id: it.videos_id,
+      }))
+    );
+    const progMap = res?.progress;
+    if (!progMap || typeof progMap !== 'object') return 0;
+
+    let changed = false;
+    const nextItems = cachedItems.map((it) => {
+      if (it.status !== 'completed' || it.resume_sync_pending || !it.stream_code) {
+        return it;
+      }
+      const srv = progMap[it.stream_code];
+      if (!srv || typeof srv.resume_seconds !== 'number' || srv.resume_seconds <= 2) {
+        return it;
+      }
+      if (Math.abs((it.resume_sec || 0) - srv.resume_seconds) < 3) {
+        return it;
+      }
+      changed = true;
+      updatedCount++;
+      return {
+        ...it,
+        resume_sec: srv.resume_seconds,
+        resume_updated_at:
+          srv.updated_at && srv.updated_at > 0 ? srv.updated_at * 1000 : Date.now(),
+        resume_sync_pending: false,
+      };
+    });
+    if (changed) {
+      await persistIndex(nextItems);
+    }
+  } catch {}
+  return updatedCount;
 }
 
 export function findCompletedOfflineItem(query: {
@@ -1431,7 +1594,13 @@ export function buildOfflineRegistryForWebView(
         (it.local_uri.includes('dva_offline/')
           ? it.local_uri.substring(it.local_uri.indexOf('dva_offline/') + 'dva_offline/'.length)
           : it.local_uri.split('/').pop() || '');
-      const localUrl = buildLocalOfflineUrl(rel, serverPort);
+      const fmt: 'hls' | 'mp4' =
+        it.media_format || (rel.toLowerCase().includes('.m3u8') ? 'hls' : 'mp4');
+      const effectiveRel =
+        fmt === 'hls' && rel.toLowerCase().endsWith('index.m3u8')
+          ? `${rel.slice(0, -'index.m3u8'.length)}pip_master.m3u8`
+          : rel;
+      const localUrl = buildLocalOfflineUrl(effectiveRel, serverPort);
       if (!localUrl) continue;
 
       const sKey =
@@ -1441,8 +1610,6 @@ export function buildOfflineRegistryForWebView(
             ? `${it.server_movie_title}.Tập.${it.episode_number}`
             : it.server_movie_title
           : '');
-      const fmt: 'hls' | 'mp4' =
-        it.media_format || (rel.toLowerCase().includes('.m3u8') ? 'hls' : 'mp4');
 
       items.push({
         id: it.id,
@@ -1471,7 +1638,7 @@ export function buildOfflineRegistryForWebView(
 
 export async function exportOfflineToFiles(localUri: string): Promise<void> {
   if (localUri.toLowerCase().includes('.m3u8')) {
-    throw new Error('Phim định dạng phân mảnh HLS chỉ phát ngoại tuyến ngay trong ứng dụng.');
+    throw new Error('Phim này chỉ hỗ trợ phát ngoại tuyến trực tiếp trong ứng dụng.');
   }
   const canShare = await Sharing.isAvailableAsync();
   if (!canShare) {

@@ -131,7 +131,7 @@ export function LibraryScreen({
   };
 
   const handleDeleteOffline = (item: OfflineDownloadItem) => {
-    Alert.alert('Xóa phim Offline?', `Xóa "${item.title}${item.episode_title ? ` - ${item.episode_title}` : ''}" khỏi bộ nhớ máy?`, [
+    Alert.alert('Xóa phim ngoại tuyến?', `Xóa "${item.title}${item.episode_title ? ` - ${item.episode_title}` : ''}" khỏi bộ nhớ máy?`, [
       { text: 'Hủy', style: 'cancel' },
       {
         text: 'Xóa',
@@ -262,11 +262,6 @@ export function LibraryScreen({
             <Text style={styles.offlineTitle} numberOfLines={1}>
               {item.episode_title && seriesList ? item.episode_title : item.title}
             </Text>
-            {item.status === 'completed' ? (
-              <View style={styles.fmtBadge}>
-                <Text style={styles.fmtBadgeTxt}>{isHls ? 'HLS' : 'MP4'}</Text>
-              </View>
-            ) : null}
           </View>
           {item.episode_title && !seriesList ? (
             <Text style={styles.offlineSub} numberOfLines={1}>
@@ -363,7 +358,7 @@ export function LibraryScreen({
             [
               { key: 'wishlist', label: `Yêu thích (${wishlist.length})` },
               { key: 'watched', label: `Đang xem (${watched.length})` },
-              { key: 'offline', label: `Offline (${offlineItems.length})` },
+              { key: 'offline', label: `Ngoại tuyến (${offlineItems.length})` },
             ] as const
           ).map((seg) => (
             <TouchableOpacity
@@ -531,7 +526,7 @@ export function LibraryScreen({
             activeDownloads.length === 0 ? (
               <View style={styles.emptyBox}>
                 <Ionicons name="cloud-download-outline" size={44} color={COLORS.muted} />
-                <Text style={styles.emptyText}>Chưa có phim nào được tải Offline.</Text>
+                <Text style={styles.emptyText}>Chưa có phim nào được tải ngoại tuyến.</Text>
               </View>
             ) : undefined
           }
@@ -577,9 +572,15 @@ export function LibraryScreen({
         />
       ) : (
         <FlatList
-          key="library-watched-list"
+          key="library-watched-grid"
           data={watched}
+          numColumns={3}
+          initialNumToRender={9}
+          maxToRenderPerBatch={6}
+          windowSize={5}
+          removeClippedSubviews
           keyExtractor={(item, idx) => `watched_${item.videos_id}_${idx}`}
+          columnWrapperStyle={styles.gridRow}
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
@@ -596,9 +597,8 @@ export function LibraryScreen({
             <View style={{ marginBottom: 16 }}>
               <MovieCard
                 item={item}
-                layout="watched"
-                width={portraitWidth - 32}
-                fullWidth
+                layout="grid"
+                width={gridCardWidth}
                 onPress={onOpenPreview}
                 onRemoveWatched={handleRemoveWatched}
               />

@@ -125,7 +125,7 @@ function OptionRow({
       }}
     >
       <View style={styles.optionLeft}>
-        <Ionicons name={icon} size={18} color={selected ? COLORS.accent : '#FFF'} />
+        <Ionicons name={icon} size={22} color={selected ? COLORS.accent : '#FFF'} />
         <Text style={styles.optionLabel} numberOfLines={1}>
           {label}
         </Text>
@@ -135,9 +135,9 @@ function OptionRow({
           <Text style={styles.badgeText}>{badge}</Text>
         </View>
       ) : selected ? (
-        <Ionicons name="checkmark-circle" size={19} color={COLORS.accent} />
+        <Ionicons name="checkmark-circle" size={22} color={COLORS.accent} />
       ) : (
-        <Ionicons name="chevron-forward" size={16} color={COLORS.muted} />
+        <Ionicons name="chevron-forward" size={18} color={COLORS.muted} />
       )}
     </TouchableOpacity>
   );
@@ -159,7 +159,7 @@ function ToggleRow({
   return (
     <View style={styles.toggleRow}>
       <View style={styles.toggleLeft}>
-        <Ionicons name={icon} size={19} color={value ? COLORS.accent : COLORS.textSecondary} />
+        <Ionicons name={icon} size={22} color={value ? COLORS.accent : '#FFF'} />
         <View style={{ flex: 1 }}>
           <Text style={styles.optionLabel}>{title}</Text>
           {subtitle ? <Text style={styles.optionSub}>{subtitle}</Text> : null}
@@ -242,11 +242,11 @@ export function PlayerOverlayPanels({
   return (
     <View style={styles.overlayWrap} pointerEvents="box-none">
       <Pressable style={styles.backdrop} onPress={onClose} />
-      <GlassSurface intensity={72} radius={RADII.xl} style={[styles.panelCard, isWide && styles.panelCardWide]}>
+      <GlassSurface variant="liquid" intensity={82} radius={40} style={[styles.panelCard, isWide && styles.panelCardWide]}>
         <View style={styles.panelHeader}>
           <Text style={styles.panelTitle}>{PANEL_TITLES[activePanel]}</Text>
           <TouchableOpacity style={styles.closeIconBtn} onPress={onClose}>
-            <Ionicons name="close" size={19} color="#FFF" />
+            <Ionicons name="close" size={22} color="#FFF" />
           </TouchableOpacity>
         </View>
 
@@ -445,7 +445,7 @@ export function PlayerOverlayPanels({
               <ToggleRow
                 icon="contrast-outline"
                 title="Tăng độ tương phản"
-                subtitle="Tăng độ nổi khối và chiều sâu khung hình tối"
+                subtitle="Tăng chiều sâu khung hình và làm nét nhân vật"
                 value={settings.highContrastMode}
                 onChange={(v) => onUpdateSetting('highContrastMode', v)}
               />
@@ -658,33 +658,34 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     left: 0,
-    backgroundColor: 'rgba(0,0,0,0.48)',
+    backgroundColor: 'rgba(0,0,0,0.28)',
   },
   panelCard: {
-    width: '62%',
-    maxWidth: 460,
-    maxHeight: '86%',
-    padding: 18,
+    width: '66%',
+    maxWidth: 480,
+    maxHeight: '88%',
+    paddingHorizontal: 26,
+    paddingVertical: 22,
   },
   panelCardWide: {
-    width: '78%',
-    maxWidth: 580,
+    width: '80%',
+    maxWidth: 600,
   },
   panelHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 12,
+    marginBottom: 14,
   },
   panelTitle: {
     color: '#FFF',
-    fontSize: 16.5,
+    fontSize: 18,
     fontWeight: '800',
   },
   closeIconBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     backgroundColor: 'rgba(255,255,255,0.14)',
     alignItems: 'center',
     justifyContent: 'center',
@@ -710,16 +711,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 14,
-    paddingVertical: 11,
-    borderRadius: RADII.sm,
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
+    paddingHorizontal: 15,
+    paddingVertical: 12,
+    borderRadius: 22,
+    backgroundColor: 'rgba(255,255,255,0.09)',
   },
   optionRowSelected: {
-    backgroundColor: 'rgba(229,9,20,0.2)',
-    borderColor: 'rgba(229,9,20,0.65)',
+    backgroundColor: 'rgba(229,9,20,0.82)',
   },
   optionLeft: {
     flexDirection: 'row',
@@ -756,10 +754,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    borderRadius: RADII.sm,
-    backgroundColor: 'rgba(255,255,255,0.06)',
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    borderRadius: 22,
+    backgroundColor: 'rgba(255,255,255,0.09)',
   },
   toggleLeft: {
     flexDirection: 'row',
@@ -774,16 +772,13 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   chip: {
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: RADII.pill,
-    backgroundColor: 'rgba(255,255,255,0.1)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.14)',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 40,
+    backgroundColor: 'rgba(255,255,255,0.09)',
   },
   chipActive: {
-    backgroundColor: COLORS.accent,
-    borderColor: COLORS.accent,
+    backgroundColor: 'rgba(229,9,20,0.85)',
   },
   chipTxt: {
     color: '#FFF',
@@ -800,21 +795,18 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   epTile: {
-    minWidth: 104,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: RADII.sm,
-    backgroundColor: 'rgba(255,255,255,0.08)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.12)',
+    minWidth: 108,
+    paddingHorizontal: 15,
+    paddingVertical: 11,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.09)',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 8,
   },
   epTileActive: {
-    backgroundColor: 'rgba(229,9,20,0.28)',
-    borderColor: COLORS.accent,
+    backgroundColor: 'rgba(229,9,20,0.82)',
   },
   epTileTxt: {
     color: '#FFF',

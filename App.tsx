@@ -39,10 +39,13 @@ import { LibraryScreen } from './src/screens/LibraryScreen';
 import { LoginScreen } from './src/screens/LoginScreen';
 import { MovieDetailScreen } from './src/screens/MovieDetailScreen';
 import { PlayerLaunchParams, PlayerModal } from './src/screens/PlayerModal';
+import { QuickLoginQrModal } from './src/screens/QuickLoginQrModal';
 import { SearchScreen } from './src/screens/SearchScreen';
 import { checkAuthStatusApi } from './src/services/api';
 import {
+  flushPendingOfflineProgressToServer,
   loadOfflineDownloads,
+  pullOnlineProgressForOfflineItems,
   subscribeOfflineDownloads,
 } from './src/services/downloadService';
 import { runSilentBackgroundOtaSync } from './src/services/otaService';
@@ -115,6 +118,7 @@ function RootAppContent() {
   const closingStableRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const closingRafRef = useRef<number | null>(null);
   const [castVisible, setCastVisible] = useState(false);
+  const [quickLoginQrVisible, setQuickLoginQrVisible] = useState(false);
   const [castMovie, setCastMovie] = useState<{
     videosId: number;
     streamCode: string;
@@ -149,6 +153,22 @@ function RootAppContent() {
     loadOfflineDownloads().then(setOfflineItems).catch(() => {});
     return subscribeOfflineDownloads(setOfflineItems);
   }, []);
+
+  useEffect(() => {
+    if (!serverReady || !user || offlineModeActive) return;
+    const runBidirectionalSync = () => {
+      flushPendingOfflineProgressToServer()
+        .then(() => pullOnlineProgressForOfflineItems())
+        .catch(() => {});
+    };
+    runBidirectionalSync();
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        runBidirectionalSync();
+      }
+    });
+    return () => sub.remove();
+  }, [serverReady, user, offlineModeActive]);
 
   useEffect(() => {
     const minTimer = setTimeout(() => {
@@ -650,6 +670,7 @@ function RootAppContent() {
                     setCastMovie(null);
                     setCastVisible(true);
                   }}
+                  onOpenQuickLoginQr={() => setQuickLoginQrVisible(true)}
                   onOpenAccount={() => setAccountOpen(true)}
                   onNavigateExplore={() => setActiveTab('explore')}
                 />
@@ -729,6 +750,11 @@ function RootAppContent() {
               movieToCast={castMovie}
               onClose={() => setCastVisible(false)}
             />
+
+            <QuickLoginQrModal
+              visible={quickLoginQrVisible}
+              onClose={() => setQuickLoginQrVisible(false)}
+            />
           </Animated.View>
         </SafeAreaInsetsContext.Provider>
 
@@ -738,16 +764,6 @@ function RootAppContent() {
           onClose={() => closePlayerWithCurtain()}
           onSwitchEpisode={handleSwitchEpisode}
           onSwitchOfflineItem={handleSwitchOfflineItem}
-          onOpenCast={() => {
-            if (playerParams) {
-              setCastMovie({
-                videosId: playerParams.videosId,
-                streamCode: playerParams.streamCode,
-                title: playerParams.title,
-              });
-            }
-            closePlayerWithCurtain(() => setCastVisible(true));
-          }}
         />
 
         {renderLockOverlay()}

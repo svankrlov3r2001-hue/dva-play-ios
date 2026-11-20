@@ -13,7 +13,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { isPictureInPictureSupported, useVideoPlayer, VideoView } from 'expo-video';
+import { isPictureInPictureSupported, SubtitleTrack, useVideoPlayer, VideoView } from 'expo-video';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import * as SecureStore from 'expo-secure-store';
@@ -24,20 +24,30 @@ import { GlassSurface } from '../components/GlassSurface';
 import { OfflineDownloadSheet } from '../components/OfflineDownloadSheet';
 import { PlayerOverlayPanels, PlayerPanelType } from '../components/PlayerOverlayPanels';
 import { PlayerLandscapeSkeleton } from '../components/SkeletonLoaders';
+import { CastModal, CastMoviePayload } from './CastModal';
 import { API_BASE_URL, COLORS, RADII, SITE_BASE_URL } from '../constants/config';
 import { useAuth } from '../context/AuthContext';
 import { useSettings } from '../context/SettingsContext';
-import { fetchMovieDetailsApi, getApiAuthToken, saveWatchProgressApi } from '../services/api';
+import {
+  fetchMovieDetailsApi,
+  fetchWatchProgressApi,
+  getApiAuthToken,
+  saveWatchProgressApi,
+} from '../services/api';
 import {
   buildOfflineRegistryForWebView,
   enqueueEpisodeBatch,
   findCompletedOfflineItem,
+  flushPendingOfflineProgressToServer,
   getCurrentAndNextEpisodes,
+  getOfflineDownloadsSnapshot,
   getOfflineRootDir,
   loadOfflineDownloads,
   OfflineEnqueueParams,
   saveOfflineResumePosition,
   subscribeOfflineDownloads,
+  syncOfflineItemProgressToServer,
+  syncOnlineProgressToOffline,
 } from '../services/downloadService';
 import {
   buildLocalOfflineUrl,
@@ -179,7 +189,6 @@ interface PlayerModalProps {
   onClose: () => void;
   onSwitchEpisode?: (ep: EpisodeItem, epIndex: number) => void;
   onSwitchOfflineItem?: (item: OfflineDownloadItem) => void;
-  onOpenCast?: () => void;
 }
 
 function formatClock(sec: number): string {
@@ -276,6 +285,7 @@ function OfflineNativePlayer({
   const [toastMsg, setToastMsg] = useState('');
   const [activeSubIndex, setActiveSubIndex] = useState(0);
   const [parsedCuesByIdx, setParsedCuesByIdx] = useState<VttCueItem[][]>([]);
+  const [isInPip, setIsInPip] = useState(false);
 
   const isPlayingRef = useRef(isPlaying);
   isPlayingRef.current = isPlaying;
@@ -286,7 +296,15 @@ function OfflineNativePlayer({
   const currentTimeRef = useRef(0);
   currentTimeRef.current = currentTime;
   const restoredForIdRef = useRef('');
-  const lastSavedResumeRef = useRef(0);
+  const hasUserScrubbedRef = useRef(false);
+  const lastServerPushAtRef = useRef(0);
+  const availableSubTracksRef = useRef<SubtitleTrack[]>([]);
+  const activeSubIndexRef = useRef(activeSubIndex);
+  activeSubIndexRef.current = activeSubIndex;
+  const subtitleEnabledRef = useRef(settings.subtitleEnabled);
+  subtitleEnabledRef.current = settings.subtitleEnabled;
+  const isInPipRef = useRef(false);
+  isInPipRef.current = isInPip;
 
   const videoViewRef = useRef<VideoView | null>(null);
   const hudTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -305,25 +323,29 @@ function OfflineNativePlayer({
   );
 
   const playbackSource = useMemo(() => {
-    const rel =
+    const rawRel =
       offlineItem?.relative_entry ||
       (params.offlineUri && params.offlineUri.includes('dva_offline/')
         ? params.offlineUri.substring(params.offlineUri.indexOf('dva_offline/') + 'dva_offline/'.length)
         : '');
-    const httpUrl = rel ? buildLocalOfflineUrl(rel, localServerPort) : null;
+    const pipRel =
+      isHlsOffline && rawRel.toLowerCase().endsWith('index.m3u8')
+        ? `${rawRel.slice(0, -'index.m3u8'.length)}pip_master.m3u8`
+        : rawRel;
+    const httpUrl = pipRel ? buildLocalOfflineUrl(pipRel, localServerPort) : null;
     if (isHlsOffline) {
       if (httpUrl) {
         return {
           uri: httpUrl,
           contentType: 'hls' as const,
-          metadata: { title: params.title, artist: 'Đặng Việt Anh Offline' },
+          metadata: { title: params.title, artist: 'Đặng Việt Anh' },
         };
       }
       return params.offlineUri
         ? {
             uri: params.offlineUri,
             contentType: 'hls' as const,
-            metadata: { title: params.title, artist: 'Đặng Việt Anh Offline' },
+            metadata: { title: params.title, artist: 'Đặng Việt Anh' },
           }
         : null;
     }
@@ -332,7 +354,7 @@ function OfflineNativePlayer({
     return {
       uri: mp4Uri,
       contentType: 'progressive' as const,
-      metadata: { title: params.title, artist: 'Đặng Việt Anh Offline' },
+      metadata: { title: params.title, artist: 'Đặng Việt Anh' },
     };
   }, [isHlsOffline, localServerPort, offlineItem?.relative_entry, params.offlineUri, params.title]);
 
@@ -379,6 +401,41 @@ function OfflineNativePlayer({
     p.staysActiveInBackground = Boolean(settings.pipEnabled);
   });
 
+  const syncNativePipSubtitle = useCallback(
+    (enable: boolean) => {
+      try {
+        if (!enable || !subtitleEnabledRef.current) {
+          player.subtitleTrack = null;
+          return;
+        }
+        const pool =
+          availableSubTracksRef.current.length > 0
+            ? availableSubTracksRef.current
+            : player.availableSubtitleTracks || [];
+        if (pool.length === 0) return;
+
+        const chosenMeta = offlineItem?.subtitles?.[activeSubIndexRef.current];
+        const targetLang = (chosenMeta?.lang || '').toLowerCase();
+        const targetLabel = (chosenMeta?.label || '').toLowerCase();
+        let matched = pool.find((t) => {
+          const lang = String(t.language || '').toLowerCase();
+          const lbl = String(t.label || '').toLowerCase();
+          return (
+            (targetLang && (lang === targetLang || lang.startsWith(targetLang))) ||
+            (targetLabel && lbl === targetLabel)
+          );
+        });
+        if (!matched) matched = pool[0];
+        player.subtitleTrack = matched || null;
+      } catch {}
+    },
+    [player, offlineItem?.subtitles]
+  );
+
+  useEffect(() => {
+    syncNativePipSubtitle(isInPip);
+  }, [isInPip, activeSubIndex, settings.subtitleEnabled, syncNativePipSubtitle]);
+
   useEffect(() => {
     try {
       player.staysActiveInBackground = Boolean(settings.pipEnabled);
@@ -391,6 +448,8 @@ function OfflineNativePlayer({
       // Wait for local loopback HTTP server if available before falling back to file://
     }
     restoredForIdRef.current = '';
+    hasUserScrubbedRef.current = false;
+    availableSubTracksRef.current = [];
     setCurrentTime(0);
     setDuration(offlineItem?.duration_sec || 0);
     setHudVisible(true);
@@ -402,18 +461,42 @@ function OfflineNativePlayer({
       const sec = e.currentTime || 0;
       setCurrentTime(sec);
       if (player.duration > 0) setDuration(player.duration);
-      if (offlineItem?.id && sec > 3 && Math.abs(sec - lastSavedResumeRef.current) >= 5) {
-        lastSavedResumeRef.current = sec;
-        void saveOfflineResumePosition(offlineItem.id, sec, player.duration || offlineItem.duration_sec);
+      if (offlineItem?.id && sec > 3) {
+        void saveOfflineResumePosition(
+          offlineItem.id,
+          sec,
+          player.duration || offlineItem.duration_sec,
+          { flushDisk: false }
+        );
+        const now = Date.now();
+        if (now - lastServerPushAtRef.current >= 15000) {
+          lastServerPushAtRef.current = now;
+          void syncOfflineItemProgressToServer(offlineItem.id);
+        }
       }
     });
     const subPlay = player.addListener('playingChange', (e) => {
       setIsPlaying(e.isPlaying);
+      if (!e.isPlaying && offlineItem?.id && currentTimeRef.current > 3) {
+        void saveOfflineResumePosition(
+          offlineItem.id,
+          currentTimeRef.current,
+          durationRef.current || offlineItem.duration_sec,
+          { flushDisk: true }
+        ).then(() => syncOfflineItemProgressToServer(offlineItem.id));
+      }
+    });
+    const subAvailSubs = player.addListener('availableSubtitleTracksChange', (e) => {
+      availableSubTracksRef.current = e.availableSubtitleTracks || [];
+      syncNativePipSubtitle(isInPipRef.current);
     });
     const subLoad = player.addListener('sourceLoad', (e) => {
       onReady();
       if (e.duration > 0) setDuration(e.duration);
       player.playbackRate = playbackRate;
+      availableSubTracksRef.current = player.availableSubtitleTracks || [];
+      syncNativePipSubtitle(isInPipRef.current);
+
       const itemKey = offlineItem?.id || params.offlineUri || '';
       if (itemKey && restoredForIdRef.current !== itemKey) {
         restoredForIdRef.current = itemKey;
@@ -429,6 +512,34 @@ function OfflineNativePlayer({
           try {
             player.currentTime = seekTarget;
           } catch {}
+        }
+
+        // Pull latest online watch progress if not holding unsynced offline progress
+        if (offlineItem?.id && !offlineItem.resume_sync_pending && params.streamCode) {
+          Promise.race([
+            fetchWatchProgressApi(params.streamCode, params.videosId),
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
+          ])
+            .then((srvRes) => {
+              if (!srvRes || !srvRes.success || hasUserScrubbedRef.current) return;
+              const srvSec = Math.floor(srvRes.resume_seconds || 0);
+              const totalDur = e.duration || offlineItem.duration_sec || 0;
+              if (
+                srvSec > 5 &&
+                (!totalDur || srvSec < totalDur - 15) &&
+                Math.abs(srvSec - (currentTimeRef.current || seekTarget)) > 5
+              ) {
+                try {
+                  player.currentTime = srvSec;
+                } catch {}
+                void saveOfflineResumePosition(offlineItem.id, srvSec, totalDur, {
+                  fromOnline: true,
+                  flushDisk: true,
+                });
+                showToast(`Tiếp tục từ ${formatClock(srvSec)}`);
+              }
+            })
+            .catch(() => {});
         }
       }
       if (isLockedRef.current) {
@@ -450,6 +561,7 @@ function OfflineNativePlayer({
     return () => {
       subTime.remove();
       subPlay.remove();
+      subAvailSubs.remove();
       subLoad.remove();
       subStatus.remove();
     };
@@ -458,11 +570,15 @@ function OfflineNativePlayer({
     playbackRate,
     onReady,
     showToast,
+    syncNativePipSubtitle,
     offlineItem?.id,
     offlineItem?.resume_sec,
+    offlineItem?.resume_sync_pending,
     offlineItem?.skip_intro_sec,
     offlineItem?.duration_sec,
     params.offlineUri,
+    params.streamCode,
+    params.videosId,
     settings.autoSkipIntro,
   ]);
 
@@ -552,8 +668,9 @@ function OfflineNativePlayer({
         void saveOfflineResumePosition(
           offlineItem.id,
           currentTimeRef.current,
-          durationRef.current || offlineItem.duration_sec
-        );
+          durationRef.current || offlineItem.duration_sec,
+          { flushDisk: true }
+        ).then(() => syncOfflineItemProgressToServer(offlineItem.id));
       }
       try {
         player.pause();
@@ -580,6 +697,7 @@ function OfflineNativePlayer({
           setDragRatio(r);
         },
         onPanResponderRelease: (e) => {
+          hasUserScrubbedRef.current = true;
           const bw = barWidthRef.current;
           const dur = durationRef.current;
           if (bw > 0 && dur > 0) {
@@ -652,7 +770,7 @@ function OfflineNativePlayer({
   const progressPct = effectiveRatio * 100;
   const displayMetaParts = [
     params.episodeTitle,
-    `Ngoại tuyến (${isHlsOffline ? 'HLS' : 'MP4'})`,
+    'Ngoại tuyến',
     duration > 0 ? formatClock(duration) : '',
   ].filter(Boolean);
 
@@ -666,15 +784,21 @@ function OfflineNativePlayer({
         nativeControls={false}
         allowsPictureInPicture={settings.pipEnabled}
         startsPictureInPictureAutomatically={settings.pipEnabled}
-        onPictureInPictureStart={() => onPipChange(true)}
-        onPictureInPictureStop={() => onPipChange(false)}
+        {...({ contrastEnhance: settings.highContrastMode } as any)}
+        onPictureInPictureStart={() => {
+          setIsInPip(true);
+          syncNativePipSubtitle(true);
+          setTimeout(() => syncNativePipSubtitle(true), 150);
+          onPipChange(true);
+        }}
+        onPictureInPictureStop={() => {
+          setIsInPip(false);
+          syncNativePipSubtitle(false);
+          onPipChange(false);
+        }}
       />
 
-      {settings.highContrastMode ? (
-        <View pointerEvents="none" style={styles.contrastBoostFrame} />
-      ) : null}
-
-      {activeCueText ? (
+      {!isInPip && activeCueText ? (
         <View
           pointerEvents="none"
           style={[
@@ -709,8 +833,8 @@ function OfflineNativePlayer({
 
       {toastMsg ? (
         <View pointerEvents="none" style={styles.toastWrap}>
-          <GlassSurface intensity={65} radius={RADII.pill} style={styles.toastCard}>
-            <Ionicons name="sparkles" size={14} color={COLORS.accent} />
+          <GlassSurface variant="liquid" intensity={82} radius={40} style={styles.toastCard}>
+            <Ionicons name="sparkles" size={16} color={COLORS.accent} />
             <Text style={styles.toastTxt}>{toastMsg}</Text>
           </GlassSurface>
         </View>
@@ -732,15 +856,25 @@ function OfflineNativePlayer({
           <View style={styles.topHud}>
             <View style={styles.topLeft}>
               <TouchableOpacity
-                style={styles.glassIconBtn}
+                activeOpacity={0.78}
                 onPress={() => {
+                  if (offlineItem?.id && currentTimeRef.current > 3) {
+                    void saveOfflineResumePosition(
+                      offlineItem.id,
+                      currentTimeRef.current,
+                      durationRef.current || offlineItem.duration_sec,
+                      { flushDisk: true }
+                    ).then(() => syncOfflineItemProgressToServer(offlineItem.id));
+                  }
                   try {
                     player.pause();
                   } catch {}
                   onClose();
                 }}
               >
-                <Ionicons name="chevron-back" size={23} color="#FFF" />
+                <GlassSurface variant="liquid" intensity={82} radius={40} style={styles.glassIconBtn}>
+                  <Ionicons name="chevron-back" size={28} color="#FFF" />
+                </GlassSurface>
               </TouchableOpacity>
               <View style={{ maxWidth: winWidth * 0.44 }}>
                 <Text style={styles.hudTitle} numberOfLines={1}>
@@ -752,13 +886,13 @@ function OfflineNativePlayer({
               </View>
             </View>
 
-            <GlassSurface intensity={56} radius={RADII.pill} style={styles.topRightCapsule}>
+            <GlassSurface variant="liquid" intensity={82} radius={40} style={styles.topRightCapsule}>
               {(offlineItem?.subtitles?.length || 0) > 0 ? (
                 <TouchableOpacity
                   style={styles.capsuleIconBtn}
                   onPress={() => setActivePanel('subtitles')}
                 >
-                  <Ionicons name="chatbox-ellipses-outline" size={18} color="#FFF" />
+                  <Ionicons name="chatbox-ellipses-outline" size={25} color="#FFF" />
                 </TouchableOpacity>
               ) : null}
               {settings.pipEnabled ? (
@@ -775,27 +909,32 @@ function OfflineNativePlayer({
                         showToast('Thiết bị hiện chưa hỗ trợ thu nhỏ khung hình');
                         return;
                       }
+                      setIsInPip(true);
+                      syncNativePipSubtitle(true);
                       await videoViewRef.current?.startPictureInPicture();
                     } catch {
+                      setIsInPip(false);
+                      syncNativePipSubtitle(false);
                       showToast('Không thể mở thu nhỏ khung hình lúc này');
                     }
                   }}
                 >
-                  <Ionicons name="albums-outline" size={18} color="#FFF" />
+                  <Ionicons name="albums-outline" size={25} color="#FFF" />
                 </TouchableOpacity>
               ) : null}
               <TouchableOpacity
                 style={styles.capsuleIconBtn}
                 onPress={() => setActivePanel('settings')}
               >
-                <Ionicons name="settings-outline" size={19} color="#FFF" />
+                <Ionicons name="settings-outline" size={26} color="#FFF" />
               </TouchableOpacity>
             </GlassSurface>
           </View>
 
           <GlassSurface
-            intensity={54}
-            radius={RADII.pill}
+            variant="liquid"
+            intensity={82}
+            radius={40}
             style={[styles.sideToggles, { right: Math.max(16, insets.right + 10) }]}
           >
             <TouchableOpacity
@@ -811,7 +950,7 @@ function OfflineNativePlayer({
                 scheduleHideHud();
               }}
             >
-              <Ionicons name="contrast" size={18} color="#FFF" />
+              <Ionicons name="contrast" size={24} color="#FFF" />
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -827,25 +966,28 @@ function OfflineNativePlayer({
                 scheduleHideHud();
               }}
             >
-              <Ionicons name="scan" size={17} color="#FFF" />
+              <Ionicons name="scan" size={24} color="#FFF" />
             </TouchableOpacity>
           </GlassSurface>
 
           <View style={styles.centerControls} pointerEvents="box-none">
             <TouchableOpacity
-              style={styles.seekBtn}
+              activeOpacity={0.78}
               onPress={() => {
+                hasUserScrubbedRef.current = true;
                 Haptics.selectionAsync();
                 player.currentTime = Math.max(0, player.currentTime - 10);
                 scheduleHideHud();
               }}
             >
-              <Ionicons name="play-back" size={26} color="#FFF" />
-              <Text style={styles.seekLabel}>10s</Text>
+              <GlassSurface variant="liquid" intensity={82} radius={40} style={styles.seekBtn}>
+                <Ionicons name="play-back" size={30} color="#FFF" />
+                <Text style={styles.seekLabel}>10s</Text>
+              </GlassSurface>
             </TouchableOpacity>
 
             <TouchableOpacity
-              style={styles.mainPlayBtn}
+              activeOpacity={0.78}
               onPress={() => {
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                 if (player.playing) player.pause();
@@ -853,19 +995,24 @@ function OfflineNativePlayer({
                 scheduleHideHud();
               }}
             >
-              <Ionicons name={isPlaying ? 'pause' : 'play'} size={34} color="#FFF" />
+              <GlassSurface variant="liquid" intensity={82} radius={40} style={styles.mainPlayBtn}>
+                <Ionicons name={isPlaying ? 'pause' : 'play'} size={40} color="#FFF" />
+              </GlassSurface>
             </TouchableOpacity>
 
             <TouchableOpacity
-              style={styles.seekBtn}
+              activeOpacity={0.78}
               onPress={() => {
+                hasUserScrubbedRef.current = true;
                 Haptics.selectionAsync();
                 player.currentTime = player.currentTime + 10;
                 scheduleHideHud();
               }}
             >
-              <Ionicons name="play-forward" size={26} color="#FFF" />
-              <Text style={styles.seekLabel}>10s</Text>
+              <GlassSurface variant="liquid" intensity={82} radius={40} style={styles.seekBtn}>
+                <Ionicons name="play-forward" size={30} color="#FFF" />
+                <Text style={styles.seekLabel}>10s</Text>
+              </GlassSurface>
             </TouchableOpacity>
           </View>
 
@@ -899,36 +1046,64 @@ function OfflineNativePlayer({
               >
                 {nextOfflineEpisode && onSwitchOfflineItem ? (
                   <TouchableOpacity
-                    style={styles.actionPill}
-                    onPress={() => onSwitchOfflineItem(nextOfflineEpisode)}
+                    activeOpacity={0.78}
+                    onPress={() => {
+                      if (offlineItem?.id && currentTimeRef.current > 3) {
+                        void saveOfflineResumePosition(
+                          offlineItem.id,
+                          currentTimeRef.current,
+                          durationRef.current || offlineItem.duration_sec,
+                          { flushDisk: true }
+                        ).then(() => syncOfflineItemProgressToServer(offlineItem.id));
+                      }
+                      onSwitchOfflineItem(nextOfflineEpisode);
+                    }}
                   >
-                    <Ionicons name="play-skip-forward" size={15} color="#FFF" />
-                    <Text style={styles.actionPillTxt}>Tập tiếp theo</Text>
+                    <GlassSurface variant="liquid" intensity={82} radius={40} style={styles.actionPill}>
+                      <Ionicons name="play-skip-forward" size={22} color="#FFF" />
+                      <Text style={styles.actionPillTxt}>Tập tiếp theo</Text>
+                    </GlassSurface>
                   </TouchableOpacity>
                 ) : null}
                 {syntheticEpisodes.length > 1 ? (
                   <TouchableOpacity
-                    style={[styles.actionPill, styles.actionIconPill]}
+                    activeOpacity={0.78}
                     onPress={() => setActivePanel('episodes')}
                   >
-                    <Ionicons name="list-outline" size={18} color="#FFF" />
+                    <GlassSurface
+                      variant="liquid"
+                      intensity={82}
+                      radius={40}
+                      style={[styles.actionPill, styles.actionIconPill]}
+                    >
+                      <Ionicons name="list-outline" size={23} color="#FFF" />
+                    </GlassSurface>
                   </TouchableOpacity>
                 ) : null}
                 <TouchableOpacity
-                  style={[styles.actionPill, styles.actionIconPill]}
+                  activeOpacity={0.78}
                   onPress={() => setActivePanel('info')}
                 >
-                  <Ionicons name="person-circle-outline" size={18} color="#FFF" />
+                  <GlassSurface
+                    variant="liquid"
+                    intensity={82}
+                    radius={40}
+                    style={[styles.actionPill, styles.actionIconPill]}
+                  >
+                    <Ionicons name="person-circle-outline" size={23} color="#FFF" />
+                  </GlassSurface>
                 </TouchableOpacity>
               </ScrollView>
 
               <View style={styles.actionsRightFixed}>
                 <TouchableOpacity
-                  style={styles.actionPill}
+                  activeOpacity={0.78}
                   onPress={() => setActivePanel('speed')}
                 >
-                  <Ionicons name="play" size={12} color="#FFF" />
-                  <Text style={styles.actionPillTxt}>{playbackRate}x</Text>
+                  <GlassSurface variant="liquid" intensity={82} radius={40} style={styles.actionPill}>
+                    <Ionicons name="play" size={18} color="#FFF" />
+                    <Text style={styles.actionPillTxt}>{playbackRate}x</Text>
+                  </GlassSurface>
                 </TouchableOpacity>
               </View>
             </View>
@@ -952,6 +1127,14 @@ function OfflineNativePlayer({
         onSelectEpisode={(_ep, idx) => {
           const targetItem = offlineEpisodes[idx];
           if (targetItem && onSwitchOfflineItem) {
+            if (offlineItem?.id && currentTimeRef.current > 3) {
+              void saveOfflineResumePosition(
+                offlineItem.id,
+                currentTimeRef.current,
+                durationRef.current || offlineItem.duration_sec,
+                { flushDisk: true }
+              ).then(() => syncOfflineItemProgressToServer(offlineItem.id));
+            }
             onSwitchOfflineItem(targetItem);
           }
         }}
@@ -996,7 +1179,6 @@ export function PlayerModal({
   params,
   onClose,
   onSwitchOfflineItem,
-  onOpenCast,
 }: PlayerModalProps) {
   const insets = useSafeAreaInsets();
   const { width: winWidth, height: winHeight } = useWindowDimensions();
@@ -1016,6 +1198,8 @@ export function PlayerModal({
   );
   const [offlineItems, setOfflineItems] = useState<OfflineDownloadItem[]>([]);
   const [offlineSheetOpen, setOfflineSheetOpen] = useState(false);
+  const [castPopupOpen, setCastPopupOpen] = useState(false);
+  const [castMoviePayload, setCastMoviePayload] = useState<CastMoviePayload | null>(null);
   const [activeEpisodeCtx, setActiveEpisodeCtx] = useState<ActiveEpisodeCtx | null>(null);
   const [detailEpisodes, setDetailEpisodes] = useState<EpisodeItem[]>([]);
   const [moviePosterMeta, setMoviePosterMeta] = useState<{ poster: string; thumb: string }>({
@@ -1023,7 +1207,11 @@ export function PlayerModal({
     thumb: '',
   });
 
-  const webProgressRef = useRef({ position: 0, duration: 0 });
+  const webProgressRef = useRef<{ position: number; duration: number; streamCode: string }>({
+    position: 0,
+    duration: 0,
+    streamCode: '',
+  });
   const skeletonOpacity = useRef(new Animated.Value(0)).current;
   const skeletonShownAtRef = useRef(0);
   const [proxyConfig, setProxyConfigState] = useState(() => getProxyConfig());
@@ -1233,6 +1421,8 @@ export function PlayerModal({
       setWebHudReady(false);
       setOfflineReady(false);
       setOfflineSheetOpen(false);
+      setCastPopupOpen(false);
+      setCastMoviePayload(null);
       setActiveEpisodeCtx(null);
       lastAutoQueuedSigRef.current = '';
       return;
@@ -1261,13 +1451,16 @@ export function PlayerModal({
     };
   }, [visible, deviceHglk, clearPipRestoreTimer]);
 
-  // Reset per-stream ready flags when opening or switching stream
+  // Reset per-stream ready flags when opening or switching stream & flush pending offline resume
   useEffect(() => {
     if (!visible || !params) return;
     setWebHudReady(false);
     setOfflineReady(false);
-    webProgressRef.current = { position: 0, duration: 0 };
-  }, [visible, params, activeStreamCode]);
+    webProgressRef.current = { position: 0, duration: 0, streamCode: activeStreamCode };
+    if (!isOfflineMode) {
+      void flushPendingOfflineProgressToServer();
+    }
+  }, [visible, params, activeStreamCode, isOfflineMode]);
 
   const handleClose = useCallback(() => {
     if (
@@ -1276,18 +1469,29 @@ export function PlayerModal({
       !params.offlineItem &&
       webProgressRef.current.position > 5
     ) {
-      const { episodeNumber, seasonId } = resolveEpisodeMetaFromParams(params, activeStreamCode);
+      const targetStreamCode = webProgressRef.current.streamCode || activeStreamCode;
+      const { episodeNumber, seasonId } = resolveEpisodeMetaFromParams(params, targetStreamCode);
       saveWatchProgressApi({
         videos_id: params.videosId,
-        stream_code: activeStreamCode,
+        stream_code: targetStreamCode,
         position_sec: webProgressRef.current.position,
         duration_sec: webProgressRef.current.duration,
         episode_number: episodeNumber,
         season_id: seasonId,
         title: params.title,
       }).catch(() => {});
+      void syncOnlineProgressToOffline({
+        streamCode: targetStreamCode,
+        videosId: params.videosId,
+        episodeId: params.episodeId,
+        positionSec: webProgressRef.current.position,
+        durationSec: webProgressRef.current.duration,
+        flushDisk: true,
+      });
     }
     setOfflineSheetOpen(false);
+    setCastPopupOpen(false);
+    setCastMoviePayload(null);
     isInPipRef.current = false;
     clearPipRestoreTimer();
     onClose();
@@ -1449,6 +1653,26 @@ export function PlayerModal({
     settings.offlineDownloadConcurrency,
   ]);
 
+  const localResumeForWeb = useMemo(() => {
+    if (!visible || !params || isOfflineMode) return null;
+    const snap = getOfflineDownloadsSnapshot();
+    const matched = snap.find(
+      (i) =>
+        i.status === 'completed' &&
+        (i.resume_sec || 0) > 3 &&
+        ((activeStreamCode && i.stream_code === activeStreamCode) ||
+          (params.videosId &&
+            i.videos_id === params.videosId &&
+            (!params.episodeId || i.episode_id === params.episodeId)))
+    );
+    if (!matched || !matched.resume_sec) return null;
+    return {
+      streamCode: matched.stream_code || activeStreamCode,
+      resumeSec: matched.resume_sec,
+      pending: Boolean(matched.resume_sync_pending),
+    };
+  }, [visible, params, isOfflineMode, activeStreamCode]);
+
   const cookieBootstrapJs = useMemo(() => {
     const autoNextStr = settings.autoPlayNext ? '1' : '0';
     const qualityStr = settings.preferredQuality || 'auto';
@@ -1491,6 +1715,7 @@ export function PlayerModal({
         localStorage.setItem('dvaplay_resolution', ${JSON.stringify(qualityStr)});
         sessionStorage.setItem('dva_app_current_movie_meta', ${JSON.stringify(JSON.stringify(playerMeta))});
         window.__DVA_IOS_LOCAL_OFFLINE__ = ${JSON.stringify(offlineRegistryRef.current)};
+        window.__DVA_IOS_LOCAL_RESUME__ = ${JSON.stringify(localResumeForWeb)};
         if (${settings.pipEnabled ? 'true' : 'false'}) {
           setInterval(function () {
             var vids = document.getElementsByTagName('video');
@@ -1509,7 +1734,7 @@ export function PlayerModal({
       } catch (e) {}
       true;
     `;
-  }, [cookies, deviceHglk, playerMeta, settings]);
+  }, [cookies, deviceHglk, playerMeta, settings, localResumeForWeb]);
 
   const webviewSourceUrl = useMemo(() => {
     const code = activeStreamCode;
@@ -1667,7 +1892,22 @@ export function PlayerModal({
                     } else if (data.type === 'DVA_APP_PLAYER_BACK') {
                       handleClose();
                     } else if (data.type === 'DVA_IOS_OPEN_CAST') {
-                      if (onOpenCast) onOpenCast();
+                      if (params) {
+                        setCastMoviePayload({
+                          videosId: params.videosId,
+                          streamCode: String(data.streamCode || activeEpisodeCtx?.streamCode || activeStreamCode),
+                          title: String(data.title || params.title || ''),
+                          episode: String(data.episodeTitle || activeEpisodeCtx?.episodeTitle || params.episodeTitle || ''),
+                          poster: String(data.poster || moviePosterMeta.poster || params.posterUrl || ''),
+                          streamUrl: String(data.streamUrl || ''),
+                          position: Number(data.position) || 0,
+                          paused: Boolean(data.paused),
+                          subHigh: String(data.subHigh || ''),
+                          subVn: String(data.subVn || ''),
+                          subEn: String(data.subEn || ''),
+                        });
+                      }
+                      setCastPopupOpen(true);
                     } else if (data.type === 'DVA_IOS_OPEN_OFFLINE_SHEET') {
                       setActiveEpisodeCtx({
                         streamCode: String(data.streamCode || activeStreamCode),
@@ -1701,10 +1941,23 @@ export function PlayerModal({
                         scheduleLandscapeRestoreAfterPip();
                       }
                     } else if (data.type === 'DVA_IOS_PLAYER_PROGRESS') {
+                      const posVal = Number(data.position) || 0;
+                      const durVal = Number(data.duration) || 0;
+                      const scVal = String(
+                        data.streamCode || activeEpisodeCtx?.streamCode || activeStreamCode
+                      );
                       webProgressRef.current = {
-                        position: Number(data.position) || 0,
-                        duration: Number(data.duration) || 0,
+                        position: posVal,
+                        duration: durVal,
+                        streamCode: scVal,
                       };
+                      void syncOnlineProgressToOffline({
+                        streamCode: scVal,
+                        videosId: params?.videosId,
+                        episodeId: params?.episodeId,
+                        positionSec: posVal,
+                        durationSec: durVal,
+                      });
                     }
                   } catch {}
                 }}
@@ -1730,6 +1983,24 @@ export function PlayerModal({
                 }
               />
             ) : null}
+
+            <CastModal
+              visible={castPopupOpen}
+              inlinePopup
+              movieToCast={castMoviePayload}
+              onCastStarted={() => {
+                webViewRef.current?.injectJavaScript(`
+                  try {
+                    if (window.jwplayer && typeof window.jwplayer === 'function') {
+                      var jw = window.jwplayer();
+                      if (jw && typeof jw.pause === 'function') jw.pause(true);
+                    }
+                  } catch (e) {}
+                  true;
+                `);
+              }}
+              onClose={() => setCastPopupOpen(false)}
+            />
           </View>
         )}
 
@@ -1777,15 +2048,6 @@ const styles = StyleSheet.create({
   flex: {
     flex: 1,
   },
-  contrastBoostFrame: {
-    position: 'absolute',
-    top: 0,
-    right: 0,
-    bottom: 0,
-    left: 0,
-    borderWidth: 18,
-    borderColor: 'rgba(0,0,0,0.34)',
-  },
   subOverlayWrap: {
     position: 'absolute',
     left: 48,
@@ -1806,12 +2068,8 @@ const styles = StyleSheet.create({
     textShadowRadius: 4,
   },
   glassIconBtn: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    backgroundColor: 'rgba(20, 20, 20, 0.56)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.16)',
+    width: 50,
+    height: 50,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1838,7 +2096,7 @@ const styles = StyleSheet.create({
   },
   hudTitle: {
     color: '#FFF',
-    fontSize: 16.5,
+    fontSize: 17,
     fontWeight: '800',
     textShadowColor: 'rgba(0,0,0,0.8)',
     textShadowOffset: { width: 0, height: 1 },
@@ -1852,30 +2110,30 @@ const styles = StyleSheet.create({
   topRightCapsule: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 14,
-    paddingVertical: 7,
-    gap: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    gap: 6,
   },
   capsuleIconBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 46,
+    height: 46,
+    borderRadius: 23,
     alignItems: 'center',
     justifyContent: 'center',
   },
   sideToggles: {
     position: 'absolute',
     top: '30%',
-    paddingVertical: 7,
-    paddingHorizontal: 5,
-    gap: 7,
+    paddingVertical: 8,
+    paddingHorizontal: 7,
+    gap: 8,
     alignItems: 'center',
     zIndex: 10,
   },
   sideIconBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1887,7 +2145,7 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     top: '50%',
-    transform: [{ translateY: -36 }],
+    transform: [{ translateY: -43 }],
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -1897,28 +2155,20 @@ const styles = StyleSheet.create({
   seekBtn: {
     alignItems: 'center',
     justifyContent: 'center',
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: 'rgba(20,20,20,0.45)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.14)',
+    width: 68,
+    height: 68,
   },
   seekLabel: {
     color: '#FFF',
-    fontSize: 10,
+    fontSize: 11.5,
     fontWeight: '700',
     marginTop: 1,
   },
   mainPlayBtn: {
-    width: 72,
-    height: 72,
-    borderRadius: 26,
-    backgroundColor: 'rgba(229,9,20,0.88)',
+    width: 86,
+    height: 86,
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.22)',
   },
   bottomSection: {
     gap: 6,
@@ -1930,7 +2180,7 @@ const styles = StyleSheet.create({
   },
   timeTxt: {
     color: 'rgba(255,255,255,0.88)',
-    fontSize: 12,
+    fontSize: 12.5,
     fontWeight: '700',
     fontVariant: ['tabular-nums'],
   },
@@ -1971,34 +2221,30 @@ const styles = StyleSheet.create({
   actionsLeftScroll: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 10,
     paddingRight: 8,
   },
   actionsRightFixed: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 10,
     flexShrink: 0,
   },
   actionPill: {
-    height: 40,
-    paddingHorizontal: 13,
-    borderRadius: RADII.pill,
-    backgroundColor: 'rgba(20, 20, 24, 0.62)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.16)',
+    height: 46,
+    paddingHorizontal: 16,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
+    gap: 8,
   },
   actionIconPill: {
-    minWidth: 42,
-    paddingHorizontal: 12,
+    minWidth: 48,
+    paddingHorizontal: 13,
   },
   actionPillTxt: {
     color: '#FFF',
-    fontSize: 12.5,
+    fontSize: 13.5,
     fontWeight: '700',
   },
   toastWrap: {
@@ -2013,8 +2259,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 7,
-    paddingHorizontal: 16,
-    paddingVertical: 9,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
   },
   toastTxt: {
     color: '#FFF',

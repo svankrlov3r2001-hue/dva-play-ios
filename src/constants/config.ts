@@ -6,10 +6,10 @@ export const EXPO_UPDATES_URL = 'https://dangvietanh.com/dva_ios/api/updates.php
 
 export const APP_NAME = 'Đặng Việt Anh';
 export const APP_BUNDLE_ID = 'com.dangvietanh.dvaplay';
-export const APP_VERSION = '1.0.20';
-export const APP_VERSION_CODE = 21;
+export const APP_VERSION = '1.0.21';
+export const APP_VERSION_CODE = 22;
 export const APP_RUNTIME_VERSION = '1.0.0';
-export const APP_RELEASE_DATE = '20/11/2026';
+export const APP_RELEASE_DATE = '21/11/2026';
 
 // Minimum startup connection splash duration matching dva-play/src/main/splashManager.js
 export const SPLASH_MIN_DURATION_MS = 3000;

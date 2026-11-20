@@ -258,6 +258,14 @@ export function MovieCard({
   }
 
   const cardW = width || 148;
+  const compactBadgeText =
+    item.episode_badge ||
+    (onRemoveWatched && item.time_remaining
+      ? item.time_remaining.match(/Tập\s*\d+/i)?.[0] || item.video_quality || 'HD'
+      : item.video_quality || 'HD');
+  const gridSubtitleText =
+    onRemoveWatched && item.time_remaining ? item.time_remaining : titleSecondary;
+
   return (
     <TouchableOpacity
       activeOpacity={0.86}
@@ -278,6 +286,16 @@ export function MovieCard({
           colors={['transparent', 'rgba(7,9,15,0.72)']}
           style={styles.bottomScrim}
         />
+        {onRemoveWatched ? (
+          <TouchableOpacity
+            onPress={() => onRemoveWatched(item)}
+            hitSlop={6}
+            style={styles.gridRemoveBtn}
+            accessibilityLabel="Xóa khỏi Đang xem"
+          >
+            <Ionicons name="close" size={14} color="#FFF" />
+          </TouchableOpacity>
+        ) : null}
         <View style={[styles.floatingSplitBadgesCenter, watchedPct > 0 && { bottom: 12 }]}>
           <View style={styles.splitSubHalf}>
             <Text style={styles.splitPillText}>P.Đề</Text>
@@ -288,7 +306,7 @@ export function MovieCard({
             end={{ x: 1, y: 1 }}
             style={styles.splitEpHalf}
           >
-            <Text style={styles.splitPillText}>{item.episode_badge || item.video_quality || 'HD'}</Text>
+            <Text style={styles.splitPillText}>{compactBadgeText}</Text>
           </LinearGradient>
         </View>
         <WatchProgressBar percent={watchedPct} />
@@ -296,9 +314,9 @@ export function MovieCard({
       <Text style={[styles.cardTitle, layout !== 'grid' && { textAlign: 'center' }]} numberOfLines={1}>
         {titlePrimary}
       </Text>
-      {titleSecondary ? (
+      {gridSubtitleText ? (
         <Text style={[styles.cardSub, layout !== 'grid' && { textAlign: 'center' }]} numberOfLines={1}>
-          {titleSecondary}
+          {gridSubtitleText}
         </Text>
       ) : null}
     </TouchableOpacity>
@@ -321,6 +339,18 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255, 255, 255, 0.12)',
     position: 'relative',
     marginBottom: 8,
+  },
+  gridRemoveBtn: {
+    position: 'absolute',
+    top: 7,
+    right: 7,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: 'rgba(0, 0, 0, 0.62)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 5,
   },
   landscapeCard: {
     marginRight: 14,

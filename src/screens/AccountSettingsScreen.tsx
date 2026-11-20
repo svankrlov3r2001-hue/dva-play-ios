@@ -1070,40 +1070,6 @@ export function AccountSettingsScreen({
             thumbColor="#FFF"
           />
         </View>
-
-        <View style={[styles.settingBlock, { marginTop: 8, marginBottom: 2 }]}>
-          <Text style={styles.settingLabel}>Định dạng tải ngoại tuyến</Text>
-          <View style={styles.qualityRow}>
-            {(
-              [
-                { key: 'auto', label: 'Tự động' },
-                { key: 'hls', label: 'HLS' },
-                { key: 'mp4', label: 'MP4' },
-              ] as const
-            ).map((opt) => (
-              <TouchableOpacity
-                key={opt.key}
-                style={[
-                  styles.qualityChip,
-                  settings.offlineDownloadFormat === opt.key && styles.qualityChipActive,
-                ]}
-                onPress={() => {
-                  Haptics.selectionAsync();
-                  updateSetting('offlineDownloadFormat', opt.key);
-                }}
-              >
-                <Text
-                  style={[
-                    styles.qualityTxt,
-                    settings.offlineDownloadFormat === opt.key && { color: '#FFF' },
-                  ]}
-                >
-                  {opt.label}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-        </View>
       </GlassSurface>
 
       {/* Updates & Changelog Card */}
