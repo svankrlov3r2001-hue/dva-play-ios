@@ -260,13 +260,13 @@ export async function fetchProxyPresetsApi(): Promise<{
   success: boolean;
   presets: ProxyPreset[];
 }> {
-  return apiRequest('proxy.php?action=presets');
+  return apiRequest(`proxy.php?action=presets&_t=${Date.now()}`);
 }
 
 export async function resolveProxyPresetApi(
   presetId: string
 ): Promise<ResolvedProxyPresetResponse> {
-  return apiRequest('proxy.php?action=resolve_preset', {
+  return apiRequest(`proxy.php?action=resolve_preset&_t=${Date.now()}`, {
     method: 'POST',
     body: JSON.stringify({ preset_id: presetId }),
   });

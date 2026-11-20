@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -45,8 +45,8 @@ import {
   ProxyRuntimeConfig,
   setProxyConfig,
   subscribeProxyConfig,
+  syncProxyPresetsFromDbAsync,
   testProxyDirectAsync,
-  warmManagedPresetAsync,
 } from '../services/proxyService';
 import {
   clearAllOfflineDownloads,
@@ -92,6 +92,7 @@ export function AccountSettingsScreen({
   ]);
   const [showProxyPass, setShowProxyPass] = useState(false);
   const [applyingProxy, setApplyingProxy] = useState(false);
+  const [reloadingPresets, setReloadingPresets] = useState(false);
   const [testingProxy, setTestingProxy] = useState(false);
   const [proxyStatusMsg, setProxyStatusMsg] = useState<{
     ok: boolean;
@@ -127,21 +128,42 @@ export function AccountSettingsScreen({
     return subscribeProxyConfig(setProxyCfg);
   }, []);
 
+  const handleReloadPresets = useCallback(async (isManual: boolean = false) => {
+    setReloadingPresets(true);
+    if (isManual) {
+      Haptics.selectionAsync();
+      setProxyStatusMsg(null);
+    }
+    try {
+      const latest = await syncProxyPresetsFromDbAsync(fetchProxyPresetsApi);
+      setProxyPresets(latest);
+      if (isManual) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        setProxyStatusMsg({
+          ok: true,
+          text:
+            latest.length > 0
+              ? `Đã cập nhật ${latest.length} máy chủ sẵn có mới nhất từ hệ thống.`
+              : 'Hiện chưa có máy chủ sẵn có nào đang bật trên hệ thống.',
+        });
+      }
+    } catch (err: any) {
+      if (isManual) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        setProxyStatusMsg({
+          ok: false,
+          text: err?.message || 'Không thể tải danh sách máy chủ từ hệ thống.',
+        });
+      }
+    } finally {
+      setReloadingPresets(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (!visible) return;
-    fetchProxyPresetsApi()
-      .then((res) => {
-        if (res?.success && Array.isArray(res.presets) && res.presets.length > 0) {
-          setProxyPresets(res.presets);
-        }
-      })
-      .catch(() => {});
-    if (nativeProxyReady && !getProxyConfig().enabled) {
-      warmManagedPresetAsync(getProxyConfig().presetId || 'hanoi', resolveProxyPresetApi).catch(
-        () => {}
-      );
-    }
-  }, [visible, nativeProxyReady]);
+    handleReloadPresets(false);
+  }, [visible, handleReloadPresets]);
 
   const applyProxyOverride = async (override: Partial<ProxyRuntimeConfig>) => {
     if (applyingProxy) return;
@@ -179,8 +201,8 @@ export function AccountSettingsScreen({
 
     if (!nativeProxyReady) {
       Alert.alert(
-        'Cần cập nhật ứng dụng (v1.0.16)',
-        'Tính năng kết nối Proxy trực tiếp trên iPhone yêu cầu cài đặt bản ứng dụng iOS mới nhất (v1.0.16).'
+        'Cần cập nhật ứng dụng (v1.0.17)',
+        'Tính năng kết nối Proxy trực tiếp trên iPhone yêu cầu cài đặt bản ứng dụng iOS mới nhất (v1.0.17).'
       );
       return;
     }
@@ -216,7 +238,7 @@ export function AccountSettingsScreen({
     if (!nativeProxyReady) {
       setProxyStatusMsg({
         ok: false,
-        text: 'Cần cài đặt bản ứng dụng iOS mới nhất (v1.0.16) để kiểm tra Proxy trực tiếp trên iPhone.',
+        text: 'Cần cài đặt bản ứng dụng iOS mới nhất (v1.0.17) để kiểm tra Proxy trực tiếp trên iPhone.',
       });
       return;
     }
@@ -506,7 +528,7 @@ export function AccountSettingsScreen({
           <View style={styles.proxyNoticeBanner}>
             <Ionicons name="information-circle-outline" size={16} color="#FDE68A" />
             <Text style={styles.proxyNoticeTxt}>
-              Cần cài đặt bản ứng dụng iOS mới nhất (v1.0.16) để bật kết nối Proxy trực tiếp trên
+              Cần cài đặt bản ứng dụng iOS mới nhất (v1.0.17) để bật kết nối Proxy trực tiếp trên
               iPhone.
             </Text>
           </View>
@@ -563,47 +585,69 @@ export function AccountSettingsScreen({
               Proxy tự cấu hình
             </Text>
           </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.reloadProxyIconBtn}
+            onPress={() => handleReloadPresets(true)}
+            disabled={reloadingPresets || applyingProxy}
+            activeOpacity={0.78}
+            accessibilityLabel="Làm mới danh sách máy chủ Proxy"
+          >
+            {reloadingPresets ? (
+              <ActivityIndicator size="small" color="#FFF" />
+            ) : (
+              <Ionicons name="refresh" size={17} color="#FFF" />
+            )}
+          </TouchableOpacity>
         </View>
 
         {proxyCfg.mode === 'preset' ? (
           <View style={styles.presetList}>
-            {proxyPresets.map((preset) => {
-              const selected = proxyCfg.presetId === preset.id;
-              return (
-                <TouchableOpacity
-                  key={preset.id}
-                  activeOpacity={0.85}
-                  style={[styles.presetCard, selected && styles.presetCardActive]}
-                  onPress={() => {
-                    Haptics.selectionAsync();
-                    setProxyStatusMsg(null);
-                    applyProxyOverride({
-                      mode: 'preset',
-                      presetId: preset.id,
-                      presetName: preset.name,
-                    });
-                  }}
-                >
-                  <View style={{ flex: 1 }}>
-                    <View style={styles.presetTitleRow}>
-                      <Text style={styles.presetName}>{preset.name}</Text>
-                      <View style={styles.presetBadge}>
-                        <Ionicons name="lock-closed" size={10} color="#93C5FD" />
-                        <Text style={styles.presetBadgeTxt}>
-                          Máy chủ cấp sẵn • Ẩn thông tin
-                        </Text>
+            {proxyPresets.length === 0 ? (
+              <View style={styles.presetEmptyBox}>
+                <Text style={styles.presetEmptyTxt}>
+                  Chưa có máy chủ sẵn có nào. Nhấn biểu tượng làm mới hoặc chọn Proxy tự cấu hình.
+                </Text>
+              </View>
+            ) : (
+              proxyPresets.map((preset) => {
+                const selected = proxyCfg.presetId === preset.id;
+                return (
+                  <TouchableOpacity
+                    key={preset.id}
+                    activeOpacity={0.85}
+                    style={[styles.presetCard, selected && styles.presetCardActive]}
+                    onPress={() => {
+                      Haptics.selectionAsync();
+                      setProxyStatusMsg(null);
+                      applyProxyOverride({
+                        mode: 'preset',
+                        presetId: preset.id,
+                        presetName: preset.name,
+                      });
+                    }}
+                  >
+                    <View style={{ flex: 1 }}>
+                      <View style={styles.presetTitleRow}>
+                        <Text style={styles.presetName}>{preset.name}</Text>
+                        <View style={styles.presetBadge}>
+                          <Ionicons name="lock-closed" size={10} color="#93C5FD" />
+                          <Text style={styles.presetBadgeTxt}>
+                            Máy chủ cấp sẵn • Ẩn thông tin
+                          </Text>
+                        </View>
                       </View>
+                      <Text style={styles.presetRegion}>{preset.region}</Text>
                     </View>
-                    <Text style={styles.presetRegion}>{preset.region}</Text>
-                  </View>
-                  <Ionicons
-                    name={selected ? 'checkmark-circle' : 'ellipse-outline'}
-                    size={21}
-                    color={selected ? COLORS.accent : COLORS.muted}
-                  />
-                </TouchableOpacity>
-              );
-            })}
+                    <Ionicons
+                      name={selected ? 'checkmark-circle' : 'ellipse-outline'}
+                      size={21}
+                      color={selected ? COLORS.accent : COLORS.muted}
+                    />
+                  </TouchableOpacity>
+                );
+              })
+            )}
           </View>
         ) : (
           <View style={styles.customProxyForm}>
@@ -1114,12 +1158,37 @@ const styles = StyleSheet.create({
   },
   proxyModeRow: {
     flexDirection: 'row',
+    alignItems: 'center',
     gap: 8,
     marginTop: 14,
+  },
+  reloadProxyIconBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 13,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.16)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   presetList: {
     marginTop: 12,
     gap: 8,
+  },
+  presetEmptyBox: {
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  presetEmptyTxt: {
+    color: COLORS.muted,
+    fontSize: 12.5,
+    textAlign: 'center',
+    lineHeight: 18,
   },
   presetCard: {
     flexDirection: 'row',

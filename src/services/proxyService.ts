@@ -8,9 +8,12 @@ const B64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012345
 
 export interface ProxyPreset {
   id: string;
+  proxy_id?: number;
   name: string;
   region: string;
   managed: boolean;
+  updated_at?: string;
+  sealed?: string;
 }
 
 export interface ProxyRuntimeConfig {
@@ -206,7 +209,7 @@ export function normalizeCustomProxyInput(
 async function applyNativeProxy(ep: ResolvedProxyEndpoint): Promise<void> {
   const bridge = getNativeProxyBridge();
   if (!bridge) {
-    throw new Error('Cần cài đặt bản ứng dụng mới (v1.0.16) để bật Proxy trực tiếp.');
+    throw new Error('Cần cài đặt bản ứng dụng mới (v1.0.17) để bật Proxy trực tiếp.');
   }
   await bridge.dvaSetProxy(ep.host, ep.port, ep.username, ep.password);
   activeNativeEndpoint = { ...ep };
@@ -291,6 +294,111 @@ export async function warmManagedPresetAsync(
   } catch {}
 }
 
+export async function syncProxyPresetsFromDbAsync(
+  fetchPresetsFn: () => Promise<{ success: boolean; presets: ProxyPreset[] }>
+): Promise<ProxyPreset[]> {
+  let res: { success: boolean; presets: ProxyPreset[] } | null = null;
+  try {
+    res = await fetchPresetsFn();
+  } catch (err) {
+    // If active proxy is unreachable/outdated in DB, temporarily bypass it to pull latest DB presets
+    const prevEndpoint = activeNativeEndpoint;
+    if (prevEndpoint) {
+      await clearNativeProxy();
+      try {
+        res = await fetchPresetsFn();
+      } finally {
+        if (activeNativeEndpoint === null) {
+          await applyNativeProxy(prevEndpoint).catch(() => {});
+        }
+      }
+    } else {
+      throw err;
+    }
+  }
+
+  if (!res?.success || !Array.isArray(res.presets)) {
+    throw new Error('Không thể đồng bộ danh sách máy chủ Proxy từ CSDL.');
+  }
+
+  managedPresetCache.clear();
+  const cleanPresets: ProxyPreset[] = [];
+
+  for (const rawPreset of res.presets) {
+    if (!rawPreset || !rawPreset.id) continue;
+    if (typeof rawPreset.sealed === 'string' && rawPreset.sealed.length > 0) {
+      try {
+        const ep = unsealProxyPayload(rawPreset.sealed);
+        managedPresetCache.set(rawPreset.id, ep);
+        if (rawPreset.proxy_id) {
+          managedPresetCache.set(String(rawPreset.proxy_id), ep);
+          managedPresetCache.set(`proxy_${rawPreset.proxy_id}`, ep);
+        }
+      } catch {}
+    }
+    cleanPresets.push({
+      id: String(rawPreset.id),
+      proxy_id: rawPreset.proxy_id ? Number(rawPreset.proxy_id) : undefined,
+      name: String(rawPreset.name || 'Máy chủ Proxy'),
+      region: String(rawPreset.region || 'Việt Nam'),
+      managed: true,
+      updated_at: rawPreset.updated_at,
+    });
+  }
+
+  if (cleanPresets.length > 0) {
+    const currentId = currentProxyConfig.presetId;
+    const matched =
+      cleanPresets.find(
+        (p) =>
+          p.id === currentId ||
+          (p.proxy_id && (`proxy_${p.proxy_id}` === currentId || String(p.proxy_id) === currentId))
+      ) || cleanPresets[0];
+
+    const configChanged =
+      currentProxyConfig.presetId !== matched.id || currentProxyConfig.presetName !== matched.name;
+
+    if (configChanged) {
+      currentProxyConfig = {
+        ...currentProxyConfig,
+        presetId: matched.id,
+        presetName: matched.name,
+      };
+      persistDraft(currentProxyConfig).catch(() => {});
+      notifyListeners();
+    }
+
+    // If preset proxy is currently ON, immediately apply the latest IP/Port/TK/MK from DB
+    if (
+      currentProxyConfig.enabled &&
+      currentProxyConfig.mode === 'preset' &&
+      isNativeProxySupported()
+    ) {
+      const latestEp = managedPresetCache.get(matched.id);
+      if (latestEp) {
+        const epChanged =
+          !activeNativeEndpoint ||
+          activeNativeEndpoint.host !== latestEp.host ||
+          activeNativeEndpoint.port !== latestEp.port ||
+          activeNativeEndpoint.username !== latestEp.username ||
+          activeNativeEndpoint.password !== latestEp.password;
+        if (epChanged) {
+          await applyNativeProxy(latestEp);
+          currentProxyConfig = {
+            ...currentProxyConfig,
+            revision: currentProxyConfig.revision + 1,
+          };
+          notifyListeners();
+        }
+      }
+    }
+  } else if (currentProxyConfig.enabled && currentProxyConfig.mode === 'preset') {
+    await disableProxyAsync();
+  }
+
+  return cleanPresets;
+}
+
 export async function loadProxyDraft(): Promise<ProxyRuntimeConfig> {
   managedPresetCache.clear();
   clearNativeProxy().catch(() => {});
@@ -371,7 +479,7 @@ export async function enableProxyAsync(
   overridePartial?: Partial<ProxyRuntimeConfig>
 ): Promise<ProxyRuntimeConfig> {
   if (!isNativeProxySupported()) {
-    throw new Error('Tính năng Proxy trực tiếp cần phiên bản ứng dụng mới nhất (v1.0.16) trên iOS 17+.');
+    throw new Error('Tính năng Proxy trực tiếp cần phiên bản ứng dụng mới nhất (v1.0.17) trên iOS 17+.');
   }
   const candidate: ProxyRuntimeConfig = {
     ...currentProxyConfig,
@@ -401,7 +509,7 @@ export async function testProxyDirectAsync(
       label: cfg.mode === 'preset' ? cfg.presetName : `${cfg.customHost}:${cfg.customPort}`,
       managed: cfg.mode === 'preset',
       exit_ip: null,
-      error: 'Cần cài đặt phiên bản iOS mới nhất (v1.0.16) để kiểm tra Proxy trực tiếp trên iPhone.',
+      error: 'Cần cài đặt phiên bản iOS mới nhất (v1.0.17) để kiểm tra Proxy trực tiếp trên iPhone.',
     };
   }
 
