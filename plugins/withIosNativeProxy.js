@@ -1763,10 +1763,9 @@ private final class DvaBackgroundDownloadGuard: @unchecked Sendable {
       }
     }
     nc.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] notif in
+      let typeVal = (notif.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt) ?? 0
       MainActor.assumeIsolated {
         guard let self else { return }
-        let userInfo = notif.userInfo
-        let typeVal = (userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt) ?? 0
         if let interType = AVAudioSession.InterruptionType(rawValue: typeVal) {
           if interType == .began {
             self.silentPlayer?.pause()

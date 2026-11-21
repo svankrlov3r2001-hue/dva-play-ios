@@ -44,8 +44,12 @@ jobs:
         run: |
           pod install --repo-update
 
-      - name: Build Release iOS .app & Unsigned .ipa (Sideloadly)
+      - name: Build iOS .app & Package DVA-Play-iOS.ipa
         working-directory: ${{ env.APP_DIR }}
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
         run: |
           set -e
           NODE_BIN=$(command -v node || true)
@@ -64,7 +68,6 @@ jobs:
           fi
           echo "Using workspace: $WORKSPACE | project: $PROJECT | scheme: $SCHEME"
 
-          echo "Building unsigned Release .app for Sideloadly & P12 re-signing..."
           xcodebuild -workspace "$WORKSPACE" \
             -scheme "$SCHEME" \
             -configuration Release \
@@ -87,48 +90,22 @@ jobs:
             find build -maxdepth 4 2>/dev/null || true
             exit 1
           fi
-          echo "Packaging unsigned .app bundle: $APP_PATH"
-          echo "BUILT_APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
 
+          APP_BASENAME=$(basename "$APP_PATH")
           rm -rf build/Payload DVA-Play-iOS.ipa
           mkdir -p build/Payload
-          cp -R "$APP_PATH" build/Payload/
-          cd build
-          zip -qry ../DVA-Play-iOS.ipa Payload
-          cd ..
-          ls -lh DVA-Play-iOS.ipa
+          cp -R "$APP_PATH" "build/Payload/$APP_BASENAME"
+          TARGET_APP="build/Payload/$APP_BASENAME"
 
-      - name: Upload DVA-Play-iOS.ipa Artifact (Sideloadly)
-        uses: actions/upload-artifact@v4
-        with:
-          name: DVA-Play-iOS-IPA
-          path: ${{ env.APP_DIR }}/DVA-Play-iOS.ipa
+          if [ -n "$APPLE_CERTIFICATE_BASE64" ] && [ -n "$APPLE_PROVISIONING_PROFILE_BASE64" ]; then
+            echo "P12 signing secrets detected - signing $TARGET_APP for direct OTA & Sideloadly..."
+            KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+            CERT_PATH="$RUNNER_TEMP/certificate.p12"
+            PP_PATH="$RUNNER_TEMP/profile.mobileprovision"
+            PROFILE_PLIST="$RUNNER_TEMP/profile.plist"
+            ENTITLEMENTS_PATH="$RUNNER_TEMP/entitlements.plist"
 
-      - name: Build P12 Signed .ipa (Direct iPhone Overwrite Update)
-        working-directory: ${{ env.APP_DIR }}
-        env:
-          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
-        run: |
-          set -e
-          if [ -z "$APPLE_CERTIFICATE_BASE64" ] || [ -z "$APPLE_PROVISIONING_PROFILE_BASE64" ]; then
-            echo "Signing secrets not configured; skipping DVA-Play-iOS-Signed.ipa build."
-            exit 0
-          fi
-
-          if [ -z "${BUILT_APP_PATH:-}" ] || [ ! -d "$BUILT_APP_PATH" ]; then
-            echo "ERROR: BUILT_APP_PATH missing: $BUILT_APP_PATH"
-            exit 1
-          fi
-
-          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
-          CERT_PATH="$RUNNER_TEMP/certificate.p12"
-          PP_PATH="$RUNNER_TEMP/profile.mobileprovision"
-          PROFILE_PLIST="$RUNNER_TEMP/profile.plist"
-          ENTITLEMENTS_PATH="$RUNNER_TEMP/entitlements.plist"
-
-          python3 - << 'PYEOF'
+            python3 - << 'PYEOF'
           import base64, os, re
 
           def decode_secret(var_name, out_path):
@@ -142,9 +119,9 @@ jobs:
           decode_secret("APPLE_PROVISIONING_PROFILE_BASE64", os.path.join(os.environ["RUNNER_TEMP"], "profile.mobileprovision"))
           PYEOF
 
-          security cms -D -i "$PP_PATH" > "$PROFILE_PLIST"
+            security cms -D -i "$PP_PATH" > "$PROFILE_PLIST"
 
-          eval "$(python3 - "$PROFILE_PLIST" "$ENTITLEMENTS_PATH" << 'PYEOF'
+            eval "$(python3 - "$PROFILE_PLIST" "$ENTITLEMENTS_PATH" << 'PYEOF'
           import plistlib, shlex, sys
 
           profile_plist_path, ent_out_path = sys.argv[1], sys.argv[2]
@@ -173,72 +150,68 @@ jobs:
           print(f"PROFILE_BUNDLE_ID={shlex.quote(bundle_id)}")
           print(f"PROFILE_NAME={shlex.quote(profile_name)}")
           PYEOF
-          )"
+            )"
 
-          if [ -z "$PROFILE_BUNDLE_ID" ] || [ -z "$PROFILE_TEAM_ID" ]; then
-            echo "ERROR: Invalid provisioning profile metadata!"
-            exit 1
-          fi
-          echo "Signing Bundle ID: $PROFILE_BUNDLE_ID | Team: $PROFILE_TEAM_ID | Profile: $PROFILE_NAME"
+            if [ -z "$PROFILE_BUNDLE_ID" ] || [ -z "$PROFILE_TEAM_ID" ]; then
+              echo "ERROR: Invalid provisioning profile metadata!"
+              exit 1
+            fi
+            echo "Signing Bundle ID: $PROFILE_BUNDLE_ID | Team: $PROFILE_TEAM_ID | Profile: $PROFILE_NAME"
 
-          security delete-keychain "$KEYCHAIN_PATH" >/dev/null 2>&1 || true
-          security create-keychain -p "dva-temp-pass" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "dva-temp-pass" "$KEYCHAIN_PATH"
-          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "dva-temp-pass" "$KEYCHAIN_PATH"
-          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain
+            security delete-keychain "$KEYCHAIN_PATH" >/dev/null 2>&1 || true
+            security create-keychain -p "dva-temp-pass" "$KEYCHAIN_PATH"
+            security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+            security unlock-keychain -p "dva-temp-pass" "$KEYCHAIN_PATH"
+            security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "dva-temp-pass" "$KEYCHAIN_PATH"
+            security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain
 
-          SIGN_IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | python3 -c "import re, sys; txt = sys.stdin.read(); m = re.search(r'\b([0-9A-F]{40})\b', txt); print(m.group(1) if m else '')")
-          if [ -z "$SIGN_IDENTITY" ]; then
-            echo "ERROR: Could not locate valid code signing identity in P12!"
-            security find-identity -v "$KEYCHAIN_PATH" || true
-            exit 1
-          fi
-          echo "Using signing identity SHA-1: $SIGN_IDENTITY"
+            SIGN_IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | python3 -c "import re, sys; txt = sys.stdin.read(); m = re.search(r'\b([0-9A-F]{40})\b', txt); print(m.group(1) if m else '')")
+            if [ -z "$SIGN_IDENTITY" ]; then
+              echo "ERROR: Could not locate valid code signing identity in P12!"
+              security find-identity -v "$KEYCHAIN_PATH" || true
+              exit 1
+            fi
+            echo "Using signing identity SHA-1: $SIGN_IDENTITY"
 
-          APP_BASENAME=$(basename "$BUILT_APP_PATH")
-          rm -rf build/signed_stage DVA-Play-iOS-Signed.ipa
-          mkdir -p build/signed_stage/Payload
-          cp -R "$BUILT_APP_PATH" "build/signed_stage/Payload/$APP_BASENAME"
-          SIGNED_APP="build/signed_stage/Payload/$APP_BASENAME"
+            /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $PROFILE_BUNDLE_ID" "$TARGET_APP/Info.plist"
+            /usr/libexec/PlistBuddy -c "Delete :DvaSignedBuild" "$TARGET_APP/Info.plist" >/dev/null 2>&1 || true
+            /usr/libexec/PlistBuddy -c "Add :DvaSignedBuild bool true" "$TARGET_APP/Info.plist"
+            /usr/libexec/PlistBuddy -c "Delete :DvaSignedTeamId" "$TARGET_APP/Info.plist" >/dev/null 2>&1 || true
+            /usr/libexec/PlistBuddy -c "Add :DvaSignedTeamId string $PROFILE_TEAM_ID" "$TARGET_APP/Info.plist"
+            /usr/libexec/PlistBuddy -c "Delete :DvaSignedProfileName" "$TARGET_APP/Info.plist" >/dev/null 2>&1 || true
+            /usr/libexec/PlistBuddy -c "Add :DvaSignedProfileName string $PROFILE_NAME" "$TARGET_APP/Info.plist"
 
-          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $PROFILE_BUNDLE_ID" "$SIGNED_APP/Info.plist"
-          /usr/libexec/PlistBuddy -c "Delete :DvaSignedBuild" "$SIGNED_APP/Info.plist" >/dev/null 2>&1 || true
-          /usr/libexec/PlistBuddy -c "Add :DvaSignedBuild bool true" "$SIGNED_APP/Info.plist"
-          /usr/libexec/PlistBuddy -c "Delete :DvaSignedTeamId" "$SIGNED_APP/Info.plist" >/dev/null 2>&1 || true
-          /usr/libexec/PlistBuddy -c "Add :DvaSignedTeamId string $PROFILE_TEAM_ID" "$SIGNED_APP/Info.plist"
-          /usr/libexec/PlistBuddy -c "Delete :DvaSignedProfileName" "$SIGNED_APP/Info.plist" >/dev/null 2>&1 || true
-          /usr/libexec/PlistBuddy -c "Add :DvaSignedProfileName string $PROFILE_NAME" "$SIGNED_APP/Info.plist"
+            cp "$PP_PATH" "$TARGET_APP/embedded.mobileprovision"
 
-          cp "$PP_PATH" "$SIGNED_APP/embedded.mobileprovision"
-
-          find "$SIGNED_APP" -type f \( -name "*.dylib" \) | while IFS= read -r target_bin; do
-            codesign --force --sign "$SIGN_IDENTITY" --timestamp=none "$target_bin"
-          done
-          if [ -d "$SIGNED_APP/Frameworks" ]; then
-            find "$SIGNED_APP/Frameworks" -maxdepth 2 -name "*.framework" -type d | while IFS= read -r fw; do
-              codesign --force --sign "$SIGN_IDENTITY" --timestamp=none "$fw"
+            find "$TARGET_APP" -type f \( -name "*.dylib" \) | while IFS= read -r target_bin; do
+              codesign --force --sign "$SIGN_IDENTITY" --timestamp=none "$target_bin"
             done
+            if [ -d "$TARGET_APP/Frameworks" ]; then
+              find "$TARGET_APP/Frameworks" -maxdepth 2 -name "*.framework" -type d | while IFS= read -r fw; do
+                codesign --force --sign "$SIGN_IDENTITY" --timestamp=none "$fw"
+              done
+            fi
+            if [ -d "$TARGET_APP/PlugIns" ]; then
+              find "$TARGET_APP/PlugIns" -maxdepth 2 -name "*.appex" -type d | while IFS= read -r appex; do
+                codesign --force --sign "$SIGN_IDENTITY" --entitlements "$ENTITLEMENTS_PATH" --timestamp=none "$appex"
+              done
+            fi
+
+            codesign --force --sign "$SIGN_IDENTITY" --entitlements "$ENTITLEMENTS_PATH" --timestamp=none "$TARGET_APP"
+            codesign --verify --deep --strict --verbose=2 "$TARGET_APP"
+          else
+            echo "No signing secrets found - packaging unsigned .ipa for Sideloadly / AltStore..."
           fi
-          if [ -d "$SIGNED_APP/PlugIns" ]; then
-            find "$SIGNED_APP/PlugIns" -maxdepth 2 -name "*.appex" -type d | while IFS= read -r appex; do
-              codesign --force --sign "$SIGN_IDENTITY" --entitlements "$ENTITLEMENTS_PATH" --timestamp=none "$appex"
-            done
-          fi
 
-          codesign --force --sign "$SIGN_IDENTITY" --entitlements "$ENTITLEMENTS_PATH" --timestamp=none "$SIGNED_APP"
-          codesign --verify --deep --strict --verbose=2 "$SIGNED_APP"
+          (cd build && zip -qry ../DVA-Play-iOS.ipa Payload)
+          ls -lh DVA-Play-iOS.ipa
 
-          (cd build/signed_stage && zip -qry ../../DVA-Play-iOS-Signed.ipa Payload)
-          ls -lh DVA-Play-iOS-Signed.ipa
-
-      - name: Upload DVA-Play-iOS-Signed.ipa Artifact (P12 Direct Update)
+      - name: Upload DVA-Play-iOS.ipa Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: DVA-Play-iOS-Signed-IPA
-          path: ${{ env.APP_DIR }}/DVA-Play-iOS-Signed.ipa
-          if-no-files-found: ignore
+          name: DVA-Play-iOS-IPA
+          path: ${{ env.APP_DIR }}/DVA-Play-iOS.ipa
 
       - name: Clean Up Signing Credentials
         if: always()
