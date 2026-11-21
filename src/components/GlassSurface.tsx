@@ -11,6 +11,7 @@ interface GlassSurfaceProps {
   radius?: number;
   tint?: 'dark' | 'light' | 'default' | 'systemMaterialDark' | 'systemUltraThinMaterialDark';
   variant?: 'default' | 'liquid';
+  noShadow?: boolean;
 }
 
 export function GlassSurface({
@@ -21,10 +22,11 @@ export function GlassSurface({
   radius = RADII.lg,
   tint = 'dark',
   variant = 'default',
+  noShadow = false,
 }: GlassSurfaceProps) {
   if (variant === 'liquid') {
     return (
-      <View style={[styles.liquidOuter, { borderRadius: radius }, style]}>
+      <View style={[styles.liquidOuter, noShadow && styles.noShadow, { borderRadius: radius }, style]}>
         <View
           pointerEvents="none"
           style={[
@@ -50,7 +52,7 @@ export function GlassSurface({
   }
 
   return (
-    <View style={[styles.outer, { borderRadius: radius }, style]}>
+    <View style={[styles.outer, noShadow && styles.noShadow, { borderRadius: radius }, style]}>
       <BlurView
         intensity={Platform.OS === 'ios' ? intensity : 70}
         tint={tint}
@@ -89,5 +91,12 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.5,
     shadowRadius: 25,
     elevation: 20,
+  },
+  noShadow: {
+    shadowColor: 'transparent',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    elevation: 0,
   },
 });

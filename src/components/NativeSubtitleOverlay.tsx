@@ -498,7 +498,7 @@ export function NativeSubtitleOverlay({
   const bottomStyleValue = `${Math.max(-5, Math.min(40, effectivePosPct))}%` as `${number}%`;
 
   return (
-    <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+    <View pointerEvents="none" style={[StyleSheet.absoluteFill, styles.overlayRoot]}>
       {activeVnTopCue ? (
         <View style={styles.topSubContainer}>
           <OutlinedText
@@ -538,18 +538,22 @@ export function NativeSubtitleOverlay({
 }
 
 const styles = StyleSheet.create({
+  overlayRoot: {
+    zIndex: 12,
+    elevation: 12,
+  },
   topSubContainer: {
     position: 'absolute',
     top: '5%',
-    left: 36,
-    right: 36,
+    left: 18,
+    right: 18,
     alignItems: 'center',
     zIndex: 8,
   },
   bottomSubContainer: {
     position: 'absolute',
-    left: 36,
-    right: 36,
+    left: 18,
+    right: 18,
     alignItems: 'center',
     zIndex: 8,
   },

@@ -7,14 +7,13 @@ import {
   Image,
   PanResponder,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   useWindowDimensions,
   View,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { Feather, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import {
   isPictureInPictureSupported,
   SubtitleTrack,
@@ -24,7 +23,6 @@ import {
 } from 'expo-video';
 import * as Haptics from 'expo-haptics';
 import * as ScreenOrientation from 'expo-screen-orientation';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { showAppAlert } from '../components/AppAlertModal';
 import { GlassSurface } from '../components/GlassSurface';
 import { NativeSubtitleOverlay } from '../components/NativeSubtitleOverlay';
@@ -198,6 +196,46 @@ function resolveEpisodeMetaFromParams(
   return { episodeNumber: epNum, seasonId: sId };
 }
 
+/**
+ * Pure-RN outline subtitle box icon matching the player toolbar in jw.php.
+ */
+function JwSubtitleIcon({ size = 22, color = '#FFF' }: { size?: number; color?: string }) {
+  const boxW = Math.round(size * (20 / 24));
+  const boxH = Math.round(size * (16 / 24));
+  const stroke = Math.max(1.8, size * (2 / 24));
+  return (
+    <View
+      style={{
+        width: boxW,
+        height: boxH,
+        borderRadius: Math.max(3, Math.round(size * (3 / 24))),
+        borderWidth: stroke,
+        borderColor: color,
+        paddingHorizontal: Math.round(size * (3 / 24)),
+        justifyContent: 'center',
+        gap: Math.max(2.5, Math.round(size * (2.5 / 24))),
+      }}
+    >
+      <View
+        style={{
+          width: '100%',
+          height: stroke,
+          borderRadius: stroke / 2,
+          backgroundColor: color,
+        }}
+      />
+      <View
+        style={{
+          width: '68%',
+          height: stroke,
+          borderRadius: stroke / 2,
+          backgroundColor: color,
+        }}
+      />
+    </View>
+  );
+}
+
 export function PlayerModal({
   visible,
   params,
@@ -205,7 +243,6 @@ export function PlayerModal({
   onSwitchEpisode,
   onSwitchOfflineItem,
 }: PlayerModalProps) {
-  const insets = useSafeAreaInsets();
   const { width: winWidth, height: winHeight } = useWindowDimensions();
   const { user, isLocked } = useAuth();
   const { settings, updateSetting } = useSettings();
@@ -2261,10 +2298,10 @@ export function PlayerModal({
             style={[
               styles.hudOverlay,
               {
-                paddingLeft: Math.max(18, insets.left + 10),
-                paddingRight: Math.max(18, insets.right + 10),
-                paddingTop: Math.max(12, insets.top + 4),
-                paddingBottom: Math.max(14, insets.bottom > 0 ? insets.bottom : 14),
+                paddingLeft: 18,
+                paddingRight: 18,
+                paddingTop: 12,
+                paddingBottom: 14,
               },
             ]}
           >
@@ -2272,7 +2309,7 @@ export function PlayerModal({
             <View style={styles.topBarRow} pointerEvents="box-none">
               <View style={styles.topLeftGroup}>
                 <TouchableOpacity activeOpacity={0.8} onPress={handleClose}>
-                  <GlassSurface variant="liquid" radius={22} intensity={85} style={styles.backBtn}>
+                  <GlassSurface variant="liquid" noShadow radius={22} intensity={85} style={styles.backBtn}>
                     <Ionicons name="chevron-back" size={23} color="#FFF" />
                   </GlassSurface>
                 </TouchableOpacity>
@@ -2286,8 +2323,8 @@ export function PlayerModal({
                 </View>
               </View>
 
-              {/* Top-right 6-button Liquid Glass capsule matching Image 1 */}
-              <GlassSurface variant="liquid" radius={40} intensity={85} style={styles.topRightCapsule}>
+              {/* Top-right 6-button Liquid Glass capsule matching jw.php */}
+              <GlassSurface variant="liquid" noShadow radius={40} intensity={85} style={styles.topRightCapsule}>
                 <TouchableOpacity
                   style={styles.topCapsuleBtn}
                   onPress={() => {
@@ -2296,7 +2333,7 @@ export function PlayerModal({
                     setServerModalOpen(true);
                   }}
                 >
-                  <Ionicons name="server-outline" size={20} color="#FFF" />
+                  <Feather name="server" size={21} color="#FFF" />
                   {serverPreparing ? <View style={styles.prepDot} /> : null}
                 </TouchableOpacity>
 
@@ -2315,9 +2352,9 @@ export function PlayerModal({
                     {isDownloadingNow ? (
                       <ActivityIndicator size="small" color="#30D158" />
                     ) : (
-                      <Ionicons
-                        name="download-outline"
-                        size={20}
+                      <Feather
+                        name="download"
+                        size={21}
                         color={isDownloadedNow ? '#30D158' : '#FFF'}
                       />
                     )}
@@ -2332,7 +2369,7 @@ export function PlayerModal({
                     setSubSettingsOpen(true);
                   }}
                 >
-                  <Ionicons name="chatbox-ellipses-outline" size={20} color="#FFF" />
+                  <JwSubtitleIcon size={22} color="#FFF" />
                 </TouchableOpacity>
 
                 {settings.pipEnabled ? (
@@ -2360,7 +2397,11 @@ export function PlayerModal({
                       }
                     }}
                   >
-                    <Ionicons name="albums-outline" size={20} color="#FFF" />
+                    <MaterialCommunityIcons
+                      name="picture-in-picture-bottom-right-outline"
+                      size={23}
+                      color="#FFF"
+                    />
                   </TouchableOpacity>
                 ) : null}
 
@@ -2372,7 +2413,7 @@ export function PlayerModal({
                     setCastPopupOpen(true);
                   }}
                 >
-                  <Ionicons name="tv-outline" size={20} color="#FFF" />
+                  <Feather name="cast" size={21} color="#FFF" />
                 </TouchableOpacity>
 
                 <TouchableOpacity
@@ -2383,17 +2424,18 @@ export function PlayerModal({
                     setGeneralSettingsOpen(true);
                   }}
                 >
-                  <Ionicons name="settings-outline" size={20} color="#FFF" />
+                  <Feather name="settings" size={21} color="#FFF" />
                 </TouchableOpacity>
               </GlassSurface>
             </View>
 
-            {/* Right-Edge Vertical Liquid Glass Capsule matching Image 1 */}
+            {/* Right-Edge Vertical Liquid Glass Capsule */}
             <GlassSurface
               variant="liquid"
+              noShadow
               radius={40}
               intensity={85}
-              style={[styles.rightSideCapsule, { right: Math.max(18, insets.right + 10) }]}
+              style={[styles.rightSideCapsule, { right: 14 }]}
             >
               <TouchableOpacity
                 style={[styles.sideBtn, isContrastActive && styles.sideBtnActiveRed]}
@@ -2474,6 +2516,7 @@ export function PlayerModal({
               >
                 <GlassSurface
                   variant="liquid"
+                  noShadow
                   radius={26}
                   intensity={70}
                   style={styles.centerPlayBox}
@@ -2521,7 +2564,7 @@ export function PlayerModal({
                       showToast('Đã bỏ qua giới thiệu');
                     }}
                   >
-                    <GlassSurface variant="liquid" radius={40} intensity={85} style={styles.quickChip}>
+                    <GlassSurface variant="liquid" noShadow radius={40} intensity={85} style={styles.quickChip}>
                       <Ionicons name="play-skip-forward" size={14} color="#FFF" />
                       <Text style={styles.quickChipTxt}>Bỏ qua giới thiệu</Text>
                     </GlassSurface>
@@ -2539,7 +2582,7 @@ export function PlayerModal({
                       }
                     }}
                   >
-                    <GlassSurface variant="liquid" radius={40} intensity={85} style={styles.quickChip}>
+                    <GlassSurface variant="liquid" noShadow radius={40} intensity={85} style={styles.quickChip}>
                       <Ionicons name="return-up-back" size={14} color="#00FFD9" />
                       <Text style={styles.quickChipTxt}>
                         Quay lại vị trí cũ ({formatClock(seekReturnSec)})
@@ -2642,14 +2685,9 @@ export function PlayerModal({
                 <View style={[styles.scrubberThumb, { left: `${progressPct}%` }]} />
               </View>
 
-              {/* Bottom Action Pills Row matching Image 1 */}
+              {/* Bottom Action Pills Row */}
               <View style={styles.bottomActionsRow}>
-                <ScrollView
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  style={{ flex: 1 }}
-                  contentContainerStyle={styles.bottomLeftScroll}
-                >
+                <View style={styles.bottomLeftRow}>
                   {currentNextEpisode ? (
                     <TouchableOpacity
                       activeOpacity={0.82}
@@ -2659,7 +2697,7 @@ export function PlayerModal({
                         triggerSwitchToNextEpisode();
                       }}
                     >
-                      <GlassSurface variant="liquid" radius={40} intensity={85} style={styles.nextEpPill}>
+                      <GlassSurface variant="liquid" noShadow radius={40} intensity={85} style={styles.nextEpPill}>
                         {moviePosterMeta.thumb || moviePosterMeta.poster ? (
                           <Image
                             source={{ uri: moviePosterMeta.thumb || moviePosterMeta.poster }}
@@ -2690,7 +2728,7 @@ export function PlayerModal({
                       showHudWithTimer();
                     }}
                   >
-                    <GlassSurface variant="liquid" radius={22} intensity={85} style={styles.circleActionBtn}>
+                    <GlassSurface variant="liquid" noShadow radius={22} intensity={85} style={styles.circleActionBtn}>
                       <Ionicons
                         name={inWishlist ? 'bookmark' : 'bookmark-outline'}
                         size={19}
@@ -2708,7 +2746,7 @@ export function PlayerModal({
                         setEpisodeModalOpen(true);
                       }}
                     >
-                      <GlassSurface variant="liquid" radius={22} intensity={85} style={styles.circleActionBtn}>
+                      <GlassSurface variant="liquid" noShadow radius={22} intensity={85} style={styles.circleActionBtn}>
                         <Ionicons name="list" size={20} color="#FFF" />
                       </GlassSurface>
                     </TouchableOpacity>
@@ -2722,7 +2760,7 @@ export function PlayerModal({
                       showHudWithTimer();
                     }}
                   >
-                    <GlassSurface variant="liquid" radius={22} intensity={85} style={styles.circleActionBtn}>
+                    <GlassSurface variant="liquid" noShadow radius={22} intensity={85} style={styles.circleActionBtn}>
                       <Ionicons
                         name={reaction === 'like' ? 'thumbs-up' : 'thumbs-up-outline'}
                         size={19}
@@ -2739,7 +2777,7 @@ export function PlayerModal({
                       showHudWithTimer();
                     }}
                   >
-                    <GlassSurface variant="liquid" radius={22} intensity={85} style={styles.circleActionBtn}>
+                    <GlassSurface variant="liquid" noShadow radius={22} intensity={85} style={styles.circleActionBtn}>
                       <Ionicons
                         name={reaction === 'dislike' ? 'thumbs-down' : 'thumbs-down-outline'}
                         size={19}
@@ -2747,7 +2785,7 @@ export function PlayerModal({
                       />
                     </GlassSurface>
                   </TouchableOpacity>
-                </ScrollView>
+                </View>
 
                 <View style={styles.bottomRightCluster}>
                   <TouchableOpacity
@@ -2759,7 +2797,7 @@ export function PlayerModal({
                       showHudWithTimer(6000);
                     }}
                   >
-                    <GlassSurface variant="liquid" radius={40} intensity={85} style={styles.rightPillBtn}>
+                    <GlassSurface variant="liquid" noShadow radius={40} intensity={85} style={styles.rightPillBtn}>
                       <Ionicons name="play" size={14} color="#FFF" />
                       <Text style={styles.rightPillTxt}>{playbackRate.toFixed(playbackRate % 1 === 0 ? 1 : 2).replace(/\.00$/, '.0')}x</Text>
                     </GlassSurface>
@@ -2774,7 +2812,7 @@ export function PlayerModal({
                       showHudWithTimer(6000);
                     }}
                   >
-                    <GlassSurface variant="liquid" radius={40} intensity={85} style={styles.rightPillBtn}>
+                    <GlassSurface variant="liquid" noShadow radius={40} intensity={85} style={styles.rightPillBtn}>
                       <Text style={styles.rightPillTxt}>Tùy chọn khác</Text>
                       <Ionicons name="chevron-down" size={15} color="#FFF" />
                     </GlassSurface>
@@ -3089,8 +3127,8 @@ export function PlayerModal({
             style={[styles.skeletonOverlay, { opacity: skeletonOpacity }]}
           >
             <PlayerLandscapeSkeleton
-              leftInset={Math.max(18, insets.left + 10)}
-              rightInset={Math.max(18, insets.right + 10)}
+              leftInset={18}
+              rightInset={18}
               active={visible && (renderSkeleton || showPlayerSkeleton)}
               onBack={handleClose}
             />
@@ -3256,14 +3294,14 @@ const styles = StyleSheet.create({
   topRightCapsule: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 6,
-    paddingVertical: 4,
-    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    gap: 8,
   },
   topCapsuleBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     alignItems: 'center',
     justifyContent: 'center',
     position: 'relative',
@@ -3453,11 +3491,12 @@ const styles = StyleSheet.create({
     gap: 8,
     position: 'relative',
   },
-  bottomLeftScroll: {
+  bottomLeftRow: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    paddingRight: 8,
+    backgroundColor: 'transparent',
   },
   nextEpPill: {
     height: 42,
