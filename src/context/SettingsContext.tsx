@@ -30,8 +30,8 @@ export const DEFAULT_SUBTITLE_SETTINGS: Pick<
   subFont: 'Arial,Helvetica,sans-serif',
   subColor: 'white',
   subAutoLayout: true,
-  subFontSizeStep: 8,
-  subPositionPct: 4,
+  subFontSizeStep: 10,
+  subPositionPct: 12,
   subOutline: 'uniform2',
   subDelaySec: 0,
   subExtendSec: 0,
@@ -58,6 +58,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   preferOfflineWhenOnline: true,
   offlineDownloadFormat: 'auto',
   offlineDownloadConcurrency: 3,
+  offlineStorageLimitGb: 20,
+  offlineAutoDeleteEnabled: false,
+  offlineAutoDeleteDays: 7,
+  offlineAntiStallEnabled: true,
   autoOptimalServer: true,
   autoDubNext: false,
   contrastLevel: 'Mặc định',
@@ -119,6 +123,27 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
             const parsed = JSON.parse(raw);
             if (active && parsed && typeof parsed === 'object') {
               const merged = syncDerivedContrastFields(DEFAULT_SETTINGS, parsed);
+              merged.subFontSizeStep = Math.max(
+                1,
+                Math.min(20, Math.round(Number(merged.subFontSizeStep) || 10))
+              );
+              merged.subPositionPct = Math.max(
+                -10,
+                Math.min(
+                  40,
+                  Number.isFinite(Number(merged.subPositionPct))
+                    ? Math.round(Number(merged.subPositionPct))
+                    : 12
+                )
+              );
+              merged.offlineStorageLimitGb = Math.max(
+                10,
+                Math.min(100, Math.round((Number(merged.offlineStorageLimitGb) || 20) / 10) * 10)
+              );
+              merged.offlineAutoDeleteDays = Math.max(
+                3,
+                Math.min(90, Math.round(Number(merged.offlineAutoDeleteDays) || 7))
+              );
               settingsRef.current = merged;
               setSettings(merged);
             }

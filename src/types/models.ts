@@ -357,6 +357,10 @@ export interface AppSettings {
   preferOfflineWhenOnline: boolean;
   offlineDownloadFormat: 'auto' | 'hls' | 'mp4';
   offlineDownloadConcurrency: number;
+  offlineStorageLimitGb: number;
+  offlineAutoDeleteEnabled: boolean;
+  offlineAutoDeleteDays: number;
+  offlineAntiStallEnabled: boolean;
   // General player settings (ported from setting_ST)
   autoOptimalServer: boolean;
   autoDubNext: boolean;

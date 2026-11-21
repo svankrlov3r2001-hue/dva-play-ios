@@ -13,8 +13,10 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { Feather, Ionicons } from '@expo/vector-icons';
+import { BlurView } from 'expo-blur';
 import * as Haptics from 'expo-haptics';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AmbientAppBackground } from '../components/AmbientAppBackground';
 import { showAppAlert } from '../components/AppAlertModal';
@@ -22,7 +24,6 @@ import { AppUpdateModal } from '../components/AppUpdateModal';
 import { GlassSurface } from '../components/GlassSurface';
 import {
   APP_RELEASE_DATE,
-  APP_RUNTIME_VERSION,
   APP_VERSION,
   APP_VERSION_CODE,
   COLORS,
@@ -53,14 +54,15 @@ import {
 } from '../services/proxyService';
 import {
   clearAllOfflineDownloads,
+  enforceOfflineRetentionPolicy,
   formatBytes,
   loadOfflineDownloads,
+  setOfflineRuntimePolicy,
   subscribeOfflineDownloads,
 } from '../services/downloadService';
 import {
   applyOtaReloadNow,
   checkAndFetchOtaCombinedAsync,
-  getOtaRuntimeState,
 } from '../services/otaService';
 import { OfflineDownloadItem, VersionManifest } from '../types/models';
 
@@ -70,6 +72,19 @@ const QUALITY_OPTIONS: ('auto' | '1080p' | '720p' | '360p')[] = [
   '720p',
   '360p',
 ];
+
+const STORAGE_LIMIT_GB_OPTIONS = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
+
+const AUTO_DELETE_DAY_OPTIONS: { days: number; label: string }[] = [
+  { days: 3, label: '3 ngày' },
+  { days: 7, label: '7 ngày' },
+  { days: 14, label: '14 ngày' },
+  { days: 30, label: '1 tháng' },
+  { days: 60, label: '2 tháng' },
+  { days: 90, label: '3 tháng' },
+];
+
+const THREAD_COUNT_OPTIONS = [1, 2, 3, 4, 5, 6];
 
 type PresetProbeStatus = 'testing' | 'ok' | 'timeout' | 'error';
 
@@ -113,7 +128,6 @@ export function AccountSettingsScreen({
   } | null>(null);
   const probeRunIdRef = useRef(0);
   const nativeProxyReady = isNativeProxySupported();
-  const otaState = getOtaRuntimeState();
   const enterAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -223,8 +237,8 @@ export function AccountSettingsScreen({
 
     if (!nativeProxyReady) {
       showAppAlert(
-        'Cần cập nhật ứng dụng (v1.0.17)',
-        'Tính năng kết nối Proxy trực tiếp trên iPhone yêu cầu cài đặt bản ứng dụng iOS mới nhất (v1.0.17).'
+        'Cần cập nhật ứng dụng',
+        'Tính năng kết nối Proxy trực tiếp trên iPhone yêu cầu cài đặt bản ứng dụng iOS mới nhất.'
       );
       return;
     }
@@ -261,7 +275,7 @@ export function AccountSettingsScreen({
     if (!nativeProxyReady) {
       setProxyStatusMsg({
         ok: false,
-        text: 'Cần cài đặt bản ứng dụng iOS mới nhất (v1.0.17+) để kiểm tra Proxy trực tiếp trên iPhone.',
+        text: 'Cần cài đặt bản ứng dụng iOS mới nhất để kiểm tra Proxy trực tiếp trên iPhone.',
       });
       return;
     }
@@ -418,6 +432,12 @@ export function AccountSettingsScreen({
   };
 
   const totalBytes = offlineItems.reduce((acc, i) => acc + (i.size_bytes || 0), 0);
+  const storageLimitGb = Math.max(10, Math.min(100, settings.offlineStorageLimitGb || 20));
+  const storageLimitBytes = storageLimitGb * 1024 * 1024 * 1024;
+  const storageUsedPct = Math.min(
+    100,
+    totalBytes > 0 ? Math.max(2, Math.round((totalBytes / storageLimitBytes) * 100)) : 0
+  );
 
   const roleLabel =
     user?.role?.toLowerCase() === 'admin'
@@ -462,11 +482,6 @@ export function AccountSettingsScreen({
             },
           ]
         );
-      } else if (!res.otaSupported) {
-        showAppAlert(
-          'Đã là phiên bản mới nhất',
-          `Phiên bản hiện tại: v${APP_VERSION} • Phát hành ${APP_RELEASE_DATE}`
-        );
       } else {
         showAppAlert(
           'Đã là phiên bản mới nhất',
@@ -499,6 +514,37 @@ export function AccountSettingsScreen({
     ]);
   };
 
+  const updateOfflinePolicyAndEnforce = (patch: {
+    offlineStorageLimitGb?: number;
+    offlineAutoDeleteEnabled?: boolean;
+    offlineAutoDeleteDays?: number;
+    offlineAntiStallEnabled?: boolean;
+  }) => {
+    const nextPolicy = {
+      storageLimitGb: patch.offlineStorageLimitGb ?? storageLimitGb,
+      autoDeleteEnabled:
+        patch.offlineAutoDeleteEnabled ?? settings.offlineAutoDeleteEnabled,
+      autoDeleteDays:
+        patch.offlineAutoDeleteDays ?? (settings.offlineAutoDeleteDays || 7),
+      antiStallEnabled:
+        patch.offlineAntiStallEnabled ?? settings.offlineAntiStallEnabled,
+    };
+    setOfflineRuntimePolicy(nextPolicy);
+    if (patch.offlineStorageLimitGb !== undefined) {
+      void updateSetting('offlineStorageLimitGb', patch.offlineStorageLimitGb);
+    }
+    if (patch.offlineAutoDeleteEnabled !== undefined) {
+      void updateSetting('offlineAutoDeleteEnabled', patch.offlineAutoDeleteEnabled);
+    }
+    if (patch.offlineAutoDeleteDays !== undefined) {
+      void updateSetting('offlineAutoDeleteDays', patch.offlineAutoDeleteDays);
+    }
+    if (patch.offlineAntiStallEnabled !== undefined) {
+      void updateSetting('offlineAntiStallEnabled', patch.offlineAntiStallEnabled);
+    }
+    void enforceOfflineRetentionPolicy(nextPolicy);
+  };
+
   if (!visible) {
     return null;
   }
@@ -516,651 +562,858 @@ export function AccountSettingsScreen({
       ]}
     >
       <AmbientAppBackground />
-      <View style={[styles.topHeader, { paddingTop: insets.top + 10 }]}>
+
+      {/* iOS Navigation Bar Header */}
+      <View style={[styles.navBar, { paddingTop: insets.top + 8 }]}>
         <TouchableOpacity
-          activeOpacity={0.82}
-          style={styles.backBtn}
+          activeOpacity={0.78}
+          style={styles.navBackBtn}
           onPress={() => {
             Haptics.selectionAsync();
             onClose();
           }}
         >
-          <Ionicons name="chevron-back" size={21} color="#FFF" />
+          <Ionicons name="chevron-back" size={20} color="#FFFFFF" />
         </TouchableOpacity>
-        <Text style={styles.pageTitle}>Tài khoản &amp; Cài đặt</Text>
+        <Text style={styles.navTitle}>Cài đặt</Text>
+        <View style={styles.navRightSpacer} />
       </View>
 
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: 6,
+          paddingTop: 8,
           paddingHorizontal: 16,
-          paddingBottom: Math.max(32, insets.bottom + 24),
+          paddingBottom: Math.max(36, insets.bottom + 28),
         }}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-
-      {/* Profile Card */}
-      <GlassSurface intensity={52} radius={RADII.xl} style={styles.card}>
-        <View style={styles.profileRow}>
-          <Image
-            source={{ uri: user?.avatar_url || 'https://dangvietanh.com/uploads/user.jpg' }}
-            style={styles.avatar}
-            resizeMode="cover"
-          />
-          <View style={{ flex: 1 }}>
-            <View style={styles.nameRow}>
-              <Text style={styles.userName} numberOfLines={1}>
-                {user?.name || user?.username || 'Thành viên'}
+        {/* Apple Account Profile Card */}
+        <GlassSurface intensity={56} radius={22} style={styles.profileCard}>
+          <View style={styles.profileRow}>
+            <View style={styles.avatarRing}>
+              <Image
+                source={{ uri: user?.avatar_url || 'https://dangvietanh.com/uploads/user.jpg' }}
+                style={styles.avatar}
+                resizeMode="cover"
+              />
+            </View>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <View style={styles.nameRow}>
+                <Text style={styles.userName} numberOfLines={1}>
+                  {user?.name || user?.username || 'Thành viên'}
+                </Text>
+                <View style={styles.verifiedBadge}>
+                  <Ionicons name="checkmark" size={10} color="#FFFFFF" />
+                </View>
+              </View>
+              <Text style={styles.userEmail} numberOfLines={1}>
+                {user?.email || 'Thành viên Đặng Việt Anh'}
               </Text>
-              <View style={styles.verifiedBadge}>
-                <Ionicons name="checkmark" size={11} color="#FFF" />
+              <View style={styles.tierPill}>
+                <Ionicons name="star" size={11} color={COLORS.accentGold} />
+                <Text style={styles.tierText}>{roleLabel} • Đồng bộ dangvietanh.com</Text>
               </View>
             </View>
-            <Text style={styles.userEmail} numberOfLines={1}>
-              {user?.email || 'Thành viên Đặng Việt Anh'}
-            </Text>
-            <View style={styles.tierRow}>
-              <Ionicons name="star" size={13} color={COLORS.accentGold} />
-              <Text style={styles.tierText}>{roleLabel} • Đồng bộ dangvietanh.com</Text>
+          </View>
+        </GlassSurface>
+
+        {/* Section 1: Playback & Experience */}
+        <Text style={styles.sectionHeader}>TRẢI NGHIỆM XEM PHIM</Text>
+        <View style={styles.insetGroup}>
+          <BlurView intensity={40} tint="dark" style={StyleSheet.absoluteFill} />
+          <View style={styles.insetGroupFill} />
+
+          <View style={styles.groupedColumnRow}>
+            <View style={styles.rowHeaderTop}>
+              <View style={[styles.iosBadge, { backgroundColor: '#5E5CE6' }]}>
+                <Ionicons name="videocam" size={16} color="#FFFFFF" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.settingLabel}>Chất lượng phát ưu tiên</Text>
+                <Text style={styles.settingDesc}>Độ phân giải mặc định khi mở phim</Text>
+              </View>
+            </View>
+            <View style={styles.segmentedControlRow}>
+              {QUALITY_OPTIONS.map((q) => {
+                const active = settings.preferredQuality === q;
+                return (
+                  <TouchableOpacity
+                    key={q}
+                    activeOpacity={0.8}
+                    style={[styles.segmentOption, active && styles.segmentOptionActive]}
+                    onPress={() => {
+                      Haptics.selectionAsync();
+                      void updateSetting('preferredQuality', q);
+                    }}
+                  >
+                    <Text style={[styles.segmentOptionTxt, active && styles.segmentOptionTxtActive]}>
+                      {q === 'auto' ? 'Tự động' : q}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
             </View>
           </View>
-        </View>
-      </GlassSurface>
 
-      {/* iPhone Playback & Security Card */}
-      <GlassSurface intensity={45} radius={RADII.xl} style={styles.card}>
-        <Text style={styles.cardHeading}>Phát phim &amp; Bảo mật iPhone</Text>
+          <View style={styles.insetDivider} />
+          <IosSwitchRow
+            icon="play-skip-forward"
+            badgeColor="#E50914"
+            label="Tự động phát tập tiếp theo"
+            desc="Chuyển sang tập kế tiếp khi phim bộ kết thúc"
+            value={settings.autoPlayNext}
+            onChange={(v) => void updateSetting('autoPlayNext', v)}
+          />
 
-        <View style={styles.settingBlock}>
-          <Text style={styles.settingLabel}>Chất lượng phát ưu tiên</Text>
-          <View style={styles.qualityRow}>
-            {QUALITY_OPTIONS.map((q) => {
-              const active = settings.preferredQuality === q;
-              return (
-                <TouchableOpacity
-                  key={q}
-                  style={[styles.qualityChip, active && styles.qualityChipActive]}
-                  onPress={() => {
-                    Haptics.selectionAsync();
-                    updateSetting('preferredQuality', q);
-                  }}
-                >
-                  <Text style={[styles.qualityTxt, active && { color: '#FFF' }]}>
-                    {q === 'auto' ? 'Tự động' : q}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-        </View>
+          <View style={styles.insetDivider} />
+          <IosSwitchRow
+            icon="flash"
+            badgeColor="#FF9F0A"
+            label="Bỏ qua đoạn giới thiệu"
+            desc="Tự động tua nhanh phần mở đầu mỗi tập phim"
+            value={settings.autoSkipIntro}
+            onChange={(v) => void updateSetting('autoSkipIntro', v)}
+          />
 
-        <SettingSwitchRow
-          icon="play-skip-forward-outline"
-          label="Tự động phát tập tiếp theo"
-          desc="Chuyển sang tập kế tiếp khi phim bộ kết thúc"
-          value={settings.autoPlayNext}
-          onChange={(v) => updateSetting('autoPlayNext', v)}
-        />
-        <SettingSwitchRow
-          icon="flash-outline"
-          label="Hiển thị nút Bỏ qua mở đầu"
-          desc="Cho phép nhảy qua đoạn giới thiệu nhanh chóng"
-          value={settings.autoSkipIntro}
-          onChange={(v) => updateSetting('autoSkipIntro', v)}
-        />
-        <SettingSwitchRow
-          icon="albums-outline"
-          label="Thu nhỏ khung hình phim"
-          desc="Tiếp tục xem phim trong khung hình nổi khi thoát ra màn hình chính"
-          value={settings.pipEnabled}
-          onChange={(v) => updateSetting('pipEnabled', v)}
-        />
-        <SettingSwitchRow
-          icon="scan-outline"
-          label="Khóa bằng Face ID / Touch ID"
-          desc="Yêu cầu xác thực sinh trắc học khi mở lại hoặc quay lại ứng dụng"
-          value={settings.faceIdEnabled}
-          onChange={async (v) => {
-            if (!v) {
-              await updateSetting('faceIdEnabled', false);
-              return;
-            }
-            const res = await verifyBiometricsForEnable();
-            if (res.ok) {
-              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-              await updateSetting('faceIdEnabled', true);
-            } else {
-              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-              showAppAlert(
-                'Không thể bật khóa Face ID',
-                res.reason || 'Vui lòng kiểm tra quyền Face ID hoặc mật mã trong Cài đặt iPhone.'
-              );
-            }
-          }}
-        />
-      </GlassSurface>
+          <View style={styles.insetDivider} />
+          <IosSwitchRow
+            icon="albums"
+            badgeColor="#0A84FF"
+            label="Thu nhỏ khung hình phim"
+            desc="Xem nổi khi thoát ra màn hình chính iPhone"
+            value={settings.pipEnabled}
+            onChange={(v) => void updateSetting('pipEnabled', v)}
+          />
 
-      {/* Proxy Connection Card */}
-      <GlassSurface intensity={45} radius={RADII.xl} style={styles.card}>
-        <View style={styles.proxyHeaderRow}>
-          <View style={styles.rowLeft}>
-            <Ionicons name="globe-outline" size={20} color="#FFF" />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.settingLabel}>Kết nối Proxy</Text>
-              <Text style={styles.settingDesc}>
-                Tự động tắt mỗi khi thoát ứng dụng
-              </Text>
-            </View>
-          </View>
-          <Switch
-            value={proxyCfg.enabled}
-            onValueChange={handleToggleProxy}
-            disabled={applyingProxy}
-            trackColor={{ false: 'rgba(255,255,255,0.16)', true: COLORS.accent }}
-            thumbColor="#FFF"
+          <View style={styles.insetDivider} />
+          <IosSwitchRow
+            icon="contrast"
+            badgeColor="#BF5AF2"
+            label="Tăng cường tương phản hình ảnh"
+            desc="Tăng chiều sâu vùng tối và độ sắc nét khung hình"
+            value={settings.highContrastMode}
+            onChange={(v) => void updateSetting('highContrastMode', v)}
           />
         </View>
 
-        {!nativeProxyReady ? (
-          <View style={styles.proxyNoticeBanner}>
-            <Ionicons name="information-circle-outline" size={16} color="#FDE68A" />
-            <Text style={styles.proxyNoticeTxt}>
-              Cần cài đặt bản ứng dụng iOS mới nhất (v1.0.17) để bật kết nối Proxy trực tiếp trên
-              iPhone.
-            </Text>
-          </View>
-        ) : null}
+        {/* Section 2: Offline Storage & Retention (Item 8) */}
+        <Text style={styles.sectionHeader}>LƯU TRỮ &amp; NGOẠI TUYẾN</Text>
+        <View style={styles.insetGroup}>
+          <BlurView intensity={40} tint="dark" style={StyleSheet.absoluteFill} />
+          <View style={styles.insetGroupFill} />
 
-        <View style={styles.proxyModeRow}>
+          {/* Storage Usage Bar */}
+          <View style={styles.groupedColumnRow}>
+            <View style={styles.storageTopRow}>
+              <View style={[styles.iosBadge, { backgroundColor: '#32ADE6' }]}>
+                <Ionicons name="folder-open" size={16} color="#FFFFFF" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.settingLabel}>Dung lượng bộ nhớ ngoại tuyến</Text>
+                <Text style={styles.settingDesc}>
+                  {offlineItems.length} phim • Đã dùng {formatBytes(totalBytes)} / {storageLimitGb} GB
+                </Text>
+              </View>
+              <TouchableOpacity
+                style={[styles.cleanPillBtn, offlineItems.length === 0 && { opacity: 0.45 }]}
+                onPress={handleClearOffline}
+                disabled={offlineItems.length === 0}
+              >
+                <Text style={styles.cleanPillTxt}>Dọn sạch</Text>
+              </TouchableOpacity>
+            </View>
+            <View style={styles.storageTrack}>
+              <LinearGradient
+                colors={['#32ADE6', '#0A84FF']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={[styles.storageFill, { width: `${storageUsedPct}%` }]}
+              />
+            </View>
+          </View>
+
+          <View style={styles.insetDivider} />
+          <View style={styles.groupedColumnRow}>
+            <View style={styles.rowHeaderTop}>
+              <View style={[styles.iosBadge, { backgroundColor: '#30D158' }]}>
+                <Ionicons name="pie-chart" size={15} color="#FFFFFF" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.settingLabel}>Giới hạn dung lượng tối đa</Text>
+                <Text style={styles.settingDesc}>
+                  Tự dọn phim xem cũ nhất khi vượt quá {storageLimitGb} GB
+                </Text>
+              </View>
+              <Text style={styles.rightValuePill}>{storageLimitGb} GB</Text>
+            </View>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.horizontalChipsScroll}
+            >
+              {STORAGE_LIMIT_GB_OPTIONS.map((gb) => {
+                const active = storageLimitGb === gb;
+                return (
+                  <TouchableOpacity
+                    key={gb}
+                    activeOpacity={0.78}
+                    style={[styles.chipPill, active && styles.chipPillActive]}
+                    onPress={() => {
+                      Haptics.selectionAsync();
+                      updateOfflinePolicyAndEnforce({ offlineStorageLimitGb: gb });
+                    }}
+                  >
+                    <Text style={[styles.chipPillTxt, active && styles.chipPillTxtActive]}>
+                      {gb} GB
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          </View>
+
+          <View style={styles.insetDivider} />
+          <View style={styles.groupedColumnRow}>
+            <View style={styles.switchRowInner}>
+              <View style={[styles.iosBadge, { backgroundColor: '#FF453A' }]}>
+                <Ionicons name="trash-bin" size={15} color="#FFFFFF" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.settingLabel}>Tự động xóa phim cũ theo thời gian</Text>
+                <Text style={styles.settingDesc}>
+                  {settings.offlineAutoDeleteEnabled
+                    ? `Tự xóa phim đã tải sau ${
+                        AUTO_DELETE_DAY_OPTIONS.find((d) => d.days === settings.offlineAutoDeleteDays)
+                          ?.label || `${settings.offlineAutoDeleteDays} ngày`
+                      }`
+                    : 'Giữ lại phim ngoại tuyến không giới hạn thời gian'}
+                </Text>
+              </View>
+              <Switch
+                value={settings.offlineAutoDeleteEnabled}
+                onValueChange={(v) => {
+                  Haptics.selectionAsync();
+                  updateOfflinePolicyAndEnforce({ offlineAutoDeleteEnabled: v });
+                }}
+                trackColor={{ false: 'rgba(255,255,255,0.2)', true: COLORS.accent }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
+            {settings.offlineAutoDeleteEnabled ? (
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.horizontalChipsScroll}
+              >
+                {AUTO_DELETE_DAY_OPTIONS.map((opt) => {
+                  const active = (settings.offlineAutoDeleteDays || 7) === opt.days;
+                  return (
+                    <TouchableOpacity
+                      key={opt.days}
+                      activeOpacity={0.78}
+                      style={[styles.chipPill, active && styles.chipPillActive]}
+                      onPress={() => {
+                        Haptics.selectionAsync();
+                        updateOfflinePolicyAndEnforce({ offlineAutoDeleteDays: opt.days });
+                      }}
+                    >
+                      <Text style={[styles.chipPillTxt, active && styles.chipPillTxtActive]}>
+                        {opt.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+            ) : null}
+          </View>
+
+          <View style={styles.insetDivider} />
+          <IosSwitchRow
+            icon="shield-checkmark"
+            badgeColor="#10B981"
+            label="Chống treo & tự đổi liên kết tải chậm"
+            desc="Tự khởi động lại tiến trình khi tải bị đứng hoặc tốc độ thấp"
+            value={settings.offlineAntiStallEnabled}
+            onChange={(v) => updateOfflinePolicyAndEnforce({ offlineAntiStallEnabled: v })}
+          />
+
+          <View style={styles.insetDivider} />
+          <View style={styles.groupedColumnRow}>
+            <View style={styles.rowHeaderTop}>
+              <View style={[styles.iosBadge, { backgroundColor: '#6366F1' }]}>
+                <Ionicons name="git-branch" size={16} color="#FFFFFF" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.settingLabel}>Số luồng tải song song</Text>
+                <Text style={styles.settingDesc}>Tăng tốc độ lưu phim ngoại tuyến</Text>
+              </View>
+              <Text style={styles.rightValuePill}>{settings.offlineDownloadConcurrency || 3} luồng</Text>
+            </View>
+            <View style={styles.segmentedControlRow}>
+              {THREAD_COUNT_OPTIONS.map((n) => {
+                const active = (settings.offlineDownloadConcurrency || 3) === n;
+                return (
+                  <TouchableOpacity
+                    key={n}
+                    activeOpacity={0.78}
+                    style={[styles.segmentOption, active && styles.segmentOptionActive]}
+                    onPress={() => {
+                      Haptics.selectionAsync();
+                      void updateSetting('offlineDownloadConcurrency', n);
+                    }}
+                  >
+                    <Text style={[styles.segmentOptionTxt, active && styles.segmentOptionTxtActive]}>
+                      {n}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </View>
+
+          <View style={styles.insetDivider} />
+          <IosSwitchRow
+            icon="download"
+            badgeColor="#0EA5E9"
+            label="Tự động tải tập đang xem"
+            desc="Lưu tập đang phát để xem lại không cần mạng"
+            value={settings.autoDownloadCurrentOnWatch}
+            onChange={(v) => void updateSetting('autoDownloadCurrentOnWatch', v)}
+          />
+
+          <View style={styles.insetDivider} />
+          <View style={styles.switchRow}>
+            <View style={[styles.iosBadge, { backgroundColor: '#EC4899' }]}>
+              <Ionicons name="layers" size={15} color="#FFFFFF" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.settingLabel}>Tải thêm tập tiếp theo</Text>
+              <Text style={styles.settingDesc}>
+                {settings.autoDownloadNextCount > 0
+                  ? `Tự động tải trước ${settings.autoDownloadNextCount} tập tiếp theo`
+                  : 'Đang tắt tải trước tập kế tiếp'}
+              </Text>
+            </View>
+            <View style={styles.offlineStepperRow}>
+              <TouchableOpacity
+                style={styles.offlineStepBtn}
+                onPress={() => {
+                  Haptics.selectionAsync();
+                  void updateSetting(
+                    'autoDownloadNextCount',
+                    Math.max(0, (settings.autoDownloadNextCount || 0) - 1)
+                  );
+                }}
+              >
+                <Ionicons name="remove" size={15} color="#FFFFFF" />
+              </TouchableOpacity>
+              <Text style={styles.offlineStepVal}>{settings.autoDownloadNextCount || 0}</Text>
+              <TouchableOpacity
+                style={styles.offlineStepBtn}
+                onPress={() => {
+                  Haptics.selectionAsync();
+                  void updateSetting(
+                    'autoDownloadNextCount',
+                    Math.min(20, (settings.autoDownloadNextCount || 0) + 1)
+                  );
+                }}
+              >
+                <Ionicons name="add" size={15} color="#FFFFFF" />
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          <View style={styles.insetDivider} />
+          <IosSwitchRow
+            icon="phone-portrait"
+            badgeColor="#14B8A6"
+            label="Ưu tiên phát từ máy khi có mạng"
+            desc="Dùng ngay bản ngoại tuyến đã tải để mở tức thì"
+            value={settings.preferOfflineWhenOnline}
+            onChange={(v) => void updateSetting('preferOfflineWhenOnline', v)}
+          />
+        </View>
+
+        {/* Section 3: Security, Proxy & TV Cast */}
+        <Text style={styles.sectionHeader}>BẢO MẬT &amp; KẾT NỐI</Text>
+        <View style={styles.insetGroup}>
+          <BlurView intensity={40} tint="dark" style={StyleSheet.absoluteFill} />
+          <View style={styles.insetGroupFill} />
+
+          <IosSwitchRow
+            icon="scan"
+            badgeColor="#30D158"
+            label="Khóa bằng Face ID / Touch ID"
+            desc="Yêu cầu xác thực sinh trắc học khi mở ứng dụng"
+            value={settings.faceIdEnabled}
+            onChange={async (v) => {
+              if (!v) {
+                await updateSetting('faceIdEnabled', false);
+                return;
+              }
+              const res = await verifyBiometricsForEnable();
+              if (res.ok) {
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                await updateSetting('faceIdEnabled', true);
+              } else {
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+                showAppAlert(
+                  'Không thể bật khóa Face ID',
+                  res.reason || 'Vui lòng kiểm tra quyền Face ID hoặc mật mã trong Cài đặt iPhone.'
+                );
+              }
+            }}
+          />
+
+          <View style={styles.insetDivider} />
           <TouchableOpacity
-            style={[
-              styles.qualityChip,
-              proxyCfg.mode === 'preset' && styles.qualityChipActive,
-            ]}
+            activeOpacity={0.78}
+            style={styles.navRow}
             onPress={() => {
               Haptics.selectionAsync();
-              setProxyStatusMsg(null);
-              applyProxyOverride({ mode: 'preset' });
+              onOpenCast();
             }}
           >
-            <Text
-              style={[
-                styles.qualityTxt,
-                proxyCfg.mode === 'preset' && { color: '#FFF' },
-              ]}
-            >
-              Máy chủ sẵn có
-            </Text>
+            <View style={[styles.iosBadge, { backgroundColor: '#00C7BE' }]}>
+              <Ionicons name="tv" size={15} color="#FFFFFF" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.settingLabel}>Chiếu lên TV (DVA Cast)</Text>
+              <Text style={styles.settingDesc}>Quét mã QR để điều khiển trên màn hình TV</Text>
+            </View>
+            <Feather name="chevron-right" size={17} color="rgba(255,255,255,0.38)" />
           </TouchableOpacity>
+
+          <View style={styles.insetDivider} />
+          <View style={styles.groupedColumnRow}>
+            <View style={styles.proxyHeaderRow}>
+              <View style={[styles.iosBadge, { backgroundColor: '#0A84FF' }]}>
+                <Ionicons name="globe" size={16} color="#FFFFFF" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.settingLabel}>Kết nối Proxy</Text>
+                <Text style={styles.settingDesc}>Tự động tắt mỗi khi thoát ứng dụng</Text>
+              </View>
+              <Switch
+                value={proxyCfg.enabled}
+                onValueChange={handleToggleProxy}
+                disabled={applyingProxy}
+                trackColor={{ false: 'rgba(255,255,255,0.2)', true: COLORS.accent }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
+
+            {!nativeProxyReady ? (
+              <View style={styles.proxyNoticeBanner}>
+                <Ionicons name="information-circle-outline" size={16} color="#FDE68A" />
+                <Text style={styles.proxyNoticeTxt}>
+                  Cần cài đặt bản ứng dụng iOS mới nhất để bật kết nối Proxy trực tiếp trên iPhone.
+                </Text>
+              </View>
+            ) : null}
+
+            <View style={styles.proxyModeRow}>
+              <TouchableOpacity
+                style={[
+                  styles.segmentOption,
+                  proxyCfg.mode === 'preset' && styles.segmentOptionActive,
+                ]}
+                onPress={() => {
+                  Haptics.selectionAsync();
+                  setProxyStatusMsg(null);
+                  void applyProxyOverride({ mode: 'preset' });
+                }}
+              >
+                <Text
+                  style={[
+                    styles.segmentOptionTxt,
+                    proxyCfg.mode === 'preset' && styles.segmentOptionTxtActive,
+                  ]}
+                >
+                  Máy chủ sẵn có
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.segmentOption,
+                  proxyCfg.mode === 'custom' && styles.segmentOptionActive,
+                ]}
+                onPress={async () => {
+                  Haptics.selectionAsync();
+                  setProxyStatusMsg(null);
+                  const validCustom = Boolean(
+                    normalizeCustomProxyInput(proxyCfg.customHost, proxyCfg.customPort)
+                  );
+                  if (proxyCfg.enabled && validCustom) {
+                    await applyProxyOverride({ mode: 'custom' });
+                  } else {
+                    if (proxyCfg.enabled && !validCustom) {
+                      await disableProxyAsync().catch(() => {});
+                    }
+                    setProxyConfig({ mode: 'custom', enabled: false });
+                  }
+                }}
+              >
+                <Text
+                  style={[
+                    styles.segmentOptionTxt,
+                    proxyCfg.mode === 'custom' && styles.segmentOptionTxtActive,
+                  ]}
+                >
+                  Proxy tự cấu hình
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.reloadProxyIconBtn}
+                onPress={() => handleReloadPresets(true)}
+                disabled={reloadingPresets || applyingProxy}
+                activeOpacity={0.78}
+              >
+                {reloadingPresets ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Ionicons name="refresh" size={16} color="#FFFFFF" />
+                )}
+              </TouchableOpacity>
+            </View>
+
+            {proxyCfg.mode === 'preset' ? (
+              <View style={styles.presetList}>
+                {proxyPresets.length === 0 ? (
+                  <View style={styles.presetEmptyBox}>
+                    <Text style={styles.presetEmptyTxt}>
+                      Chưa có máy chủ sẵn có nào. Nhấn làm mới hoặc chọn Proxy tự cấu hình.
+                    </Text>
+                  </View>
+                ) : (
+                  proxyPresets.map((preset) => {
+                    const selected = proxyCfg.presetId === preset.id;
+                    const probe = presetProbeMap[preset.id];
+                    return (
+                      <TouchableOpacity
+                        key={preset.id}
+                        activeOpacity={0.85}
+                        style={[styles.presetCard, selected && styles.presetCardActive]}
+                        onPress={() => {
+                          Haptics.selectionAsync();
+                          setProxyStatusMsg(null);
+                          void applyProxyOverride({
+                            mode: 'preset',
+                            presetId: preset.id,
+                            presetName: preset.name,
+                          });
+                        }}
+                      >
+                        <View style={{ flex: 1, paddingRight: 8 }}>
+                          <Text style={styles.presetName} numberOfLines={1}>
+                            {preset.name}
+                          </Text>
+                          <Text style={styles.presetRegion} numberOfLines={1}>
+                            {preset.region}
+                          </Text>
+                        </View>
+                        <View style={styles.presetRightWrap}>
+                          {probe ? (
+                            <View
+                              style={[
+                                styles.presetLatencyPill,
+                                probe.status === 'testing'
+                                  ? styles.presetLatencyTesting
+                                  : probe.status === 'ok'
+                                  ? styles.presetLatencyOk
+                                  : probe.status === 'timeout'
+                                  ? styles.presetLatencyTimeout
+                                  : styles.presetLatencyErr,
+                              ]}
+                            >
+                              {probe.status === 'testing' ? (
+                                <>
+                                  <ActivityIndicator
+                                    size="small"
+                                    color="#93C5FD"
+                                    style={styles.presetLatencySpinner}
+                                  />
+                                  <Text style={[styles.presetLatencyTxt, { color: '#BFDBFE' }]}>
+                                    Đang đo
+                                  </Text>
+                                </>
+                              ) : probe.status === 'ok' ? (
+                                <>
+                                  <View
+                                    style={[
+                                      styles.presetLatencyDot,
+                                      { backgroundColor: '#30D158' },
+                                    ]}
+                                  />
+                                  <Text style={[styles.presetLatencyTxt, { color: '#4ADE80' }]}>
+                                    {probe.latencyMs} ms
+                                  </Text>
+                                </>
+                              ) : probe.status === 'timeout' ? (
+                                <>
+                                  <View
+                                    style={[
+                                      styles.presetLatencyDot,
+                                      { backgroundColor: '#F59E0B' },
+                                    ]}
+                                  />
+                                  <Text style={[styles.presetLatencyTxt, { color: '#FDE68A' }]}>
+                                    Quá 3s
+                                  </Text>
+                                </>
+                              ) : (
+                                <>
+                                  <View
+                                    style={[
+                                      styles.presetLatencyDot,
+                                      { backgroundColor: '#EF4444' },
+                                    ]}
+                                  />
+                                  <Text style={[styles.presetLatencyTxt, { color: '#FCA5A5' }]}>
+                                    Lỗi
+                                  </Text>
+                                </>
+                              )}
+                            </View>
+                          ) : null}
+                          <Ionicons
+                            name={selected ? 'checkmark-circle' : 'ellipse-outline'}
+                            size={20}
+                            color={selected ? COLORS.accent : COLORS.muted}
+                          />
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })
+                )}
+              </View>
+            ) : (
+              <View style={styles.customProxyForm}>
+                <View style={styles.customRowPair}>
+                  <View style={{ flex: 2 }}>
+                    <Text style={styles.inputLabel}>Địa chỉ IP / Host</Text>
+                    <TextInput
+                      style={styles.proxyInput}
+                      value={proxyCfg.customHost}
+                      onChangeText={(txt) =>
+                        setProxyConfig({ customHost: txt.trim(), enabled: false })
+                      }
+                      placeholder="Ví dụ: 203.0.113.10"
+                      placeholderTextColor="rgba(255,255,255,0.36)"
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.inputLabel}>Cổng (Port)</Text>
+                    <TextInput
+                      style={styles.proxyInput}
+                      value={proxyCfg.customPort}
+                      onChangeText={(txt) =>
+                        setProxyConfig({
+                          customPort: txt.replace(/[^0-9]/g, ''),
+                          enabled: false,
+                        })
+                      }
+                      placeholder="8080"
+                      placeholderTextColor="rgba(255,255,255,0.36)"
+                      keyboardType="number-pad"
+                      maxLength={5}
+                    />
+                  </View>
+                </View>
+
+                <View style={styles.customRowPair}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.inputLabel}>Tài khoản (TK)</Text>
+                    <TextInput
+                      style={styles.proxyInput}
+                      value={proxyCfg.customUsername}
+                      onChangeText={(txt) =>
+                        setProxyConfig({ customUsername: txt, enabled: false })
+                      }
+                      placeholder="Không bắt buộc"
+                      placeholderTextColor="rgba(255,255,255,0.36)"
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.inputLabel}>Mật khẩu (MK)</Text>
+                    <View style={styles.passwordInputWrap}>
+                      <TextInput
+                        style={styles.passwordInputField}
+                        value={proxyCfg.customPassword}
+                        onChangeText={(txt) =>
+                          setProxyConfig({ customPassword: txt, enabled: false })
+                        }
+                        placeholder="Không bắt buộc"
+                        placeholderTextColor="rgba(255,255,255,0.36)"
+                        secureTextEntry={!showProxyPass}
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                      />
+                      <TouchableOpacity
+                        onPress={() => setShowProxyPass((v) => !v)}
+                        hitSlop={8}
+                        style={{ paddingLeft: 6 }}
+                      >
+                        <Ionicons
+                          name={showProxyPass ? 'eye-outline' : 'eye-off-outline'}
+                          size={17}
+                          color={COLORS.muted}
+                        />
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                </View>
+              </View>
+            )}
+
+            <View style={styles.proxyFooterRow}>
+              <TouchableOpacity
+                style={styles.testProxyBtn}
+                onPress={handleTestProxyConnection}
+                disabled={testingProxy}
+              >
+                {testingProxy ? (
+                  <>
+                    <ActivityIndicator size="small" color="#FFFFFF" />
+                    <Text style={styles.testProxyBtnTxt}>Đang kiểm tra...</Text>
+                  </>
+                ) : (
+                  <>
+                    <Ionicons name="pulse-outline" size={16} color="#FFFFFF" />
+                    <Text style={styles.testProxyBtnTxt}>Kiểm tra kết nối</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+
+              {proxyStatusMsg ? (
+                <View
+                  style={[
+                    styles.proxyStatusPill,
+                    proxyStatusMsg.ok ? styles.proxyStatusOk : styles.proxyStatusErr,
+                  ]}
+                >
+                  <Ionicons
+                    name={proxyStatusMsg.ok ? 'checkmark-circle' : 'alert-circle'}
+                    size={14}
+                    color={proxyStatusMsg.ok ? '#30D158' : '#FCA5A5'}
+                  />
+                  <Text
+                    style={[
+                      styles.proxyStatusTxt,
+                      { color: proxyStatusMsg.ok ? '#D8FFE2' : '#FECACA' },
+                    ]}
+                    numberOfLines={2}
+                  >
+                    {proxyStatusMsg.text}
+                  </Text>
+                </View>
+              ) : null}
+            </View>
+          </View>
+        </View>
+
+        {/* Section 4: App & Updates */}
+        <Text style={styles.sectionHeader}>ỨNG DỤNG &amp; CẬP NHẬT</Text>
+        <View style={styles.insetGroup}>
+          <BlurView intensity={40} tint="dark" style={StyleSheet.absoluteFill} />
+          <View style={styles.insetGroupFill} />
+
+          <View style={styles.navRow}>
+            <View style={[styles.iosBadge, { backgroundColor: '#5856D6' }]}>
+              <Ionicons name="cloud-download" size={15} color="#FFFFFF" />
+            </View>
+            <View style={{ flex: 1, paddingRight: 8 }}>
+              <Text style={styles.settingLabel}>Phiên bản &amp; Cập nhật</Text>
+              <Text style={styles.settingDesc}>
+                Phiên bản v{APP_VERSION} • Phát hành {APP_RELEASE_DATE}
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={styles.updateCheckBtn}
+              onPress={handleCheckUpdate}
+              disabled={checkingUpdate}
+            >
+              {checkingUpdate ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <Text style={styles.updateCheckTxt}>Kiểm tra</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.insetDivider} />
           <TouchableOpacity
-            style={[
-              styles.qualityChip,
-              proxyCfg.mode === 'custom' && styles.qualityChipActive,
-            ]}
+            activeOpacity={0.78}
+            style={styles.navRow}
             onPress={async () => {
               Haptics.selectionAsync();
-              setProxyStatusMsg(null);
-              const validCustom = Boolean(
-                normalizeCustomProxyInput(proxyCfg.customHost, proxyCfg.customPort)
-              );
-              if (proxyCfg.enabled && validCustom) {
-                await applyProxyOverride({ mode: 'custom' });
-              } else {
-                if (proxyCfg.enabled && !validCustom) {
-                  await disableProxyAsync().catch(() => {});
-                }
-                setProxyConfig({ mode: 'custom', enabled: false });
+              const next = !changelogOpen;
+              setChangelogOpen(next);
+              if (next && !manifest) {
+                try {
+                  const m = await checkOtaUpdateApi();
+                  setManifest(m);
+                } catch {}
               }
             }}
           >
-            <Text
-              style={[
-                styles.qualityTxt,
-                proxyCfg.mode === 'custom' && { color: '#FFF' },
-              ]}
-            >
-              Proxy tự cấu hình
-            </Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.reloadProxyIconBtn}
-            onPress={() => handleReloadPresets(true)}
-            disabled={reloadingPresets || applyingProxy}
-            activeOpacity={0.78}
-            accessibilityLabel="Làm mới danh sách máy chủ Proxy"
-          >
-            {reloadingPresets ? (
-              <ActivityIndicator size="small" color="#FFF" />
-            ) : (
-              <Ionicons name="refresh" size={17} color="#FFF" />
-            )}
-          </TouchableOpacity>
-        </View>
-
-        {proxyCfg.mode === 'preset' ? (
-          <View style={styles.presetList}>
-            {proxyPresets.length === 0 ? (
-              <View style={styles.presetEmptyBox}>
-                <Text style={styles.presetEmptyTxt}>
-                  Chưa có máy chủ sẵn có nào. Nhấn biểu tượng làm mới hoặc chọn Proxy tự cấu hình.
-                </Text>
-              </View>
-            ) : (
-              proxyPresets.map((preset) => {
-                const selected = proxyCfg.presetId === preset.id;
-                const probe = presetProbeMap[preset.id];
-                return (
-                  <TouchableOpacity
-                    key={preset.id}
-                    activeOpacity={0.85}
-                    style={[styles.presetCard, selected && styles.presetCardActive]}
-                    onPress={() => {
-                      Haptics.selectionAsync();
-                      setProxyStatusMsg(null);
-                      applyProxyOverride({
-                        mode: 'preset',
-                        presetId: preset.id,
-                        presetName: preset.name,
-                      });
-                    }}
-                  >
-                    <View style={{ flex: 1, paddingRight: 8 }}>
-                      <Text style={styles.presetName} numberOfLines={1}>
-                        {preset.name}
-                      </Text>
-                      <Text style={styles.presetRegion} numberOfLines={1}>
-                        {preset.region}
-                      </Text>
-                    </View>
-                    <View style={styles.presetRightWrap}>
-                      {probe ? (
-                        <View
-                          style={[
-                            styles.presetLatencyPill,
-                            probe.status === 'testing'
-                              ? styles.presetLatencyTesting
-                              : probe.status === 'ok'
-                              ? styles.presetLatencyOk
-                              : probe.status === 'timeout'
-                              ? styles.presetLatencyTimeout
-                              : styles.presetLatencyErr,
-                          ]}
-                        >
-                          {probe.status === 'testing' ? (
-                            <>
-                              <ActivityIndicator
-                                size="small"
-                                color="#93C5FD"
-                                style={styles.presetLatencySpinner}
-                              />
-                              <Text style={[styles.presetLatencyTxt, { color: '#BFDBFE' }]}>
-                                Đang đo
-                              </Text>
-                            </>
-                          ) : probe.status === 'ok' ? (
-                            <>
-                              <View
-                                style={[styles.presetLatencyDot, { backgroundColor: '#30D158' }]}
-                              />
-                              <Text style={[styles.presetLatencyTxt, { color: '#4ADE80' }]}>
-                                {probe.latencyMs} ms
-                              </Text>
-                            </>
-                          ) : probe.status === 'timeout' ? (
-                            <>
-                              <View
-                                style={[styles.presetLatencyDot, { backgroundColor: '#F59E0B' }]}
-                              />
-                              <Text style={[styles.presetLatencyTxt, { color: '#FDE68A' }]}>
-                                Quá 3s
-                              </Text>
-                            </>
-                          ) : (
-                            <>
-                              <View
-                                style={[styles.presetLatencyDot, { backgroundColor: '#EF4444' }]}
-                              />
-                              <Text style={[styles.presetLatencyTxt, { color: '#FCA5A5' }]}>
-                                Lỗi
-                              </Text>
-                            </>
-                          )}
-                        </View>
-                      ) : null}
-                      <Ionicons
-                        name={selected ? 'checkmark-circle' : 'ellipse-outline'}
-                        size={21}
-                        color={selected ? COLORS.accent : COLORS.muted}
-                      />
-                    </View>
-                  </TouchableOpacity>
-                );
-              })
-            )}
-          </View>
-        ) : (
-          <View style={styles.customProxyForm}>
-            <View style={styles.customRowPair}>
-              <View style={{ flex: 2 }}>
-                <Text style={styles.inputLabel}>Địa chỉ IP / Host</Text>
-                <TextInput
-                  style={styles.proxyInput}
-                  value={proxyCfg.customHost}
-                  onChangeText={(txt) =>
-                    setProxyConfig({ customHost: txt.trim(), enabled: false })
-                  }
-                  placeholder="Ví dụ: 203.0.113.10"
-                  placeholderTextColor="rgba(255,255,255,0.36)"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.inputLabel}>Cổng (Port)</Text>
-                <TextInput
-                  style={styles.proxyInput}
-                  value={proxyCfg.customPort}
-                  onChangeText={(txt) =>
-                    setProxyConfig({
-                      customPort: txt.replace(/[^0-9]/g, ''),
-                      enabled: false,
-                    })
-                  }
-                  placeholder="8080"
-                  placeholderTextColor="rgba(255,255,255,0.36)"
-                  keyboardType="number-pad"
-                  maxLength={5}
-                />
-              </View>
+            <View style={[styles.iosBadge, { backgroundColor: '#FF2D55' }]}>
+              <Ionicons name="sparkles" size={15} color="#FFFFFF" />
             </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.settingLabel}>Có gì mới</Text>
+              <Text style={styles.settingDesc}>Chi tiết tính năng trong các bản phát hành</Text>
+            </View>
+            <Ionicons
+              name={changelogOpen ? 'chevron-up' : 'chevron-down'}
+              size={17}
+              color="rgba(255,255,255,0.42)"
+            />
+          </TouchableOpacity>
 
-            <View style={styles.customRowPair}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.inputLabel}>Tài khoản (TK)</Text>
-                <TextInput
-                  style={styles.proxyInput}
-                  value={proxyCfg.customUsername}
-                  onChangeText={(txt) =>
-                    setProxyConfig({ customUsername: txt, enabled: false })
-                  }
-                  placeholder="Không bắt buộc"
-                  placeholderTextColor="rgba(255,255,255,0.36)"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.inputLabel}>Mật khẩu (MK)</Text>
-                <View style={styles.passwordInputWrap}>
-                  <TextInput
-                    style={styles.passwordInputField}
-                    value={proxyCfg.customPassword}
-                    onChangeText={(txt) =>
-                      setProxyConfig({ customPassword: txt, enabled: false })
-                    }
-                    placeholder="Không bắt buộc"
-                    placeholderTextColor="rgba(255,255,255,0.36)"
-                    secureTextEntry={!showProxyPass}
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                  />
-                  <TouchableOpacity
-                    onPress={() => setShowProxyPass((v) => !v)}
-                    hitSlop={8}
-                    style={{ paddingLeft: 6 }}
-                  >
-                    <Ionicons
-                      name={showProxyPass ? 'eye-outline' : 'eye-off-outline'}
-                      size={17}
-                      color={COLORS.muted}
-                    />
-                  </TouchableOpacity>
+          {changelogOpen ? (
+            <View style={styles.changelogWrap}>
+              {(manifest?.history || [
+                {
+                  versionCode: APP_VERSION_CODE,
+                  versionName: APP_VERSION,
+                  date: APP_RELEASE_DATE,
+                  title: 'Nâng cấp giao diện & trải nghiệm xem phim mượt mà',
+                  changes: [
+                    'Thiết kế lại toàn bộ giao diện Cài đặt và điều khiển trình phát theo chuẩn iPhone hiện đại',
+                    'Bổ sung thanh kéo thước đo trực quan, nạp lại phụ đề tức thì và xem ngoại tuyến thông minh',
+                  ],
+                },
+              ]).map((h) => (
+                <View key={h.versionCode} style={styles.historyBox}>
+                  <Text style={styles.historyTitle}>
+                    v{h.versionName} — {h.title}
+                  </Text>
+                  {h.changes.map((c, idx) => (
+                    <Text key={idx} style={styles.historyLine}>
+                      • {c}
+                    </Text>
+                  ))}
                 </View>
-              </View>
-            </View>
-          </View>
-        )}
-
-        <View style={styles.proxyFooterRow}>
-          <TouchableOpacity
-            style={styles.testProxyBtn}
-            onPress={handleTestProxyConnection}
-            disabled={testingProxy}
-          >
-            {testingProxy ? (
-              <>
-                <ActivityIndicator size="small" color="#FFF" />
-                <Text style={styles.testProxyBtnTxt}>Đang kiểm tra...</Text>
-              </>
-            ) : (
-              <>
-                <Ionicons name="pulse-outline" size={16} color="#FFF" />
-                <Text style={styles.testProxyBtnTxt}>Kiểm tra kết nối</Text>
-              </>
-            )}
-          </TouchableOpacity>
-
-          {proxyStatusMsg ? (
-            <View
-              style={[
-                styles.proxyStatusPill,
-                proxyStatusMsg.ok
-                  ? styles.proxyStatusOk
-                  : styles.proxyStatusErr,
-              ]}
-            >
-              <Ionicons
-                name={proxyStatusMsg.ok ? 'checkmark-circle' : 'alert-circle'}
-                size={14}
-                color={proxyStatusMsg.ok ? '#30D158' : '#FCA5A5'}
-              />
-              <Text
-                style={[
-                  styles.proxyStatusTxt,
-                  { color: proxyStatusMsg.ok ? '#D8FFE2' : '#FECACA' },
-                ]}
-                numberOfLines={2}
-              >
-                {proxyStatusMsg.text}
-              </Text>
+              ))}
             </View>
           ) : null}
         </View>
-      </GlassSurface>
 
-      {/* Offline & TV Cast Card */}
-      <GlassSurface intensity={45} radius={RADII.xl} style={styles.card}>
-        <Text style={styles.cardHeading}>Lưu trữ &amp; Kết nối TV</Text>
-
-        <TouchableOpacity style={styles.actionRow} onPress={onOpenCast}>
-          <View style={styles.rowLeft}>
-            <Ionicons name="tv-outline" size={20} color="#FFF" />
-            <View>
-              <Text style={styles.settingLabel}>DVA Cast (Quét QR chiếu lên TV)</Text>
-              <Text style={styles.settingDesc}>Kết nối và điều khiển phát phim trên màn hình lớn TV</Text>
-            </View>
-          </View>
-          <Ionicons name="chevron-forward" size={18} color={COLORS.muted} />
+        {/* Sign Out Action Card */}
+        <TouchableOpacity activeOpacity={0.82} style={styles.logoutCard} onPress={handleLogout}>
+          <Ionicons name="log-out-outline" size={19} color="#FF6B6B" />
+          <Text style={styles.logoutTxt}>Đăng xuất tài khoản</Text>
         </TouchableOpacity>
+      </ScrollView>
 
-        <View style={styles.divider} />
-
-        <View style={styles.actionRow}>
-          <View style={styles.rowLeft}>
-            <Ionicons name="folder-outline" size={20} color="#FFF" />
-            <View>
-              <Text style={styles.settingLabel}>Bộ nhớ phim ngoại tuyến</Text>
-              <Text style={styles.settingDesc}>
-                {offlineItems.length} phim • {formatBytes(totalBytes)} đã dùng
-              </Text>
-            </View>
-          </View>
-          <TouchableOpacity
-            style={styles.subtleBtn}
-            onPress={handleClearOffline}
-            disabled={offlineItems.length === 0}
-          >
-            <Text style={styles.subtleBtnTxt}>Dọn sạch</Text>
-          </TouchableOpacity>
-        </View>
-
-        <View style={styles.switchRow}>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.settingLabel}>Tự động tải tập đang xem</Text>
-            <Text style={styles.settingDesc}>Lưu tập đang phát để xem lại không cần mạng</Text>
-          </View>
-          <Switch
-            value={settings.autoDownloadCurrentOnWatch}
-            onValueChange={(v) => {
-              Haptics.selectionAsync();
-              updateSetting('autoDownloadCurrentOnWatch', v);
-            }}
-            trackColor={{ false: 'rgba(255,255,255,0.2)', true: COLORS.accent }}
-            thumbColor="#FFF"
-          />
-        </View>
-
-        <View style={styles.switchRow}>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.settingLabel}>Tải thêm tập tiếp theo</Text>
-            <Text style={styles.settingDesc}>
-              {settings.autoDownloadNextCount > 0
-                ? `Tự động tải trước ${settings.autoDownloadNextCount} tập tiếp theo khi xem`
-                : 'Đang tắt tự động tải tập tiếp theo'}
-            </Text>
-          </View>
-          <View style={styles.offlineStepperRow}>
-            <TouchableOpacity
-              style={styles.offlineStepBtn}
-              onPress={() => {
-                Haptics.selectionAsync();
-                updateSetting(
-                  'autoDownloadNextCount',
-                  Math.max(0, (settings.autoDownloadNextCount || 0) - 1)
-                );
-              }}
-            >
-              <Ionicons name="remove" size={16} color="#FFF" />
-            </TouchableOpacity>
-            <Text style={styles.offlineStepVal}>{settings.autoDownloadNextCount || 0}</Text>
-            <TouchableOpacity
-              style={styles.offlineStepBtn}
-              onPress={() => {
-                Haptics.selectionAsync();
-                updateSetting(
-                  'autoDownloadNextCount',
-                  Math.min(20, (settings.autoDownloadNextCount || 0) + 1)
-                );
-              }}
-            >
-              <Ionicons name="add" size={16} color="#FFF" />
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        <View style={styles.switchRow}>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.settingLabel}>Ưu tiên phát từ máy khi có mạng</Text>
-            <Text style={styles.settingDesc}>Tự dùng tệp ngoại tuyến đã tải để mở tức thì</Text>
-          </View>
-          <Switch
-            value={settings.preferOfflineWhenOnline}
-            onValueChange={(v) => {
-              Haptics.selectionAsync();
-              updateSetting('preferOfflineWhenOnline', v);
-            }}
-            trackColor={{ false: 'rgba(255,255,255,0.2)', true: COLORS.accent }}
-            thumbColor="#FFF"
-          />
-        </View>
-      </GlassSurface>
-
-      {/* Updates & Changelog Card */}
-      <GlassSurface intensity={45} radius={RADII.xl} style={styles.card}>
-        <View style={styles.actionRow}>
-          <View style={{ flex: 1, paddingRight: 10 }}>
-            <Text style={styles.settingLabel}>Cập nhật ứng dụng</Text>
-            <Text style={styles.settingDesc}>
-              Phiên bản v{APP_VERSION} • Phát hành {APP_RELEASE_DATE}
-            </Text>
-          </View>
-          <TouchableOpacity
-            style={styles.subtleBtn}
-            onPress={handleCheckUpdate}
-            disabled={checkingUpdate}
-          >
-            {checkingUpdate ? (
-              <ActivityIndicator size="small" color="#FFF" />
-            ) : (
-              <Text style={styles.subtleBtnTxt}>Kiểm tra</Text>
-            )}
-          </TouchableOpacity>
-        </View>
-
-        <View style={styles.divider} />
-
-        <TouchableOpacity
-          style={styles.actionRow}
-          onPress={async () => {
-            Haptics.selectionAsync();
-            const next = !changelogOpen;
-            setChangelogOpen(next);
-            if (next && !manifest) {
-              try {
-                const m = await checkOtaUpdateApi();
-                setManifest(m);
-              } catch {}
-            }
-          }}
-        >
-          <View>
-            <Text style={styles.settingLabel}>Có gì mới</Text>
-            <Text style={styles.settingDesc}>Chi tiết tính năng trong bản phát hành</Text>
-          </View>
-          <Ionicons
-            name={changelogOpen ? 'chevron-up' : 'chevron-down'}
-            size={18}
-            color={COLORS.muted}
-          />
-        </TouchableOpacity>
-
-        {changelogOpen ? (
-          <View style={styles.changelogWrap}>
-            {(manifest?.history || [
-              {
-                versionCode: APP_VERSION_CODE,
-                versionName: APP_VERSION,
-                date: APP_RELEASE_DATE,
-                title: 'Phát hành phiên bản đầu tiên cho iPhone',
-                changes: [
-                  'Giao diện điện ảnh tối ưu thao tác một tay trên màn hình iPhone',
-                  'Hỗ trợ xem ngoại tuyến, thu nhỏ khung hình phim, khóa Face ID và chiếu phim lên TV qua mã QR',
-                ],
-              },
-            ]).map((h) => (
-              <View key={h.versionCode} style={styles.historyBox}>
-                <Text style={styles.historyTitle}>
-                  v{h.versionName} — {h.title}
-                </Text>
-                {h.changes.map((c, idx) => (
-                  <Text key={idx} style={styles.historyLine}>
-                    • {c}
-                  </Text>
-                ))}
-              </View>
-            ))}
-          </View>
-        ) : null}
-      </GlassSurface>
-
-      <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout}>
-        <Ionicons name="log-out-outline" size={20} color="#FCA5A5" />
-        <Text style={styles.logoutTxt}>Đăng xuất tài khoản</Text>
-      </TouchableOpacity>
-    </ScrollView>
       <AppUpdateModal
         visible={directUpdateOpen}
         manifest={manifest}
@@ -1170,14 +1423,16 @@ export function AccountSettingsScreen({
   );
 }
 
-function SettingSwitchRow({
+function IosSwitchRow({
   icon,
+  badgeColor,
   label,
   desc,
   value,
   onChange,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
+  badgeColor: string;
   label: string;
   desc: string;
   value: boolean;
@@ -1185,8 +1440,10 @@ function SettingSwitchRow({
 }) {
   return (
     <View style={styles.switchRow}>
-      <Ionicons name={icon} size={20} color={COLORS.textSecondary} />
-      <View style={{ flex: 1 }}>
+      <View style={[styles.iosBadge, { backgroundColor: badgeColor }]}>
+        <Ionicons name={icon} size={15} color="#FFFFFF" />
+      </View>
+      <View style={{ flex: 1, minWidth: 0 }}>
         <Text style={styles.settingLabel}>{label}</Text>
         <Text style={styles.settingDesc}>{desc}</Text>
       </View>
@@ -1196,8 +1453,8 @@ function SettingSwitchRow({
           Haptics.selectionAsync();
           onChange(v);
         }}
-        trackColor={{ false: 'rgba(255,255,255,0.16)', true: COLORS.accent }}
-        thumbColor="#FFF"
+        trackColor={{ false: 'rgba(255,255,255,0.2)', true: COLORS.accent }}
+        thumbColor="#FFFFFF"
       />
     </View>
   );
@@ -1213,54 +1470,58 @@ const styles = StyleSheet.create({
     zIndex: 550,
     backgroundColor: COLORS.bg,
   },
-  topHeader: {
+  navBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    justifyContent: 'space-between',
     paddingHorizontal: 16,
     paddingBottom: 10,
   },
-  backBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+  navBackBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.16)',
+    borderColor: 'rgba(255, 255, 255, 0.14)',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  navTitle: {
+    color: '#FFFFFF',
+    fontSize: 18,
+    fontWeight: '800',
+    letterSpacing: -0.2,
+  },
+  navRightSpacer: {
+    width: 36,
   },
   container: {
     flex: 1,
     backgroundColor: 'transparent',
   },
-  pageTitle: {
-    color: '#FFF',
-    fontSize: 21,
-    fontWeight: '800',
-  },
-  card: {
-    padding: 18,
-    marginBottom: 14,
-  },
-  cardHeading: {
-    color: '#FFF',
-    fontSize: 16,
-    fontWeight: '800',
-    marginBottom: 14,
+  profileCard: {
+    padding: 16,
+    marginBottom: 16,
   },
   profileRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 14,
   },
-  avatar: {
+  avatarRing: {
     width: 64,
     height: 64,
     borderRadius: 32,
-    backgroundColor: COLORS.cardPlaceholder,
+    padding: 2,
     borderWidth: 2,
     borderColor: COLORS.accent,
+  },
+  avatar: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 28,
+    backgroundColor: COLORS.cardPlaceholder,
   },
   nameRow: {
     flexDirection: 'row',
@@ -1268,24 +1529,24 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   userName: {
-    color: '#FFF',
+    color: '#FFFFFF',
     fontSize: 18,
     fontWeight: '800',
   },
   verifiedBadge: {
-    width: 18,
-    height: 18,
-    borderRadius: 9,
+    width: 17,
+    height: 17,
+    borderRadius: 8.5,
     backgroundColor: COLORS.accent,
     alignItems: 'center',
     justifyContent: 'center',
   },
   userEmail: {
-    color: COLORS.muted,
-    fontSize: 13,
+    color: 'rgba(255,255,255,0.62)',
+    fontSize: 12.5,
     marginTop: 2,
   },
-  tierRow: {
+  tierPill: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
@@ -1296,122 +1557,209 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
   },
-  settingBlock: {
-    marginBottom: 14,
-  },
-  settingLabel: {
-    color: '#FFF',
-    fontSize: 14.5,
-    fontWeight: '700',
-  },
-  settingDesc: {
-    color: COLORS.muted,
+  sectionHeader: {
+    color: 'rgba(255,255,255,0.52)',
     fontSize: 12,
-    marginTop: 2,
-  },
-  qualityRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 8,
-  },
-  qualityChip: {
-    flex: 1,
-    paddingVertical: 8,
-    borderRadius: 12,
-    backgroundColor: 'rgba(255,255,255,0.08)',
-    alignItems: 'center',
-  },
-  qualityChipActive: {
-    backgroundColor: COLORS.accent,
-  },
-  qualityTxt: {
-    color: COLORS.textSecondary,
-    fontSize: 12.5,
     fontWeight: '700',
+    letterSpacing: 0.6,
+    marginLeft: 12,
+    marginBottom: 7,
+    marginTop: 4,
+  },
+  insetGroup: {
+    borderRadius: 18,
+    overflow: 'hidden',
+    borderWidth: 0.75,
+    borderColor: 'rgba(255,255,255,0.1)',
+    marginBottom: 18,
+    position: 'relative',
+  },
+  insetGroupFill: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    backgroundColor: 'rgba(18, 22, 34, 0.78)',
+  },
+  insetDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    marginLeft: 56,
+  },
+  iosBadge: {
+    width: 30,
+    height: 30,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
   },
   switchRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    paddingVertical: 10,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: 'rgba(255,255,255,0.08)',
-  },
-  actionRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
-    paddingVertical: 6,
-  },
-  rowLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    flex: 1,
-  },
-  divider: {
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: 'rgba(255,255,255,0.1)',
-    marginVertical: 10,
-  },
-  subtleBtn: {
     paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 12,
-    backgroundColor: 'rgba(255,255,255,0.12)',
+    paddingVertical: 11,
+    gap: 12,
   },
-  subtleBtnTxt: {
-    color: '#FFF',
-    fontSize: 12.5,
-    fontWeight: '700',
-  },
-  changelogWrap: {
-    marginTop: 10,
-    gap: 8,
-  },
-  historyBox: {
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    borderRadius: 14,
-    padding: 12,
-  },
-  historyTitle: {
-    color: '#FFF',
-    fontSize: 13.5,
-    fontWeight: '700',
-    marginBottom: 6,
-  },
-  historyLine: {
-    color: COLORS.textSecondary,
-    fontSize: 12.5,
-    lineHeight: 18,
-  },
-  logoutBtn: {
-    height: 52,
-    borderRadius: RADII.md,
-    backgroundColor: 'rgba(239, 68, 68, 0.16)',
+  switchRowInner: {
     flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  navRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 12,
+  },
+  groupedColumnRow: {
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 10,
+  },
+  rowHeaderTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  storageTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  settingLabel: {
+    color: '#FFFFFF',
+    fontSize: 14.5,
+    fontWeight: '600',
+  },
+  settingDesc: {
+    color: 'rgba(255,255,255,0.52)',
+    fontSize: 12,
+    marginTop: 1.5,
+  },
+  rightValuePill: {
+    color: '#93C5FD',
+    fontSize: 12.5,
+    fontWeight: '700',
+    backgroundColor: 'rgba(59, 130, 246, 0.16)',
+    paddingHorizontal: 9,
+    paddingVertical: 3,
+    borderRadius: 99,
+    overflow: 'hidden',
+  },
+  cleanPillBtn: {
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+    borderRadius: 99,
+    backgroundColor: 'rgba(255, 69, 58, 0.18)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 69, 58, 0.35)',
+  },
+  cleanPillTxt: {
+    color: '#FCA5A5',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  storageTrack: {
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    overflow: 'hidden',
+    marginLeft: 42,
+  },
+  storageFill: {
+    height: '100%',
+    borderRadius: 3,
+  },
+  segmentedControlRow: {
+    flexDirection: 'row',
+    backgroundColor: 'rgba(255,255,255,0.07)',
+    borderRadius: 12,
+    padding: 3,
+    gap: 4,
+    marginLeft: 42,
+  },
+  segmentOption: {
+    flex: 1,
+    paddingVertical: 7,
+    borderRadius: 9,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
-    marginTop: 6,
   },
-  logoutTxt: {
-    color: '#FCA5A5',
-    fontSize: 15,
+  segmentOptionActive: {
+    backgroundColor: COLORS.accent,
+  },
+  segmentOptionTxt: {
+    color: 'rgba(255,255,255,0.68)',
+    fontSize: 12.5,
+    fontWeight: '600',
+  },
+  segmentOptionTxtActive: {
+    color: '#FFFFFF',
     fontWeight: '700',
+  },
+  horizontalChipsScroll: {
+    gap: 7,
+    paddingLeft: 42,
+    paddingRight: 4,
+  },
+  chipPill: {
+    paddingHorizontal: 13,
+    paddingVertical: 7,
+    borderRadius: 99,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+  },
+  chipPillActive: {
+    backgroundColor: COLORS.accent,
+    borderColor: COLORS.accent,
+  },
+  chipPillTxt: {
+    color: 'rgba(255,255,255,0.72)',
+    fontSize: 12.5,
+    fontWeight: '600',
+  },
+  chipPillTxtActive: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+  },
+  offlineStepperRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 12,
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+  },
+  offlineStepBtn: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: 'rgba(255, 255, 255, 0.14)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  offlineStepVal: {
+    color: '#FFFFFF',
+    fontSize: 13.5,
+    fontWeight: '700',
+    minWidth: 22,
+    textAlign: 'center',
   },
   proxyHeaderRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
     gap: 12,
   },
   proxyNoticeBanner: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    marginTop: 12,
+    marginLeft: 42,
     paddingHorizontal: 12,
     paddingVertical: 9,
     borderRadius: 12,
@@ -1429,74 +1777,73 @@ const styles = StyleSheet.create({
   proxyModeRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    marginTop: 14,
+    gap: 6,
+    marginLeft: 42,
+    backgroundColor: 'rgba(255,255,255,0.07)',
+    borderRadius: 12,
+    padding: 3,
   },
   reloadProxyIconBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 13,
+    width: 32,
+    height: 32,
+    borderRadius: 9,
     backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.16)',
     alignItems: 'center',
     justifyContent: 'center',
   },
   presetList: {
-    marginTop: 12,
+    marginLeft: 42,
     gap: 8,
   },
   presetEmptyBox: {
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    borderRadius: 12,
     backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
   },
   presetEmptyTxt: {
     color: COLORS.muted,
-    fontSize: 12.5,
+    fontSize: 12,
     textAlign: 'center',
-    lineHeight: 18,
+    lineHeight: 17,
   },
   presetCard: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    borderRadius: 16,
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 12,
     backgroundColor: 'rgba(255, 255, 255, 0.06)',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: 'rgba(255, 255, 255, 0.09)',
   },
   presetCardActive: {
     backgroundColor: 'rgba(229, 9, 20, 0.14)',
     borderColor: 'rgba(229, 9, 20, 0.65)',
   },
   presetName: {
-    color: '#FFF',
-    fontSize: 14,
+    color: '#FFFFFF',
+    fontSize: 13.5,
     fontWeight: '700',
   },
   presetRegion: {
     color: COLORS.muted,
-    fontSize: 12,
-    marginTop: 3,
+    fontSize: 11.5,
+    marginTop: 2,
   },
   presetRightWrap: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 8,
   },
   presetLatencyPill: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
-    paddingHorizontal: 9,
-    paddingVertical: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3.5,
     borderRadius: 999,
     borderWidth: 1,
   },
@@ -1527,12 +1874,12 @@ const styles = StyleSheet.create({
     marginHorizontal: -2,
   },
   presetLatencyTxt: {
-    fontSize: 11.5,
+    fontSize: 11,
     fontWeight: '700',
     fontVariant: ['tabular-nums'],
   },
   customProxyForm: {
-    marginTop: 12,
+    marginLeft: 42,
     gap: 10,
   },
   customRowPair: {
@@ -1543,51 +1890,51 @@ const styles = StyleSheet.create({
     color: COLORS.textSecondary,
     fontSize: 11.5,
     fontWeight: '600',
-    marginBottom: 5,
+    marginBottom: 4,
   },
   proxyInput: {
-    height: 40,
-    borderRadius: 12,
+    height: 38,
+    borderRadius: 10,
     backgroundColor: 'rgba(255, 255, 255, 0.07)',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.12)',
-    paddingHorizontal: 12,
-    color: '#FFF',
+    paddingHorizontal: 11,
+    color: '#FFFFFF',
     fontSize: 13,
   },
   passwordInputWrap: {
-    height: 40,
-    borderRadius: 12,
+    height: 38,
+    borderRadius: 10,
     backgroundColor: 'rgba(255, 255, 255, 0.07)',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.12)',
-    paddingHorizontal: 12,
+    paddingHorizontal: 11,
     flexDirection: 'row',
     alignItems: 'center',
   },
   passwordInputField: {
     flex: 1,
-    color: '#FFF',
+    color: '#FFFFFF',
     fontSize: 13,
     paddingVertical: 0,
   },
   proxyFooterRow: {
-    marginTop: 12,
-    gap: 10,
+    marginLeft: 42,
+    gap: 8,
   },
   testProxyBtn: {
-    height: 40,
-    borderRadius: 14,
-    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    height: 38,
+    borderRadius: 11,
+    backgroundColor: 'rgba(255, 255, 255, 0.11)',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.16)',
+    borderColor: 'rgba(255, 255, 255, 0.15)',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 7,
   },
   testProxyBtnTxt: {
-    color: '#FFF',
+    color: '#FFFFFF',
     fontSize: 13,
     fontWeight: '700',
   },
@@ -1595,9 +1942,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 7,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    borderRadius: 12,
+    paddingHorizontal: 11,
+    paddingVertical: 8,
+    borderRadius: 11,
     borderWidth: 1,
   },
   proxyStatusOk: {
@@ -1613,28 +1960,57 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
   },
-  offlineStepperRow: {
+  updateCheckBtn: {
+    paddingHorizontal: 13,
+    paddingVertical: 7,
+    borderRadius: 99,
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.16)',
+  },
+  updateCheckTxt: {
+    color: '#FFFFFF',
+    fontSize: 12.5,
+    fontWeight: '700',
+  },
+  changelogWrap: {
+    paddingHorizontal: 14,
+    paddingBottom: 14,
+    gap: 8,
+  },
+  historyBox: {
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 0.5,
+    borderColor: 'rgba(255,255,255,0.08)',
+  },
+  historyTitle: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+    marginBottom: 5,
+  },
+  historyLine: {
+    color: 'rgba(255,255,255,0.72)',
+    fontSize: 12,
+    lineHeight: 17.5,
+  },
+  logoutCard: {
+    height: 50,
+    borderRadius: 16,
+    backgroundColor: 'rgba(239, 68, 68, 0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.28)',
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
-    borderRadius: 14,
-    paddingHorizontal: 6,
-    paddingVertical: 4,
-  },
-  offlineStepBtn: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    backgroundColor: 'rgba(255, 255, 255, 0.12)',
-    alignItems: 'center',
     justifyContent: 'center',
+    gap: 8,
+    marginTop: 4,
   },
-  offlineStepVal: {
-    color: '#FFF',
-    fontSize: 13.5,
+  logoutTxt: {
+    color: '#FF8A80',
+    fontSize: 15,
     fontWeight: '700',
-    minWidth: 22,
-    textAlign: 'center',
   },
 });

@@ -13,7 +13,8 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
-import { Feather, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { Feather, Ionicons } from '@expo/vector-icons';
+import { BlurView } from 'expo-blur';
 import {
   isPictureInPictureSupported,
   SubtitleTrack,
@@ -23,6 +24,7 @@ import {
 } from 'expo-video';
 import * as Haptics from 'expo-haptics';
 import * as ScreenOrientation from 'expo-screen-orientation';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { showAppAlert } from '../components/AppAlertModal';
 import { GlassSurface } from '../components/GlassSurface';
 import { NativeSubtitleOverlay } from '../components/NativeSubtitleOverlay';
@@ -37,6 +39,10 @@ import { PlayerOverlayPanels, PlayerPanelType } from '../components/PlayerOverla
 import { PlayerServerPanelModal } from '../components/PlayerServerPanelModal';
 import { PlayerSubtitleSettingsModal } from '../components/PlayerSubtitleSettingsModal';
 import { PlayerLandscapeSkeleton } from '../components/SkeletonLoaders';
+import {
+  WaterDropToastBanner,
+  WaterDropToastPayload,
+} from '../components/WaterDropToastBanner';
 import { CastModal, CastMoviePayload } from './CastModal';
 import { COLORS } from '../constants/config';
 import { useAuth } from '../context/AuthContext';
@@ -65,6 +71,7 @@ import {
 import {
   ensureOfflineMediaServer,
   getCachedOfflineMediaServerPort,
+  restartOfflineMediaServer,
 } from '../services/localMediaServer';
 import {
   applyCheckFileToServers,
@@ -197,23 +204,23 @@ function resolveEpisodeMetaFromParams(
 }
 
 /**
- * Pure-RN outline subtitle box icon matching the player toolbar in jw.php.
+ * Pure-RN outline subtitle box icon normalized to match neighboring 22px Feather icons.
  */
 function JwSubtitleIcon({ size = 22, color = '#FFF' }: { size?: number; color?: string }) {
-  const boxW = Math.round(size * (20 / 24));
-  const boxH = Math.round(size * (16 / 24));
-  const stroke = Math.max(1.8, size * (2 / 24));
+  const boxW = Math.round(size);
+  const boxH = Math.round(size * 0.79);
+  const stroke = Math.max(1.9, size * 0.09);
   return (
     <View
       style={{
         width: boxW,
         height: boxH,
-        borderRadius: Math.max(3, Math.round(size * (3 / 24))),
+        borderRadius: 4.5,
         borderWidth: stroke,
         borderColor: color,
-        paddingHorizontal: Math.round(size * (3 / 24)),
+        paddingHorizontal: 3.5,
         justifyContent: 'center',
-        gap: Math.max(2.5, Math.round(size * (2.5 / 24))),
+        gap: 3,
       }}
     >
       <View
@@ -226,10 +233,78 @@ function JwSubtitleIcon({ size = 22, color = '#FFF' }: { size?: number; color?: 
       />
       <View
         style={{
-          width: '68%',
+          width: '66%',
           height: stroke,
           borderRadius: stroke / 2,
           backgroundColor: color,
+        }}
+      />
+    </View>
+  );
+}
+
+/**
+ * Pure-RN Picture-in-Picture icon with open bottom-right rounded outer corner + mini pill.
+ */
+function JwPipIcon({ color = '#FFF' }: { color?: string }) {
+  return (
+    <View style={{ width: 22, height: 17.5, position: 'relative' }}>
+      {/* Top arc of outer frame */}
+      <View
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: 20,
+          height: 8.5,
+          overflow: 'hidden',
+        }}
+      >
+        <View
+          style={{
+            width: 20,
+            height: 14.5,
+            borderRadius: 4,
+            borderWidth: 2,
+            borderColor: color,
+          }}
+        />
+      </View>
+      {/* Bottom-left arc of outer frame leaving bottom-right open */}
+      <View
+        style={{
+          position: 'absolute',
+          top: 8.5,
+          left: 0,
+          width: 9,
+          height: 6,
+          overflow: 'hidden',
+        }}
+      >
+        <View
+          style={{
+            position: 'absolute',
+            top: -8.5,
+            left: 0,
+            width: 20,
+            height: 14.5,
+            borderRadius: 4,
+            borderWidth: 2,
+            borderColor: color,
+          }}
+        />
+      </View>
+      {/* Bottom-right rounded mini inset window */}
+      <View
+        style={{
+          position: 'absolute',
+          right: 0,
+          bottom: 0,
+          width: 11.5,
+          height: 8.5,
+          borderRadius: 3,
+          borderWidth: 2,
+          borderColor: color,
         }}
       />
     </View>
@@ -243,6 +318,7 @@ export function PlayerModal({
   onSwitchEpisode,
   onSwitchOfflineItem,
 }: PlayerModalProps) {
+  const insets = useSafeAreaInsets();
   const { width: winWidth, height: winHeight } = useWindowDimensions();
   const { user, isLocked } = useAuth();
   const { settings, updateSetting } = useSettings();
@@ -282,6 +358,9 @@ export function PlayerModal({
   const [localServerPort, setLocalServerPort] = useState<number>(() =>
     getCachedOfflineMediaServerPort()
   );
+  const localServerPortRef = useRef<number>(localServerPort);
+  localServerPortRef.current = localServerPort;
+  const offlineRetryAttemptedRef = useRef(false);
   const [offlineItems, setOfflineItems] = useState<OfflineDownloadItem[]>(() =>
     getOfflineDownloadsSnapshot()
   );
@@ -342,6 +421,8 @@ export function PlayerModal({
   const [enCues, setEnCues] = useState<ParsedVttCue[]>([]);
   const [vnSubUrl, setVnSubUrl] = useState('');
   const [enSubUrl, setEnSubUrl] = useState('');
+  const [subReloadNonce, setSubReloadNonce] = useState(0);
+  const [isReloadingSubtitles, setIsReloadingSubtitles] = useState(false);
   const [preloadState, setPreloadState] = useState<PreloadVisualState>('idle');
   const preloadStateRef = useRef<PreloadVisualState>('idle');
   preloadStateRef.current = preloadState;
@@ -349,10 +430,11 @@ export function PlayerModal({
   const nextAutoSwitchTriggeredRef = useRef(false);
   const [nextCountdownSec, setNextCountdownSec] = useState<number | null>(null);
 
-  // Seek warning & Intro skip toast
+  // Seek warning & water-drop banner toast
   const [seekReturnSec, setSeekReturnSec] = useState<number | null>(null);
   const seekReturnTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [toastMsg, setToastMsg] = useState('');
+  const [toastPayload, setToastPayload] = useState<WaterDropToastPayload | null>(null);
+  const toastIdRef = useRef(0);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // HUD & Popovers & Modals
@@ -407,11 +489,46 @@ export function PlayerModal({
 
   const isOfflineOnlyMode = Boolean(params?.offlineUri || params?.offlineItem);
 
-  const showToast = useCallback((msg: string) => {
-    setToastMsg(msg);
-    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-    toastTimerRef.current = setTimeout(() => setToastMsg(''), 2600);
+  const ensureLiveLocalPort = useCallback(async (forceRestart = false): Promise<number> => {
+    const rootDir = getOfflineRootDir();
+    const port = forceRestart
+      ? await restartOfflineMediaServer(rootDir)
+      : await ensureOfflineMediaServer(rootDir);
+    if (port > 0) {
+      localServerPortRef.current = port;
+      setLocalServerPort(port);
+    }
+    return port;
   }, []);
+
+  const showToast = useCallback(
+    (
+      title: string,
+      subtitle?: string,
+      tone: WaterDropToastPayload['tone'] = 'default'
+    ) => {
+      let resolvedTitle = title;
+      let resolvedSub = subtitle;
+      if (!resolvedSub) {
+        if (title.includes('•')) {
+          const [tPart, ...rest] = title.split('•');
+          resolvedTitle = tPart.trim();
+          resolvedSub = rest.join('•').trim();
+        } else if (title.includes(':')) {
+          const [tPart, ...rest] = title.split(':');
+          resolvedTitle = tPart.trim();
+          resolvedSub = rest.join(':').trim();
+        } else {
+          resolvedSub = 'Đặng Việt Anh';
+        }
+      }
+      const nextId = ++toastIdRef.current;
+      setToastPayload({ id: nextId, title: resolvedTitle, subtitle: resolvedSub, tone });
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+      toastTimerRef.current = setTimeout(() => setToastPayload(null), 2700);
+    },
+    []
+  );
 
   const clearHudTimer = useCallback(() => {
     if (hudHideTimerRef.current) {
@@ -663,13 +780,27 @@ export function PlayerModal({
         inactive.pause();
       } catch {}
 
+      let livePort = localServerPortRef.current;
+      if (livePort <= 0 || srv.id === '99') {
+        const verifiedPort = await ensureLiveLocalPort(false);
+        if (verifiedPort > 0) livePort = verifiedPort;
+      }
+
+      let resolvedSrvUrl = srv.streamUrl;
+      if (srv.id === '99' && livePort > 0 && /^https?:\/\/127\.0\.0\.1:\d+/i.test(resolvedSrvUrl)) {
+        resolvedSrvUrl = resolvedSrvUrl.replace(
+          /^https?:\/\/127\.0\.0\.1:\d+/i,
+          `http://127.0.0.1:${livePort}`
+        );
+      }
+
       const wrapped = wrapUrlForIosNativePlayer({
-        rawUrl: srv.streamUrl,
+        rawUrl: resolvedSrvUrl,
         format: srv.format,
         serverId: srv.id,
         vnSubUrl: opts.vnUrl,
         enSubUrl: opts.enUrl,
-        localServerPort,
+        localServerPort: livePort,
         pipEnabled: settingsRef.current.pipEnabled,
         pipProxyBroken: pipProxyBrokenRef.current,
       });
@@ -697,7 +828,7 @@ export function PlayerModal({
         }
       } catch {}
     },
-    [getActivePlayer, getInactivePlayer, localServerPort, playbackRate]
+    [ensureLiveLocalPort, getActivePlayer, getInactivePlayer, playbackRate]
   );
 
   // Core episode loader (online + offline unified)
@@ -708,6 +839,7 @@ export function PlayerModal({
     ) => {
       if (!params || !streamCodeToLoad) return;
       const mySeq = ++loadSeqRef.current;
+      offlineRetryAttemptedRef.current = false;
 
       if (checkFilePollRef.current) {
         clearInterval(checkFilePollRef.current);
@@ -807,10 +939,12 @@ export function PlayerModal({
         setActiveEpTitle(localOffline.episode_title || '');
         setQualityBadge('1080pHD');
         if (localOffline.duration_sec) setDuration(localOffline.duration_sec);
+        const livePort = await ensureLiveLocalPort(false);
+        if (loadSeqRef.current !== mySeq) return;
         const srvList = buildInitialServerStates({
           serverFileKey: localOffline.server_file_key || '',
           offlineItem: localOffline,
-          localServerPort,
+          localServerPort: livePort,
           resolved: synthResolved,
         });
         setServers(srvList);
@@ -845,11 +979,12 @@ export function PlayerModal({
 
       // Online mode (with Local-First Phiên 99 support + full 11/36/40/3 engine)
       try {
-        const [resData, serverProgRes] = await Promise.all([
+        const [resData, serverProgRes, livePort] = await Promise.all([
           resolveStreamApi(streamCodeToLoad, params.videosId),
           params.videosId > 0
             ? fetchWatchProgressApi(streamCodeToLoad, params.videosId).catch(() => null)
             : Promise.resolve(null),
+          ensureLiveLocalPort(false),
         ]);
         if (loadSeqRef.current !== mySeq) return;
 
@@ -903,7 +1038,7 @@ export function PlayerModal({
         let initialServers = buildInitialServerStates({
           serverFileKey: sfk,
           offlineItem: localOffline,
-          localServerPort,
+          localServerPort: livePort,
           resolved: resData,
           ggd: apiGgd,
           pings,
@@ -1066,7 +1201,7 @@ export function PlayerModal({
     [
       params,
       isOfflineOnlyMode,
-      localServerPort,
+      ensureLiveLocalPort,
       playerA,
       playerB,
       playServerOnActiveLayer,
@@ -1094,8 +1229,10 @@ export function PlayerModal({
         () => null
       );
 
+      const livePort = await ensureLiveLocalPort(false);
+
       if (localNextOff && localNextOff.local_uri) {
-        const offUrl = buildOfflineServerUrl(localNextOff, localServerPort);
+        const offUrl = buildOfflineServerUrl(localNextOff, livePort);
         const dual = await loadDualSubtitles({
           serverFileKey: sfkHint || nextResolved?.server_file_key,
           offlineItem: localNextOff,
@@ -1180,7 +1317,7 @@ export function PlayerModal({
 
       let nextServers = buildInitialServerStates({
         serverFileKey: nextSfk,
-        localServerPort,
+        localServerPort: livePort,
         resolved: nextResolved,
         ggd: ggdRes,
         pings,
@@ -1203,7 +1340,7 @@ export function PlayerModal({
         serverId: best.id,
         vnSubUrl: dual.vnUrl,
         enSubUrl: dual.enUrl,
-        localServerPort,
+        localServerPort: livePort,
         pipEnabled: settingsRef.current.pipEnabled,
         pipProxyBroken: pipProxyBrokenRef.current,
       });
@@ -1238,7 +1375,7 @@ export function PlayerModal({
     } catch {
       setPreloadState('failed');
     }
-  }, [currentNextEpisode, params?.videosId, params?.title, localServerPort, qualityBadge, getInactivePlayer]);
+  }, [currentNextEpisode, params?.videosId, params?.title, ensureLiveLocalPort, qualityBadge, getInactivePlayer]);
 
   // Execute seamless 2-layer crossfade switch when preloaded next episode is ready
   const triggerSwitchToNextEpisode = useCallback(() => {
@@ -1396,6 +1533,144 @@ export function PlayerModal({
     [currentNextEpisode, preloadNextEpisodeToInactiveLayer, triggerSwitchToNextEpisode]
   );
 
+  // Shared failure recovery for both Player A & Player B (eliminates duplication & self-heals offline socket)
+  const handleActivePlayerError = useCallback(async () => {
+    // 1. If native HLS PiP proxy failed on an online source, retry direct URL first
+    if (
+      activeServerIdRef.current !== '99' &&
+      activeMediaUrlRef.current.includes('/hls-pip/master.m3u8') &&
+      !pipProxyBrokenRef.current
+    ) {
+      pipProxyBrokenRef.current = true;
+      const curSrv = serversRef.current.find((s) => s.id === activeServerIdRef.current);
+      if (curSrv) {
+        await playServerOnActiveLayer(curSrv, {
+          seekToSec: currentTimeRef.current,
+          serverFileKey: resolvedRef.current?.server_file_key || '',
+          vnUrl: vnSubUrl,
+          enUrl: enSubUrl,
+          title: params?.title || '',
+        });
+        return;
+      }
+    }
+
+    // 2. If offline server ('99') errored (e.g. reclaimed loopback port), force restart socket once
+    if (activeServerIdRef.current === '99' && !offlineRetryAttemptedRef.current) {
+      offlineRetryAttemptedRef.current = true;
+      const freshPort = await ensureLiveLocalPort(true);
+      const offlineTarget =
+        matchedOfflineItem ||
+        findCompletedOfflineItem({
+          streamCode: activeStreamCode,
+          videosId: params?.videosId,
+          episodeId: params?.episodeId,
+        });
+      const curSrv = serversRef.current.find((s) => s.id === '99');
+      if (curSrv && freshPort > 0) {
+        const rebuilt = offlineTarget
+          ? buildOfflineServerUrl(offlineTarget, freshPort)
+          : {
+              url: curSrv.streamUrl.replace(
+                /^https?:\/\/127\.0\.0\.1:\d+/i,
+                `http://127.0.0.1:${freshPort}`
+              ),
+              format: curSrv.format,
+            };
+        const healedSrv: ServerRuntimeState = {
+          ...curSrv,
+          streamUrl: rebuilt.url,
+          format: rebuilt.format,
+          status: 'ready',
+          errored: false,
+        };
+        setServers((prev) => prev.map((s) => (s.id === '99' ? healedSrv : s)));
+        await playServerOnActiveLayer(healedSrv, {
+          seekToSec: currentTimeRef.current,
+          serverFileKey: resolvedRef.current?.server_file_key || '',
+          vnUrl: vnSubUrl,
+          enUrl: enSubUrl,
+          title: params?.title || '',
+        });
+        return;
+      }
+    }
+
+    // 3. Otherwise mark server errored & failover automatically
+    if (activeServerIdRef.current) {
+      erroredServersRef.current.add(activeServerIdRef.current);
+      const nextServers = serversRef.current.map((s) =>
+        s.id === activeServerIdRef.current ? { ...s, errored: true, status: 'error' as const } : s
+      );
+      setServers(nextServers);
+      const failover = selectOptimalServer(nextServers, {
+        preferOffline: settingsRef.current.preferOfflineWhenOnline,
+        hasGgdDirect: Boolean(
+          resolvedRef.current?.ggdriver_1 ||
+            resolvedRef.current?.ggdriver_2 ||
+            resolvedRef.current?.ggdriver_3
+        ),
+      });
+      if (failover) {
+        showToast(`Chuyển sang ${failover.label}`, 'Đang tự động khôi phục nguồn phát', 'warning');
+        await playServerOnActiveLayer(failover, {
+          seekToSec: currentTimeRef.current,
+          serverFileKey: resolvedRef.current?.server_file_key || '',
+          vnUrl: vnSubUrl,
+          enUrl: enSubUrl,
+          title: params?.title || '',
+        });
+        return;
+      }
+    }
+    setIsBuffering(false);
+    setFirstFrameReady(true);
+  }, [
+    activeStreamCode,
+    ensureLiveLocalPort,
+    matchedOfflineItem,
+    params?.episodeId,
+    params?.title,
+    params?.videosId,
+    playServerOnActiveLayer,
+    showToast,
+    vnSubUrl,
+    enSubUrl,
+  ]);
+
+  const handleReloadSubtitles = useCallback(async () => {
+    if (isReloadingSubtitles) return;
+    setIsReloadingSubtitles(true);
+    try {
+      const sfk = resolvedRef.current?.server_file_key || matchedOfflineItem?.server_file_key || '';
+      const dual = await loadDualSubtitles({
+        serverFileKey: sfk,
+        resolvedSubtitles: resolvedRef.current?.subtitles,
+        offlineItem: matchedOfflineItem,
+        bustCache: true,
+      });
+      setVnCues(dual.vnCues);
+      setEnCues(dual.enCues);
+      setVnSubUrl(dual.vnUrl);
+      setEnSubUrl(dual.enUrl);
+      setSubReloadNonce((n) => n + 1);
+      if (isInPipRef.current) {
+        syncNativePipSubtitleTrack(getActivePlayer(), true);
+      }
+      showToast('Đã nạp lại phụ đề', 'Phụ đề mới đã được tải và đồng bộ', 'success');
+    } catch {
+      showToast('Không thể nạp lại phụ đề', 'Vui lòng thử lại sau giây lát', 'warning');
+    } finally {
+      setIsReloadingSubtitles(false);
+    }
+  }, [
+    isReloadingSubtitles,
+    matchedOfflineItem,
+    getActivePlayer,
+    syncNativePipSubtitleTrack,
+    showToast,
+  ]);
+
   // Listeners for Player A
   useEffect(() => {
     const sSub = playerA.addListener('statusChange', (ev) => {
@@ -1433,49 +1708,7 @@ export function PlayerModal({
         }
         syncNativePipSubtitleTrack(playerA, isInPipRef.current);
       } else if (st === 'error') {
-        // If native HLS PiP proxy failed, retry direct URL cleanly before blacklisting server
-        if (activeMediaUrlRef.current.includes('/hls-pip/master.m3u8') && !pipProxyBrokenRef.current) {
-          pipProxyBrokenRef.current = true;
-          const curSrv = serversRef.current.find((s) => s.id === activeServerIdRef.current);
-          if (curSrv) {
-            void playServerOnActiveLayer(curSrv, {
-              seekToSec: currentTimeRef.current,
-              serverFileKey: resolvedRef.current?.server_file_key || '',
-              vnUrl: vnSubUrl,
-              enUrl: enSubUrl,
-              title: params?.title || '',
-            });
-            return;
-          }
-        }
-        if (activeServerIdRef.current) {
-          erroredServersRef.current.add(activeServerIdRef.current);
-          const nextServers = serversRef.current.map((s) =>
-            s.id === activeServerIdRef.current ? { ...s, errored: true, status: 'error' as const } : s
-          );
-          setServers(nextServers);
-          const failover = selectOptimalServer(nextServers, {
-            preferOffline: settingsRef.current.preferOfflineWhenOnline,
-            hasGgdDirect: Boolean(
-              resolvedRef.current?.ggdriver_1 ||
-                resolvedRef.current?.ggdriver_2 ||
-                resolvedRef.current?.ggdriver_3
-            ),
-          });
-          if (failover) {
-            showToast(`Chuyển sang ${failover.label}...`);
-            void playServerOnActiveLayer(failover, {
-              seekToSec: currentTimeRef.current,
-              serverFileKey: resolvedRef.current?.server_file_key || '',
-              vnUrl: vnSubUrl,
-              enUrl: enSubUrl,
-              title: params?.title || '',
-            });
-            return;
-          }
-        }
-        setIsBuffering(false);
-        setFirstFrameReady(true);
+        void handleActivePlayerError();
       }
     });
 
@@ -1516,17 +1749,13 @@ export function PlayerModal({
     };
   }, [
     playerA,
-    params?.title,
-    vnSubUrl,
-    enSubUrl,
     sleepTimerValue,
     currentNextEpisode,
+    handleActivePlayerError,
     handleLayerTimeUpdate,
-    playServerOnActiveLayer,
     scheduleHudAutoHide,
     syncNativePipSubtitleTrack,
     triggerSwitchToNextEpisode,
-    showToast,
   ]);
 
   // Listeners for Player B
@@ -1565,48 +1794,7 @@ export function PlayerModal({
         }
         syncNativePipSubtitleTrack(playerB, isInPipRef.current);
       } else if (st === 'error') {
-        if (activeMediaUrlRef.current.includes('/hls-pip/master.m3u8') && !pipProxyBrokenRef.current) {
-          pipProxyBrokenRef.current = true;
-          const curSrv = serversRef.current.find((s) => s.id === activeServerIdRef.current);
-          if (curSrv) {
-            void playServerOnActiveLayer(curSrv, {
-              seekToSec: currentTimeRef.current,
-              serverFileKey: resolvedRef.current?.server_file_key || '',
-              vnUrl: vnSubUrl,
-              enUrl: enSubUrl,
-              title: params?.title || '',
-            });
-            return;
-          }
-        }
-        if (activeServerIdRef.current) {
-          erroredServersRef.current.add(activeServerIdRef.current);
-          const nextServers = serversRef.current.map((s) =>
-            s.id === activeServerIdRef.current ? { ...s, errored: true, status: 'error' as const } : s
-          );
-          setServers(nextServers);
-          const failover = selectOptimalServer(nextServers, {
-            preferOffline: settingsRef.current.preferOfflineWhenOnline,
-            hasGgdDirect: Boolean(
-              resolvedRef.current?.ggdriver_1 ||
-                resolvedRef.current?.ggdriver_2 ||
-                resolvedRef.current?.ggdriver_3
-            ),
-          });
-          if (failover) {
-            showToast(`Chuyển sang ${failover.label}...`);
-            void playServerOnActiveLayer(failover, {
-              seekToSec: currentTimeRef.current,
-              serverFileKey: resolvedRef.current?.server_file_key || '',
-              vnUrl: vnSubUrl,
-              enUrl: enSubUrl,
-              title: params?.title || '',
-            });
-            return;
-          }
-        }
-        setIsBuffering(false);
-        setFirstFrameReady(true);
+        void handleActivePlayerError();
       }
     });
 
@@ -1647,17 +1835,13 @@ export function PlayerModal({
     };
   }, [
     playerB,
-    params?.title,
-    vnSubUrl,
-    enSubUrl,
     sleepTimerValue,
     currentNextEpisode,
+    handleActivePlayerError,
     handleLayerTimeUpdate,
-    playServerOnActiveLayer,
     scheduleHudAutoHide,
     syncNativePipSubtitleTrack,
     triggerSwitchToNextEpisode,
-    showToast,
   ]);
 
   // Countdown tick for Next Episode Delay > 0s
@@ -2091,6 +2275,22 @@ export function PlayerModal({
     subEn: enSubUrl,
   };
 
+  const pipSubLangProp =
+    !settings.subShowVi && !settings.subShowEn
+      ? 'off'
+      : !settings.subShowVi && settings.subShowEn
+        ? 'en'
+        : 'vi';
+
+  const holdToastPayload: WaterDropToastPayload | null = holdBoostActive
+    ? {
+        id: -1,
+        title: `Đang tua nhanh ${settings.holdSeekSpeed}x`,
+        subtitle: 'Thả tay để trở lại tốc độ phát bình thường',
+        tone: 'info',
+      }
+    : toastPayload;
+
   return (
     <View style={styles.playerRoot}>
       <View style={styles.stage}>
@@ -2113,7 +2313,7 @@ export function PlayerModal({
             nativeControls={false}
             allowsPictureInPicture={activeLayer === 'A' && settings.pipEnabled}
             startsPictureInPictureAutomatically={activeLayer === 'A' && settings.pipEnabled}
-            {...({ contrastEnhance: isContrastActive } as any)}
+            {...({ contrastEnhance: isContrastActive, pipSubLang: pipSubLangProp } as any)}
             onPictureInPictureStart={() => {
               if (activeLayerRef.current !== 'A') return;
               setIsInPip(true);
@@ -2149,7 +2349,7 @@ export function PlayerModal({
             nativeControls={false}
             allowsPictureInPicture={activeLayer === 'B' && settings.pipEnabled}
             startsPictureInPictureAutomatically={activeLayer === 'B' && settings.pipEnabled}
-            {...({ contrastEnhance: isContrastActive } as any)}
+            {...({ contrastEnhance: isContrastActive, pipSubLang: pipSubLangProp } as any)}
             onPictureInPictureStart={() => {
               if (activeLayerRef.current !== 'B') return;
               setIsInPip(true);
@@ -2245,26 +2445,15 @@ export function PlayerModal({
           subHighRaw={resolved?.sub_high}
           settings={settings}
           episodeSignature={`${params.videosId}|${activeStreamCode}`}
+          reloadNonce={subReloadNonce}
         />
 
-        {/* Top-center status pills (hold speed / toast / auto-next countdown) */}
-        {holdBoostActive ? (
-          <View pointerEvents="none" style={styles.topCenterBannerWrap}>
-            <GlassSurface variant="liquid" radius={40} intensity={85} style={styles.toastPill}>
-              <Ionicons name="play-forward" size={15} color="#FFF" />
-              <Text style={styles.toastTxt}>
-                Đang giữ tua nhanh {settings.holdSeekSpeed}x
-              </Text>
-            </GlassSurface>
-          </View>
-        ) : toastMsg ? (
-          <View pointerEvents="none" style={styles.topCenterBannerWrap}>
-            <GlassSurface variant="liquid" radius={40} intensity={85} style={styles.toastPill}>
-              <Ionicons name="sparkles" size={14} color={COLORS.accent} />
-              <Text style={styles.toastTxt}>{toastMsg}</Text>
-            </GlassSurface>
-          </View>
-        ) : null}
+        {/* Water-drop dynamic notification banner */}
+        <WaterDropToastBanner
+          toast={holdToastPayload}
+          topOffset={Math.max(insets.top, 8) + 8}
+          maxWidth={Math.min(winWidth - 48, 390)}
+        />
 
         {/* Floating Next-Episode Countdown Pill */}
         {nextCountdownSec !== null && currentNextEpisode ? (
@@ -2323,7 +2512,7 @@ export function PlayerModal({
                 </View>
               </View>
 
-              {/* Top-right 6-button Liquid Glass capsule matching jw.php */}
+              {/* Top-right 6-button Liquid Glass capsule */}
               <GlassSurface variant="liquid" noShadow radius={40} intensity={85} style={styles.topRightCapsule}>
                 <TouchableOpacity
                   style={styles.topCapsuleBtn}
@@ -2397,11 +2586,7 @@ export function PlayerModal({
                       }
                     }}
                   >
-                    <MaterialCommunityIcons
-                      name="picture-in-picture-bottom-right-outline"
-                      size={23}
-                      color="#FFF"
-                    />
+                    <JwPipIcon color="#FFF" />
                   </TouchableOpacity>
                 ) : null}
 
@@ -2848,55 +3033,70 @@ export function PlayerModal({
                   </GlassSurface>
                 ) : null}
 
-                {/* More Options Popover */}
+                {/* More Options Popover — iOS Contextual Glass Sheet matching Image 2 */}
                 {moreMenuOpen ? (
-                  <GlassSurface variant="liquid" radius={30} intensity={85} style={styles.morePopover}>
+                  <View style={styles.morePopover}>
+                    <BlurView intensity={76} tint="dark" style={StyleSheet.absoluteFill} />
+                    <View style={styles.morePopoverFill} />
+
                     {!isOfflineOnlyMode ? (
                       <TouchableOpacity
-                        style={styles.popoverItem}
+                        activeOpacity={0.75}
+                        style={styles.morePopoverRow}
                         onPress={() => {
                           setMoreMenuOpen(false);
                           setOfflineSheetOpen(true);
                         }}
                       >
-                        <Ionicons name="download-outline" size={17} color="#FFF" />
-                        <Text style={styles.popoverItemTxt}>Tải phim ngoại tuyến</Text>
+                        <View style={styles.morePopoverIconBadge}>
+                          <Feather name="download" size={18} color="#FFFFFF" />
+                        </View>
+                        <Text style={styles.morePopoverText}>Tải phim ngoại tuyến</Text>
                       </TouchableOpacity>
                     ) : null}
 
                     <TouchableOpacity
-                      style={styles.popoverItem}
+                      activeOpacity={0.75}
+                      style={styles.morePopoverRow}
                       onPress={() => {
                         setMoreMenuOpen(false);
                         setInfoPanel('info');
                       }}
                     >
-                      <Ionicons name="information-circle-outline" size={17} color="#FFF" />
-                      <Text style={styles.popoverItemTxt}>Thông tin phim & Thành viên</Text>
+                      <View style={styles.morePopoverIconBadge}>
+                        <Feather name="info" size={18} color="#FFFFFF" />
+                      </View>
+                      <Text style={styles.morePopoverText}>Thông tin phim & Thành viên</Text>
                     </TouchableOpacity>
 
                     <TouchableOpacity
-                      style={styles.popoverItem}
+                      activeOpacity={0.75}
+                      style={styles.morePopoverRow}
                       onPress={() => {
                         setMoreMenuOpen(false);
                         setCastPopupOpen(true);
                       }}
                     >
-                      <Ionicons name="tv-outline" size={17} color="#FFF" />
-                      <Text style={styles.popoverItemTxt}>Chiếu lên TV</Text>
+                      <View style={styles.morePopoverIconBadge}>
+                        <Feather name="tv" size={18} color="#FFFFFF" />
+                      </View>
+                      <Text style={styles.morePopoverText}>Chiếu lên TV</Text>
                     </TouchableOpacity>
 
                     <TouchableOpacity
-                      style={styles.popoverItem}
+                      activeOpacity={0.75}
+                      style={styles.morePopoverRow}
                       onPress={() => {
                         setMoreMenuOpen(false);
                         setServerModalOpen(true);
                       }}
                     >
-                      <Ionicons name="server-outline" size={17} color="#FFF" />
-                      <Text style={styles.popoverItemTxt}>Máy chủ phát phim</Text>
+                      <View style={styles.morePopoverIconBadge}>
+                        <Feather name="server" size={18} color="#FFFFFF" />
+                      </View>
+                      <Text style={styles.morePopoverText}>Máy chủ phát phim</Text>
                     </TouchableOpacity>
-                  </GlassSurface>
+                  </View>
                 ) : null}
               </View>
             </View>
@@ -2922,27 +3122,78 @@ export function PlayerModal({
             }
           }}
           onSelectServer={(id) => {
-            const target = servers.find((s) => s.id === id);
-            if (!target) return;
-            manualLockedServerRef.current = id;
-            const sfk = resolved?.server_file_key || '';
-            if ((id === '11' || id === '36') && sfk && !target.streamUrl) {
-              void triggerServerPrepare(sfk);
-              showToast(`Đang chuẩn bị ${target.label}...`);
-              setServerModalOpen(false);
-              return;
-            }
-            if (target.streamUrl) {
-              setServerModalOpen(false);
-              void playServerOnActiveLayer(target, {
-                seekToSec: currentTimeRef.current,
-                serverFileKey: sfk,
-                vnUrl: vnSubUrl,
-                enUrl: enSubUrl,
-                title: displayTitle,
-              });
-              showToast(`Đã chọn ${target.label}`);
-            }
+            void (async () => {
+              const target = servers.find((s) => s.id === id);
+              if (!target) return;
+              manualLockedServerRef.current = id;
+              erroredServersRef.current.delete(id);
+              const sfk = resolved?.server_file_key || '';
+
+              if (id === '99') {
+                offlineRetryAttemptedRef.current = false;
+                const freshPort = await ensureLiveLocalPort(true);
+                const offlineTarget =
+                  matchedOfflineItem ||
+                  findCompletedOfflineItem({
+                    streamCode: activeStreamCode,
+                    videosId: params.videosId,
+                    episodeId: params.episodeId,
+                  });
+                const rebuilt = offlineTarget
+                  ? buildOfflineServerUrl(offlineTarget, freshPort)
+                  : {
+                      url: target.streamUrl.replace(
+                        /^https?:\/\/127\.0\.0\.1:\d+/i,
+                        `http://127.0.0.1:${freshPort}`
+                      ),
+                      format: target.format,
+                    };
+                const refreshedSrv: ServerRuntimeState = {
+                  ...target,
+                  streamUrl: rebuilt.url,
+                  format: rebuilt.format,
+                  status: 'ready',
+                  errored: false,
+                };
+                setServers((prev) => prev.map((s) => (s.id === '99' ? refreshedSrv : s)));
+                setServerModalOpen(false);
+                if (refreshedSrv.streamUrl) {
+                  await playServerOnActiveLayer(refreshedSrv, {
+                    seekToSec: currentTimeRef.current,
+                    serverFileKey: sfk,
+                    vnUrl: vnSubUrl,
+                    enUrl: enSubUrl,
+                    title: displayTitle,
+                  });
+                  showToast(`Đã chọn ${target.label}`, 'Đang phát từ bộ nhớ thiết bị', 'success');
+                }
+                return;
+              }
+
+              if ((id === '11' || id === '36') && sfk && !target.streamUrl) {
+                void triggerServerPrepare(sfk);
+                showToast(`Đang chuẩn bị ${target.label}...`);
+                setServerModalOpen(false);
+                return;
+              }
+              if (target.streamUrl) {
+                const clearedSrv: ServerRuntimeState = {
+                  ...target,
+                  errored: false,
+                  status: target.status === 'error' ? 'ready' : target.status,
+                };
+                setServers((prev) => prev.map((s) => (s.id === id ? clearedSrv : s)));
+                setServerModalOpen(false);
+                await playServerOnActiveLayer(clearedSrv, {
+                  seekToSec: currentTimeRef.current,
+                  serverFileKey: sfk,
+                  vnUrl: vnSubUrl,
+                  enUrl: enSubUrl,
+                  title: displayTitle,
+                });
+                showToast(`Đã chọn ${target.label}`);
+              }
+            })();
           }}
           onRefreshPings={async () => {
             setPingRefreshing(true);
@@ -3012,6 +3263,8 @@ export function PlayerModal({
             showHudWithTimer();
           }}
           subHighRaw={resolved?.sub_high}
+          onReloadSubtitles={handleReloadSubtitles}
+          isReloadingSubtitles={isReloadingSubtitles}
         />
 
         <PlayerGeneralSettingsModal
@@ -3178,26 +3431,6 @@ const styles = StyleSheet.create({
     left: 0,
     zIndex: 60,
     backgroundColor: 'transparent',
-  },
-  topCenterBannerWrap: {
-    position: 'absolute',
-    top: 64,
-    left: 0,
-    right: 0,
-    alignItems: 'center',
-    zIndex: 35,
-  },
-  toastPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 7,
-    paddingHorizontal: 18,
-    paddingVertical: 9,
-  },
-  toastTxt: {
-    color: '#FFF',
-    fontSize: 12.5,
-    fontWeight: '700',
   },
   countdownOverlay: {
     position: 'absolute',
@@ -3547,11 +3780,55 @@ const styles = StyleSheet.create({
   morePopover: {
     position: 'absolute',
     right: 0,
-    bottom: 50,
-    padding: 8,
-    gap: 4,
-    minWidth: 225,
+    bottom: 52,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    gap: 2,
+    minWidth: 256,
+    borderRadius: 28,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.18)',
     zIndex: 35,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 14 },
+    shadowOpacity: 0.55,
+    shadowRadius: 26,
+  },
+  morePopoverFill: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    backgroundColor: 'rgba(20, 23, 30, 0.78)',
+  },
+  morePopoverRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    gap: 13,
+    paddingVertical: 7,
+    paddingHorizontal: 6,
+    borderRadius: 16,
+  },
+  morePopoverIconBadge: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    borderWidth: 0.75,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  morePopoverText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '600',
+    textAlign: 'left',
+    flexShrink: 1,
   },
   popoverItem: {
     flexDirection: 'row',

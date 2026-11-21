@@ -33,7 +33,7 @@ import {
   SPLASH_MIN_DURATION_MS,
 } from './src/constants/config';
 import { AuthProvider, useAuth } from './src/context/AuthContext';
-import { SettingsProvider } from './src/context/SettingsContext';
+import { SettingsProvider, useSettings } from './src/context/SettingsContext';
 import { AccountSettingsScreen } from './src/screens/AccountSettingsScreen';
 import { CastModal } from './src/screens/CastModal';
 import { ExploreScreen } from './src/screens/ExploreScreen';
@@ -46,12 +46,16 @@ import { QuickLoginQrModal } from './src/screens/QuickLoginQrModal';
 import { SearchScreen } from './src/screens/SearchScreen';
 import { checkAuthStatusApi } from './src/services/api';
 import {
+  enforceOfflineRetentionPolicy,
   flushPendingOfflineProgressToServer,
+  getOfflineRootDir,
   loadOfflineDownloads,
   pullOnlineProgressForOfflineItems,
   resumeBackgroundQueueIfNeeded,
+  setOfflineRuntimePolicy,
   subscribeOfflineDownloads,
 } from './src/services/downloadService';
+import { ensureOfflineMediaServer } from './src/services/localMediaServer';
 import {
   checkAndFetchOtaCombinedAsync,
   runSilentBackgroundOtaSync,
@@ -87,6 +91,7 @@ function RootAppContent() {
 
   const activePortraitInsets = winWidth < winHeight ? insets : portraitInsets;
 
+  const { settings, loaded: settingsLoaded } = useSettings();
   const {
     user,
     bootstrapping,
@@ -168,12 +173,14 @@ function RootAppContent() {
     loadOfflineDownloads()
       .then((items) => {
         setOfflineItems(items);
+        ensureOfflineMediaServer(getOfflineRootDir()).catch(() => {});
         return resumeBackgroundQueueIfNeeded();
       })
       .catch(() => {});
     const unsubDl = subscribeOfflineDownloads(setOfflineItems);
     const appStateSub = AppState.addEventListener('change', (state) => {
       if (state === 'active') {
+        ensureOfflineMediaServer(getOfflineRootDir()).catch(() => {});
         resumeBackgroundQueueIfNeeded().catch(() => {});
       }
     });
@@ -182,6 +189,24 @@ function RootAppContent() {
       appStateSub.remove();
     };
   }, []);
+
+  useEffect(() => {
+    if (!settingsLoaded) return;
+    const policy = {
+      storageLimitGb: settings.offlineStorageLimitGb,
+      autoDeleteEnabled: settings.offlineAutoDeleteEnabled,
+      autoDeleteDays: settings.offlineAutoDeleteDays,
+      antiStallEnabled: settings.offlineAntiStallEnabled,
+    };
+    setOfflineRuntimePolicy(policy);
+    enforceOfflineRetentionPolicy(policy).catch(() => {});
+  }, [
+    settingsLoaded,
+    settings.offlineStorageLimitGb,
+    settings.offlineAutoDeleteEnabled,
+    settings.offlineAutoDeleteDays,
+    settings.offlineAntiStallEnabled,
+  ]);
 
   useEffect(() => {
     if (!serverReady || !user || offlineModeActive) return;

@@ -69,13 +69,63 @@ export interface OfflineWebViewRegistry {
 const listeners = new Set<ProgressListener>();
 const activeControllers = new Map<string, AbortController>();
 const activeResumables = new Map<string, FileSystem.DownloadResumable>();
+const pendingManualRestartIds = new Set<string>();
 const downloadQueue: string[] = [];
+
+export interface OfflineRetentionPolicy {
+  storageLimitGb: number;
+  autoDeleteEnabled: boolean;
+  autoDeleteDays: number;
+  antiStallEnabled: boolean;
+}
+
+const DOWNLOAD_REQUEST_TIMEOUT_MS = 15000;
+const DOWNLOAD_WATCHDOG_TIMEOUT_MS = 30000;
+const DOWNLOAD_LOW_SPEED_THRESHOLD_BPS = 300 * 1024;
+const DOWNLOAD_LOW_SPEED_DURATION_MS = 25000;
+const DOWNLOAD_MAX_AUTO_RESTARTS = 4;
+
+let activeOfflinePolicy: OfflineRetentionPolicy = {
+  storageLimitGb: 20,
+  autoDeleteEnabled: false,
+  autoDeleteDays: 7,
+  antiStallEnabled: true,
+};
 
 let cachedItems: OfflineDownloadItem[] = [];
 let initialized = false;
 let isProcessingQueue = false;
 let currentDownloadingId: string | null = null;
 let workerConcurrencyPref = 3;
+let enforcingPolicyPromise: Promise<{ deletedCount: number; freedBytes: number }> | null = null;
+
+export function setOfflineRuntimePolicy(policy: Partial<OfflineRetentionPolicy>): void {
+  activeOfflinePolicy = {
+    storageLimitGb: Math.max(
+      10,
+      Math.min(
+        100,
+        Math.round((policy.storageLimitGb ?? activeOfflinePolicy.storageLimitGb) / 10) * 10
+      )
+    ),
+    autoDeleteEnabled:
+      typeof policy.autoDeleteEnabled === 'boolean'
+        ? policy.autoDeleteEnabled
+        : activeOfflinePolicy.autoDeleteEnabled,
+    autoDeleteDays: Math.max(
+      3,
+      Math.min(90, Math.round(policy.autoDeleteDays ?? activeOfflinePolicy.autoDeleteDays))
+    ),
+    antiStallEnabled:
+      typeof policy.antiStallEnabled === 'boolean'
+        ? policy.antiStallEnabled
+        : activeOfflinePolicy.antiStallEnabled,
+  };
+}
+
+export function getOfflineStorageBytes(): number {
+  return cachedItems.reduce((sum, it) => sum + Math.max(0, Number(it.size_bytes || 0)), 0);
+}
 
 function hasActiveDownloadWork(): boolean {
   if (isProcessingQueue || downloadQueue.length > 0 || activeControllers.size > 0) {
@@ -240,10 +290,66 @@ function updateItemInMemory(
   }
 }
 
+function reanchorOfflineUri(uri: string | undefined): string {
+  if (!uri || !OFFLINE_DIR) return uri || '';
+  if (/^https?:\/\//i.test(uri)) return uri;
+  const marker = '/dva_offline/';
+  const idx = uri.indexOf(marker);
+  if (idx >= 0) {
+    const rel = uri.substring(idx + marker.length).replace(/^\/+/, '');
+    return `${OFFLINE_DIR}${rel}`;
+  }
+  const altMarker = 'dva_offline/';
+  const altIdx = uri.indexOf(altMarker);
+  if (altIdx >= 0) {
+    const rel = uri.substring(altIdx + altMarker.length).replace(/^\/+/, '');
+    return `${OFFLINE_DIR}${rel}`;
+  }
+  return uri;
+}
+
+async function repairMissingOfflinePosters(items: OfflineDownloadItem[]): Promise<void> {
+  if (!OFFLINE_DIR) return;
+  for (const item of items) {
+    if (item.status !== 'completed') continue;
+    const remoteImg = item.thumbnail_url || item.poster_url;
+    if (!remoteImg || !/^https?:\/\//i.test(remoteImg)) continue;
+    let needsRepair = !item.local_poster_uri;
+    if (!needsRepair && item.local_poster_uri) {
+      try {
+        const info = await FileSystem.getInfoAsync(item.local_poster_uri);
+        const sz = info.exists && 'size' in info ? Number(info.size || 0) : 0;
+        if (!info.exists || sz <= 500) {
+          needsRepair = true;
+        }
+      } catch {
+        needsRepair = true;
+      }
+    }
+    if (!needsRepair) continue;
+    const itemDir = `${OFFLINE_DIR}${item.id}/`;
+    const posterDest = `${itemDir}poster.jpg`;
+    try {
+      await ensureDir(itemDir);
+      const dl = await FileSystem.downloadAsync(remoteImg, posterDest, {
+        sessionType: FileSystem.FileSystemSessionType.FOREGROUND,
+      });
+      const pInfo = await FileSystem.getInfoAsync(posterDest);
+      const pSz = pInfo.exists && 'size' in pInfo ? Number(pInfo.size || 0) : 0;
+      if (dl && dl.status < 400 && pInfo.exists && pSz > 500) {
+        updateItemInMemory(item.id, { local_poster_uri: posterDest }, true);
+      } else {
+        await FileSystem.deleteAsync(posterDest, { idempotent: true }).catch(() => {});
+      }
+    } catch {}
+  }
+}
+
 export async function loadOfflineDownloads(): Promise<OfflineDownloadItem[]> {
   if (initialized) {
     return [...cachedItems];
   }
+  let indexMutated = false;
   try {
     await ensureDir(OFFLINE_DIR);
     if (FileSystem.documentDirectory) {
@@ -262,6 +368,46 @@ export async function loadOfflineDownloads(): Promise<OfflineDownloadItem[]> {
                 const baseName = item.local_uri.split('/').pop();
                 if (baseName) item.relative_entry = baseName;
               }
+            }
+            // Re-anchor all sandbox URIs against current container Documents UUID
+            const nextDir = item.local_dir
+              ? reanchorOfflineUri(item.local_dir)
+              : `${OFFLINE_DIR}${item.id}/`;
+            const normDir = nextDir.endsWith('/') ? nextDir : `${nextDir}/`;
+            if (normDir !== item.local_dir) {
+              item.local_dir = normDir;
+              indexMutated = true;
+            }
+            if (item.local_uri) {
+              const nextUri = reanchorOfflineUri(item.local_uri);
+              if (nextUri !== item.local_uri) {
+                item.local_uri = nextUri;
+                indexMutated = true;
+              }
+            } else if (item.relative_entry) {
+              item.local_uri = `${OFFLINE_DIR}${item.relative_entry.replace(/^\/+/, '')}`;
+              indexMutated = true;
+            }
+            if (item.local_poster_uri) {
+              const nextPoster = reanchorOfflineUri(item.local_poster_uri);
+              if (nextPoster !== item.local_poster_uri) {
+                item.local_poster_uri = nextPoster;
+                indexMutated = true;
+              }
+            }
+            if (Array.isArray(item.subtitles) && item.subtitles.length > 0) {
+              item.subtitles = item.subtitles.map((sub) => {
+                const nextSubUri = sub.local_uri
+                  ? reanchorOfflineUri(sub.local_uri)
+                  : sub.relative_path
+                    ? `${OFFLINE_DIR}${sub.relative_path.replace(/^\/+/, '')}`
+                    : '';
+                if (nextSubUri && nextSubUri !== sub.local_uri) {
+                  indexMutated = true;
+                  return { ...sub, local_uri: nextSubUri };
+                }
+                return sub;
+              });
             }
             if (!item.media_format && item.local_uri) {
               item.media_format = item.local_uri.toLowerCase().includes('.m3u8') ? 'hls' : 'mp4';
@@ -283,6 +429,10 @@ export async function loadOfflineDownloads(): Promise<OfflineDownloadItem[]> {
     cachedItems = [];
   }
   initialized = true;
+  if (indexMutated) {
+    await persistIndex(cachedItems);
+  }
+  void repairMissingOfflinePosters(cachedItems);
   return [...cachedItems];
 }
 
@@ -302,6 +452,15 @@ function createAbortError(): Error {
   const err = new Error('DownloadPausedOrCancelled');
   err.name = 'AbortError';
   return err;
+}
+
+class DownloadRestartRequestedError extends Error {
+  reason: 'stall' | 'low_speed';
+  constructor(reason: 'stall' | 'low_speed') {
+    super(`DownloadRestart_${reason}`);
+    this.name = 'DownloadRestartRequestedError';
+    this.reason = reason;
+  }
 }
 
 function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -567,6 +726,46 @@ async function downloadTextWithSignal(url: string, signal: AbortSignal): Promise
   return { text, finalUrl: res.url || url };
 }
 
+async function downloadChunkWithRequestTimeout(
+  url: string,
+  destUri: string,
+  timeoutMs: number,
+  signal: AbortSignal
+): Promise<FileSystem.FileSystemDownloadResult> {
+  if (signal.aborted) throw createAbortError();
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const task = FileSystem.createDownloadResumable(url, destUri, {
+    sessionType: FileSystem.FileSystemSessionType.FOREGROUND,
+  });
+  const onAbort = () => {
+    task.cancelAsync().catch(() => {});
+  };
+  signal.addEventListener('abort', onAbort, { once: true });
+  try {
+    const dlRes = await Promise.race([
+      task.downloadAsync(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          timedOut = true;
+          task.cancelAsync().catch(() => {});
+          reject(new Error(`REQUEST_TIMEOUT_${timeoutMs}`));
+        }, timeoutMs);
+      }),
+    ]);
+    if (!dlRes) throw new Error('EMPTY_DOWNLOAD_RESULT');
+    return dlRes;
+  } catch (err) {
+    if (timedOut || signal.aborted) {
+      await FileSystem.deleteAsync(destUri, { idempotent: true }).catch(() => {});
+    }
+    throw err;
+  } finally {
+    if (timer) clearTimeout(timer);
+    signal.removeEventListener('abort', onAbort);
+  }
+}
+
 async function downloadFileChunkSafe(
   remoteUrl: string,
   destUri: string,
@@ -579,9 +778,7 @@ async function downloadFileChunkSafe(
   for (let attempt = 0; attempt < 6; attempt++) {
     if (signal.aborted) throw createAbortError();
     try {
-      const dlRes = await FileSystem.downloadAsync(attemptUrl, destUri, {
-        sessionType: FileSystem.FileSystemSessionType.BACKGROUND,
-      });
+      const dlRes = await downloadWithTimeoutCompat(attemptUrl, destUri, signal);
       if (signal.aborted) {
         await FileSystem.deleteAsync(destUri, { idempotent: true }).catch(() => {});
         throw createAbortError();
@@ -600,10 +797,18 @@ async function downloadFileChunkSafe(
       if (signal.aborted || e?.name === 'AbortError') throw createAbortError();
       lastErr = e instanceof Error ? e : new Error(String(e));
       attemptUrl = swapToFreshShard(remoteUrl);
-      await abortableSleep(500 * (attempt + 1), signal);
+      await abortableSleep(450 * (attempt + 1), signal);
     }
   }
   throw lastErr || new Error('Failed to download segment');
+}
+
+function downloadWithTimeoutCompat(
+  url: string,
+  destUri: string,
+  signal: AbortSignal
+): Promise<FileSystem.FileSystemDownloadResult> {
+  return downloadChunkWithRequestTimeout(url, destUri, DOWNLOAD_REQUEST_TIMEOUT_MS, signal);
 }
 
 async function downloadHlsItem(
@@ -757,6 +962,19 @@ async function downloadHlsItem(
   let sessionBytes = 0;
   const startedAt = Date.now();
   let lastNotifyAt = 0;
+  let lastProgressAt = startedAt;
+  let lastWindowAt = startedAt;
+  let lastWindowBytes = 0;
+  let lowSpeedSince = 0;
+  let restartReason: 'stall' | 'low_speed' | null = null;
+
+  const attemptController = new AbortController();
+  const onParentAbort = () => attemptController.abort();
+  if (signal.aborted) {
+    attemptController.abort();
+  } else {
+    signal.addEventListener('abort', onParentAbort, { once: true });
+  }
 
   const workerCount = Math.max(1, Math.min(6, concurrency || 3, totalSegments));
 
@@ -787,33 +1005,88 @@ async function downloadHlsItem(
     });
   };
 
-  const workers = Array.from({ length: workerCount }, async () => {
-    while (nextIdx < totalSegments) {
-      if (signal.aborted) throw createAbortError();
-      const idx = nextIdx++;
-      const t = tasks[idx];
-
-      // Reuse already-downloaded segment on resume
-      try {
-        const exist = await FileSystem.getInfoAsync(t.destUri);
-        const existSize = exist.exists && 'size' in exist ? Number(exist.size || 0) : 0;
-        if (exist.exists && existSize >= t.minBytes) {
-          downloadedBytes += existSize;
-          completedCount++;
-          emitProgress();
-          continue;
-        }
-      } catch {}
-
-      const segBytes = await downloadFileChunkSafe(t.url, t.destUri, t.minBytes, signal);
-      downloadedBytes += segBytes;
-      sessionBytes += segBytes;
-      completedCount++;
-      emitProgress();
+  const watchdogTimer = setInterval(() => {
+    if (
+      !activeOfflinePolicy.antiStallEnabled ||
+      signal.aborted ||
+      attemptController.signal.aborted
+    ) {
+      return;
     }
-  });
+    const now = Date.now();
+    if (now - lastProgressAt >= DOWNLOAD_WATCHDOG_TIMEOUT_MS) {
+      restartReason = 'stall';
+      attemptController.abort();
+      return;
+    }
+    if (now - startedAt > 10000) {
+      const winSec = (now - lastWindowAt) / 1000;
+      if (winSec >= 3) {
+        const deltaBytes = sessionBytes - lastWindowBytes;
+        const bps = deltaBytes / winSec;
+        lastWindowAt = now;
+        lastWindowBytes = sessionBytes;
+        if (bps < DOWNLOAD_LOW_SPEED_THRESHOLD_BPS) {
+          if (lowSpeedSince === 0) lowSpeedSince = now;
+          else if (now - lowSpeedSince >= DOWNLOAD_LOW_SPEED_DURATION_MS) {
+            restartReason = 'low_speed';
+            attemptController.abort();
+          }
+        } else {
+          lowSpeedSince = 0;
+        }
+      }
+    }
+  }, 1000);
 
-  await Promise.all(workers);
+  try {
+    const workers = Array.from({ length: workerCount }, async () => {
+      while (nextIdx < totalSegments) {
+        if (signal.aborted) throw createAbortError();
+        if (attemptController.signal.aborted) {
+          if (restartReason) throw new DownloadRestartRequestedError(restartReason);
+          throw createAbortError();
+        }
+        const idx = nextIdx++;
+        const t = tasks[idx];
+
+        // Reuse already-downloaded segment on resume
+        try {
+          const exist = await FileSystem.getInfoAsync(t.destUri);
+          const existSize = exist.exists && 'size' in exist ? Number(exist.size || 0) : 0;
+          if (exist.exists && existSize >= t.minBytes) {
+            downloadedBytes += existSize;
+            completedCount++;
+            lastProgressAt = Date.now();
+            emitProgress();
+            continue;
+          }
+        } catch {}
+
+        const segBytes = await downloadFileChunkSafe(
+          t.url,
+          t.destUri,
+          t.minBytes,
+          attemptController.signal
+        );
+        downloadedBytes += segBytes;
+        sessionBytes += segBytes;
+        completedCount++;
+        lastProgressAt = Date.now();
+        emitProgress();
+      }
+    });
+
+    await Promise.all(workers);
+  } catch (err: any) {
+    if (!signal.aborted && restartReason) {
+      throw new DownloadRestartRequestedError(restartReason);
+    }
+    throw err;
+  } finally {
+    clearInterval(watchdogTimer);
+    signal.removeEventListener('abort', onParentAbort);
+  }
 
   if (signal.aborted) throw createAbortError();
 
@@ -861,14 +1134,24 @@ async function downloadMp4Item(
     if (signal.aborted) throw createAbortError();
     let lastUpdateMs = 0;
     const startedAt = Date.now();
+    let lastProgressAt = startedAt;
+    let lastWindowAt = startedAt;
+    let lastWindowBytes = 0;
+    let totalWritten = 0;
+    let lowSpeedSince = 0;
+    let watchdogReason: 'stall' | 'low_speed' | null = null;
 
     const resumable = FileSystem.createDownloadResumable(
       attemptUrl,
       localVideoUri,
-      { sessionType: FileSystem.FileSystemSessionType.BACKGROUND },
+      { sessionType: FileSystem.FileSystemSessionType.FOREGROUND },
       (dp) => {
         if (signal.aborted) return;
         const now = Date.now();
+        if (dp.totalBytesWritten > totalWritten) {
+          totalWritten = dp.totalBytesWritten;
+          lastProgressAt = now;
+        }
         if (now - lastUpdateMs < 450 && dp.totalBytesWritten < dp.totalBytesExpectedToWrite) {
           return;
         }
@@ -895,11 +1178,43 @@ async function downloadMp4Item(
     };
     signal.addEventListener('abort', onAbort, { once: true });
 
+    const watchdogTimer = setInterval(() => {
+      if (!activeOfflinePolicy.antiStallEnabled || signal.aborted || watchdogReason) {
+        return;
+      }
+      const now = Date.now();
+      if (now - lastProgressAt >= DOWNLOAD_WATCHDOG_TIMEOUT_MS) {
+        watchdogReason = 'stall';
+        resumable.cancelAsync().catch(() => {});
+        return;
+      }
+      if (now - startedAt > 10000) {
+        const winSec = (now - lastWindowAt) / 1000;
+        if (winSec >= 3) {
+          const delta = totalWritten - lastWindowBytes;
+          const bps = delta / winSec;
+          lastWindowAt = now;
+          lastWindowBytes = totalWritten;
+          if (bps < DOWNLOAD_LOW_SPEED_THRESHOLD_BPS) {
+            if (lowSpeedSince === 0) lowSpeedSince = now;
+            else if (now - lowSpeedSince >= DOWNLOAD_LOW_SPEED_DURATION_MS) {
+              watchdogReason = 'low_speed';
+              resumable.cancelAsync().catch(() => {});
+            }
+          } else {
+            lowSpeedSince = 0;
+          }
+        }
+      }
+    }, 1000);
+
     try {
       const res = await resumable.downloadAsync();
+      clearInterval(watchdogTimer);
       activeResumables.delete(item.id);
       signal.removeEventListener('abort', onAbort);
       if (signal.aborted) throw createAbortError();
+      if (watchdogReason) throw new DownloadRestartRequestedError(watchdogReason);
       if (!res || res.status >= 400) {
         throw new Error(`HTTP_${res?.status || 0}`);
       }
@@ -916,9 +1231,13 @@ async function downloadMp4Item(
         sizeBytes: sz,
       };
     } catch (err: any) {
+      clearInterval(watchdogTimer);
       activeResumables.delete(item.id);
       signal.removeEventListener('abort', onAbort);
       if (signal.aborted || err?.name === 'AbortError') throw createAbortError();
+      if (watchdogReason) {
+        throw new DownloadRestartRequestedError(watchdogReason);
+      }
       lastErr = err instanceof Error ? err : new Error(String(err));
       attemptUrl = swapToFreshShard(mp4Url);
       await abortableSleep(800 * (attempt + 1), signal);
@@ -962,7 +1281,7 @@ async function downloadSubtitlesAndPoster(
     const destUri = `${OFFLINE_DIR}${relPath}`;
     try {
       const res = await FileSystem.downloadAsync(sub.url, destUri, {
-        sessionType: FileSystem.FileSystemSessionType.BACKGROUND,
+        sessionType: FileSystem.FileSystemSessionType.FOREGROUND,
       });
       if (res && res.status < 400) {
         const content = await FileSystem.readAsStringAsync(destUri);
@@ -991,7 +1310,7 @@ async function downloadSubtitlesAndPoster(
     const posterDest = `${itemDir}poster.jpg`;
     try {
       const pRes = await FileSystem.downloadAsync(imgUrl, posterDest, {
-        sessionType: FileSystem.FileSystemSessionType.BACKGROUND,
+        sessionType: FileSystem.FileSystemSessionType.FOREGROUND,
       });
       const pInfo = await FileSystem.getInfoAsync(posterDest);
       const pSz = pInfo.exists && 'size' in pInfo ? Number(pInfo.size || 0) : 0;
@@ -1017,93 +1336,145 @@ async function processSingleItem(id: string): Promise<void> {
   currentDownloadingId = id;
 
   try {
-    updateItemInMemory(id, {
-      status: 'preparing',
-      status_text: 'Đang chuẩn bị liên kết tải...',
-      error_message: undefined,
-    });
+    let completedResult: {
+      chosen: ResolvedMediaCandidate;
+      resolvedData: StreamResolvedData | null;
+      serverFileKey: string;
+      serverDurationSec: number;
+      completedMedia: {
+        localUri: string;
+        localDir: string;
+        relativeEntry: string;
+        sizeBytes: number;
+        durationSec?: number;
+        totalSegments?: number;
+        completedSegments?: number;
+      };
+    } | null = null;
 
-    const {
-      candidates,
-      resolvedData,
-      serverFileKey,
-      serverMovieTitle,
-      serverDurationSec,
-    } = await resolveDownloadCandidates(item, controller.signal);
-
-    if (controller.signal.aborted) throw createAbortError();
-    if (candidates.length === 0) {
-      throw new Error('Nguồn phim này hiện chỉ hỗ trợ phát trực tuyến.');
-    }
-
-    let chosen: ResolvedMediaCandidate | null = null;
-    for (const c of candidates) {
+    for (let restartAttempt = 0; restartAttempt <= DOWNLOAD_MAX_AUTO_RESTARTS; restartAttempt++) {
       if (controller.signal.aborted) throw createAbortError();
-      const ok = await probeRemoteCandidate(c.url, c.format, controller.signal);
-      if (ok) {
-        chosen = c;
-        break;
-      }
-    }
-    if (!chosen) {
-      chosen = candidates[0];
-    }
-
-    updateItemInMemory(id, {
-      status: 'downloading',
-      media_format: chosen.format,
-      remote_url: chosen.url,
-      server_file_key: serverFileKey || item.server_file_key,
-      server_movie_title: serverMovieTitle || item.server_movie_title,
-      skip_intro_sec: resolvedData?.skip_intro_sec ?? item.skip_intro_sec ?? 0,
-      end_credits_sec: resolvedData?.end_credits_sec ?? item.end_credits_sec ?? 0,
-    });
-
-    let completedMedia: {
-      localUri: string;
-      localDir: string;
-      relativeEntry: string;
-      sizeBytes: number;
-      durationSec?: number;
-      totalSegments?: number;
-      completedSegments?: number;
-    };
-
-    try {
-      if (chosen.format === 'hls') {
-        completedMedia = await downloadHlsItem(
-          item,
-          chosen.url,
-          workerConcurrencyPref,
-          controller.signal
-        );
-      } else {
-        completedMedia = await downloadMp4Item(item, chosen.url, controller.signal);
-      }
-    } catch (primaryErr: any) {
-      if (controller.signal.aborted || primaryErr?.name === 'AbortError') {
-        throw primaryErr;
-      }
-      // Fallback to another candidate (e.g. MP4 <-> HLS) if available
-      const alternate = candidates.find((c) => c.url !== chosen!.url);
-      if (!alternate) throw primaryErr;
       updateItemInMemory(id, {
         status: 'preparing',
-        status_text: 'Đang chuyển nguồn tải...',
+        status_text:
+          restartAttempt > 0
+            ? `Đang khởi động lại liên kết tải (${restartAttempt}/${DOWNLOAD_MAX_AUTO_RESTARTS})...`
+            : 'Đang chuẩn bị liên kết tải...',
+        error_message: undefined,
       });
-      if (alternate.format === 'hls') {
-        completedMedia = await downloadHlsItem(
-          item,
-          alternate.url,
-          workerConcurrencyPref,
-          controller.signal
-        );
-        chosen = alternate;
-      } else {
-        completedMedia = await downloadMp4Item(item, alternate.url, controller.signal);
-        chosen = alternate;
+
+      const {
+        candidates,
+        resolvedData,
+        serverFileKey,
+        serverMovieTitle,
+        serverDurationSec,
+      } = await resolveDownloadCandidates(item, controller.signal);
+
+      if (controller.signal.aborted) throw createAbortError();
+      if (candidates.length === 0) {
+        throw new Error('Nguồn phim này hiện chỉ hỗ trợ phát trực tuyến.');
+      }
+
+      let chosen: ResolvedMediaCandidate | null = null;
+      for (const c of candidates) {
+        if (controller.signal.aborted) throw createAbortError();
+        const ok = await probeRemoteCandidate(c.url, c.format, controller.signal);
+        if (ok) {
+          chosen = c;
+          break;
+        }
+      }
+      if (!chosen) {
+        chosen = candidates[0];
+      }
+
+      updateItemInMemory(id, {
+        status: 'downloading',
+        media_format: chosen.format,
+        remote_url: chosen.url,
+        server_file_key: serverFileKey || item.server_file_key,
+        server_movie_title: serverMovieTitle || item.server_movie_title,
+        skip_intro_sec: resolvedData?.skip_intro_sec ?? item.skip_intro_sec ?? 0,
+        end_credits_sec: resolvedData?.end_credits_sec ?? item.end_credits_sec ?? 0,
+      });
+
+      try {
+        let completedMedia;
+        if (chosen.format === 'hls') {
+          completedMedia = await downloadHlsItem(
+            item,
+            chosen.url,
+            workerConcurrencyPref,
+            controller.signal
+          );
+        } else {
+          completedMedia = await downloadMp4Item(item, chosen.url, controller.signal);
+        }
+        completedResult = {
+          chosen,
+          resolvedData,
+          serverFileKey,
+          serverDurationSec,
+          completedMedia,
+        };
+        break;
+      } catch (primaryErr: any) {
+        if (controller.signal.aborted || primaryErr?.name === 'AbortError') {
+          throw primaryErr;
+        }
+        if (
+          primaryErr?.name === 'DownloadRestartRequestedError' &&
+          restartAttempt < DOWNLOAD_MAX_AUTO_RESTARTS
+        ) {
+          await abortableSleep(1200, controller.signal);
+          continue;
+        }
+        // Fallback to another candidate (e.g. MP4 <-> HLS) if available
+        const alternate = candidates.find((c) => c.url !== chosen!.url);
+        if (!alternate) throw primaryErr;
+        updateItemInMemory(id, {
+          status: 'preparing',
+          status_text: 'Đang chuyển nguồn tải...',
+        });
+        try {
+          let completedMedia;
+          if (alternate.format === 'hls') {
+            completedMedia = await downloadHlsItem(
+              item,
+              alternate.url,
+              workerConcurrencyPref,
+              controller.signal
+            );
+          } else {
+            completedMedia = await downloadMp4Item(item, alternate.url, controller.signal);
+          }
+          completedResult = {
+            chosen: alternate,
+            resolvedData,
+            serverFileKey,
+            serverDurationSec,
+            completedMedia,
+          };
+          break;
+        } catch (altErr: any) {
+          if (
+            altErr?.name === 'DownloadRestartRequestedError' &&
+            restartAttempt < DOWNLOAD_MAX_AUTO_RESTARTS
+          ) {
+            await abortableSleep(1200, controller.signal);
+            continue;
+          }
+          throw altErr;
+        }
       }
     }
+
+    if (!completedResult) {
+      throw new Error('Không thể hoàn tất tải phim sau nhiều lần khởi động lại liên kết.');
+    }
+    const { chosen, resolvedData, serverFileKey, serverDurationSec, completedMedia } =
+      completedResult;
 
     if (controller.signal.aborted) throw createAbortError();
 
@@ -1144,9 +1515,25 @@ async function processSingleItem(id: string): Promise<void> {
     };
 
     await persistIndex(cachedItems.map((it) => (it.id === id ? finalized : it)));
+    void enforceOfflineRetentionPolicy();
   } catch (err: any) {
     const latest = cachedItems.find((i) => i.id === id);
     if (!latest) return;
+    if (pendingManualRestartIds.delete(id)) {
+      updateItemInMemory(
+        id,
+        {
+          status: 'queued',
+          status_text: 'Đang khởi động lại liên kết tải...',
+          error_message: undefined,
+        },
+        true
+      );
+      if (!downloadQueue.includes(id)) {
+        downloadQueue.unshift(id);
+      }
+      return;
+    }
     if (controller.signal.aborted || err?.name === 'AbortError') {
       if (latest.status === 'paused') {
         await persistIndex(cachedItems);
@@ -1167,6 +1554,7 @@ async function processSingleItem(id: string): Promise<void> {
       );
     }
   } finally {
+    pendingManualRestartIds.delete(id);
     activeControllers.delete(id);
     activeResumables.delete(id);
     if (currentDownloadingId === id) {
@@ -1221,6 +1609,7 @@ export async function resumeBackgroundQueueIfNeeded(): Promise<void> {
 export async function enqueueOfflineDownload(
   params: OfflineEnqueueParams
 ): Promise<OfflineDownloadItem> {
+  setNativeBackgroundDownloadActive(true);
   await loadOfflineDownloads();
   await ensureDir(OFFLINE_DIR);
 
@@ -1330,6 +1719,7 @@ export async function pauseOfflineDownload(id: string): Promise<void> {
 }
 
 export async function resumeOfflineDownload(id: string): Promise<void> {
+  setNativeBackgroundDownloadActive(true);
   await loadOfflineDownloads();
   const item = cachedItems.find((i) => i.id === id);
   if (!item || item.status === 'completed') return;
@@ -1351,6 +1741,111 @@ export async function resumeOfflineDownload(id: string): Promise<void> {
   }
   syncBackgroundDownloadGuard();
   void processDownloadQueue();
+}
+
+export async function restartOfflineDownload(id: string): Promise<void> {
+  setNativeBackgroundDownloadActive(true);
+  await loadOfflineDownloads();
+  const item = cachedItems.find((i) => i.id === id);
+  if (!item || item.status === 'completed') return;
+
+  const isRunning =
+    activeControllers.has(id) || activeResumables.has(id) || currentDownloadingId === id;
+  if (isRunning) {
+    pendingManualRestartIds.add(id);
+    updateItemInMemory(id, {
+      status: 'preparing',
+      status_text: 'Đang khởi động lại liên kết tải...',
+      error_message: undefined,
+    });
+    const ctrl = activeControllers.get(id);
+    if (ctrl) ctrl.abort();
+    const task = activeResumables.get(id);
+    if (task) {
+      try {
+        await task.cancelAsync();
+      } catch {}
+    }
+    syncBackgroundDownloadGuard();
+    return;
+  }
+
+  updateItemInMemory(
+    id,
+    {
+      status: 'queued',
+      status_text: 'Đang khởi động lại liên kết tải...',
+      error_message: undefined,
+    },
+    true
+  );
+  if (!downloadQueue.includes(id)) {
+    downloadQueue.unshift(id);
+  }
+  syncBackgroundDownloadGuard();
+  void processDownloadQueue();
+}
+
+export async function enforceOfflineRetentionPolicy(
+  policyOverride?: Partial<OfflineRetentionPolicy>
+): Promise<{ deletedCount: number; freedBytes: number }> {
+  if (policyOverride) {
+    setOfflineRuntimePolicy(policyOverride);
+  }
+  if (enforcingPolicyPromise) {
+    return enforcingPolicyPromise;
+  }
+  enforcingPolicyPromise = (async () => {
+    let deletedCount = 0;
+    let freedBytes = 0;
+    try {
+      await loadOfflineDownloads();
+      const now = Date.now();
+      const getItemTimestamp = (it: OfflineDownloadItem): number => {
+        const isoTs = Date.parse(it.updated_at || it.created_at || '');
+        const validIso = Number.isFinite(isoTs) ? isoTs : 0;
+        return Math.max(Number(it.resume_updated_at || 0), validIso);
+      };
+
+      // Pass 1: Age-based auto deletion (3 days .. 3 months)
+      if (activeOfflinePolicy.autoDeleteEnabled) {
+        const maxAgeMs = activeOfflinePolicy.autoDeleteDays * 24 * 60 * 60 * 1000;
+        const expired = cachedItems.filter((it) => {
+          if (it.status !== 'completed') return false;
+          const ts = getItemTimestamp(it);
+          return ts > 0 && now - ts >= maxAgeMs;
+        });
+        for (const it of expired) {
+          freedBytes += Math.max(0, Number(it.size_bytes || 0));
+          await removeOfflineDownload(it.id);
+          deletedCount++;
+        }
+      }
+
+      // Pass 2: Storage quota limit (10 GB .. 100 GB), oldest-first eviction
+      const limitBytes = activeOfflinePolicy.storageLimitGb * 1024 * 1024 * 1024;
+      const completedSorted = cachedItems
+        .filter((it) => it.status === 'completed')
+        .sort((a, b) => getItemTimestamp(a) - getItemTimestamp(b));
+
+      let totalBytes = completedSorted.reduce(
+        (acc, it) => acc + Math.max(0, Number(it.size_bytes || 0)),
+        0
+      );
+      for (const oldest of completedSorted) {
+        if (totalBytes <= limitBytes) break;
+        const sz = Math.max(0, Number(oldest.size_bytes || 0));
+        await removeOfflineDownload(oldest.id);
+        totalBytes -= sz;
+        freedBytes += sz;
+        deletedCount++;
+      }
+    } catch {} finally {
+      enforcingPolicyPromise = null;
+    }
+    return { deletedCount, freedBytes };
+  })();
+  return enforcingPolicyPromise;
 }
 
 export async function retryOfflineDownload(id: string): Promise<void> {

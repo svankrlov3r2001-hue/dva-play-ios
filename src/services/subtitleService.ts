@@ -292,13 +292,21 @@ export function parseVttCues(vttText: string): ParsedVttCue[] {
   return cues.sort((a, b) => a.start - b.start);
 }
 
-async function fetchTextSafe(url: string): Promise<string> {
+async function fetchTextSafe(url: string, bustCache = false): Promise<string> {
   if (!url) return '';
   try {
+    let targetUrl = url;
+    if (bustCache && /^https?:\/\//i.test(url)) {
+      const sep = url.includes('?') ? '&' : '?';
+      targetUrl = `${url}${sep}_r=${Date.now()}`;
+    }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 7000);
     try {
-      const res = await fetch(url, { signal: controller.signal });
+      const res = await fetch(targetUrl, {
+        signal: controller.signal,
+        ...(bustCache ? { cache: 'no-store' as RequestCache } : {}),
+      });
       if (!res.ok) return '';
       return await res.text();
     } finally {
@@ -313,8 +321,9 @@ export async function loadDualSubtitles(opts: {
   serverFileKey?: string;
   resolvedSubtitles?: StreamSubtitle[];
   offlineItem?: OfflineDownloadItem | null;
+  bustCache?: boolean;
 }): Promise<{ vnCues: ParsedVttCue[]; enCues: ParsedVttCue[]; vnUrl: string; enUrl: string }> {
-  const { serverFileKey, resolvedSubtitles = [], offlineItem } = opts;
+  const { serverFileKey, resolvedSubtitles = [], offlineItem, bustCache = false } = opts;
   const constructed = buildSubtitleUrls(serverFileKey);
   const resolvedVn = resolvedSubtitles.find((s) => s.lang === 'vi')?.url || '';
   const resolvedEn = resolvedSubtitles.find((s) => s.lang === 'en')?.url || '';
@@ -322,7 +331,7 @@ export async function loadDualSubtitles(opts: {
   const vnUrl = constructed.vnUrl || resolvedVn || resolvedSubtitles[0]?.url || '';
   const enUrl = constructed.enUrl || resolvedEn || '';
 
-  // Prefer local offline VTT files when available
+  // Prefer local offline VTT files when available (unless explicitly busting remote cache if offline file missing)
   if (offlineItem?.subtitles && offlineItem.subtitles.length > 0) {
     const localVn = offlineItem.subtitles.find((s) => s.lang === 'vi') || offlineItem.subtitles[0];
     const localEn = offlineItem.subtitles.find((s) => s.lang === 'en');
@@ -340,7 +349,10 @@ export async function loadDualSubtitles(opts: {
     }
   }
 
-  const [vnRaw, enRaw] = await Promise.all([fetchTextSafe(vnUrl), fetchTextSafe(enUrl)]);
+  const [vnRaw, enRaw] = await Promise.all([
+    fetchTextSafe(vnUrl, bustCache),
+    fetchTextSafe(enUrl, bustCache),
+  ]);
   return {
     vnCues: parseVttCues(vnRaw),
     enCues: parseVttCues(enRaw),
@@ -350,8 +362,7 @@ export async function loadDualSubtitles(opts: {
 }
 
 /**
- * Computes auto subtitle font step (1..10) & bottom position (%) matching
- * VASubtitleDefaults.getScreenBasedDefaults in subtitle_defaults.js.
+ * Computes auto subtitle font step (1..20, default 10) & bottom position (-10..40%, default 12%).
  */
 export function computeAutoSubtitleLayout(
   viewportHeight: number,
@@ -362,19 +373,18 @@ export function computeAutoSubtitleLayout(
   const vitriNum = rawStr !== '' ? parseInt(rawStr, 10) : NaN;
   const offset = !isNaN(vitriNum) ? Math.floor((90 - vitriNum) / 2) : null;
 
-  let fontStep = 7;
-  let posPct = offset !== null ? 2 + offset : 2;
+  let fontStep = 10;
+  let posPct = offset !== null ? 12 + offset : 12;
   if (h >= 1080) {
-    fontStep = 5;
-    posPct = offset !== null ? 7 + offset : 7;
+    fontStep = 8;
+    posPct = offset !== null ? 14 + offset : 14;
   } else if (h >= 520) {
-    fontStep = 7;
-    posPct = offset !== null ? 3 + offset : 3;
+    fontStep = 9;
+    posPct = offset !== null ? 11 + offset : 11;
   }
 
-  // Matches iOS boost in subtitle_defaults.js lines 308-317
-  fontStep = Math.min(10, fontStep + 1);
-  posPct = Math.min(40, posPct + 1);
+  fontStep = Math.max(1, Math.min(20, fontStep));
+  posPct = Math.max(-10, Math.min(40, posPct));
 
   return { fontStep, positionPct: posPct };
 }

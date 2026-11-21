@@ -37,6 +37,7 @@ interface NativeSubtitleOverlayProps {
   subHighRaw?: string;
   settings: AppSettings;
   episodeSignature: string;
+  reloadNonce?: number;
 }
 
 function resolveFontFamily(font: SubtitleFontOption): string | undefined {
@@ -165,6 +166,7 @@ export function NativeSubtitleOverlay({
   subHighRaw,
   settings,
   episodeSignature,
+  reloadNonce = 0,
 }: NativeSubtitleOverlayProps) {
   const { width: winWidth, height: winHeight } = useWindowDimensions();
   const [vnMeasuredWidth, setVnMeasuredWidth] = useState(0);
@@ -188,7 +190,7 @@ export function NativeSubtitleOverlay({
     inFlightKeysRef.current.clear();
     setVnMeasuredWidth(0);
     setTranslationVersion((v) => v + 1);
-  }, [episodeSignature]);
+  }, [episodeSignature, reloadNonce]);
 
   const effectiveTime = currentTime + (settings.subDelaySec || 0);
   const extendSec = settings.subExtendSec || 0;
@@ -289,6 +291,10 @@ export function NativeSubtitleOverlay({
 
   useEffect(() => {
     lastSpokenSigRef.current = '';
+    if (reloadNonce > 0) {
+      ttsLocalCacheRef.current.clear();
+      ttsInFlightRef.current.clear();
+    }
     try {
       ttsPlayer.pause();
     } catch {}
@@ -297,7 +303,7 @@ export function NativeSubtitleOverlay({
         ttsPlayer.pause();
       } catch {}
     };
-  }, [episodeSignature, ttsPlayer]);
+  }, [episodeSignature, reloadNonce, ttsPlayer]);
 
   useEffect(() => {
     const activeCue = mainVnCue || activeVnTopCue;
@@ -414,13 +420,15 @@ export function NativeSubtitleOverlay({
   }
 
   const autoLayout = computeAutoSubtitleLayout(winHeight, subHighRaw);
-  const effectiveFontStep = settings.subAutoLayout ? autoLayout.fontStep : settings.subFontSizeStep || 8;
-  const effectivePosPct = settings.subAutoLayout ? autoLayout.positionPct : settings.subPositionPct ?? 4;
+  const effectiveFontStep = settings.subAutoLayout ? autoLayout.fontStep : settings.subFontSizeStep || 10;
+  const effectivePosPct = settings.subAutoLayout ? autoLayout.positionPct : settings.subPositionPct ?? 12;
 
-  // Calibrated to match Image 1 (~22-24pt on 390pt landscape iPhone for step 8)
+  // Recalibrated for 1..20 scale (default 10 -> ~23pt on 390pt landscape iPhone)
+  const autoScaleRatio = Math.min(1.35, Math.max(0.78, (winHeight > 0 ? winHeight : 390) / 390));
+  const clampedFontStep = Math.min(20, Math.max(1, Math.round(effectiveFontStep || 10)));
   const primaryFontSize = Math.min(
-    44,
-    Math.max(13, Math.round(winHeight * (effectiveFontStep / 100) * 0.74))
+    46,
+    Math.max(12, Math.round((11 + clampedFontStep * 1.2) * autoScaleRatio))
   );
   const secondaryFontSize = Math.max(11, Math.round(primaryFontSize * 0.78));
   const palette = SUBTITLE_COLOR_PALETTE[settings.subColor] || SUBTITLE_COLOR_PALETTE.white;
@@ -457,8 +465,8 @@ export function NativeSubtitleOverlay({
         style={{
           color: isReversed ? secondaryColor : primaryColor,
           fontSize: isReversed ? secondaryFontSize : primaryFontSize,
-          lineHeight: Math.round((isReversed ? secondaryFontSize : primaryFontSize) * 1.24),
-          fontWeight: '700',
+          lineHeight: Math.round((isReversed ? secondaryFontSize : primaryFontSize) * 1.2),
+          fontWeight: '500',
           textAlign: 'center',
           fontFamily,
         }}
@@ -478,8 +486,8 @@ export function NativeSubtitleOverlay({
         style={{
           color: isReversed ? primaryColor : secondaryColor,
           fontSize: isReversed ? primaryFontSize : secondaryFontSize,
-          lineHeight: Math.round((isReversed ? primaryFontSize : secondaryFontSize) * 1.24),
-          fontWeight: '600',
+          lineHeight: Math.round((isReversed ? primaryFontSize : secondaryFontSize) * 1.2),
+          fontWeight: '500',
           textAlign: 'center',
           fontFamily,
         }}
@@ -495,7 +503,7 @@ export function NativeSubtitleOverlay({
     <View style={[styles.dividerBar, { width: dividerWidth }]} />
   ) : null;
 
-  const bottomStyleValue = `${Math.max(-5, Math.min(40, effectivePosPct))}%` as `${number}%`;
+  const bottomStyleValue = `${Math.max(-10, Math.min(40, effectivePosPct))}%` as `${number}%`;
 
   return (
     <View pointerEvents="none" style={[StyleSheet.absoluteFill, styles.overlayRoot]}>
@@ -507,8 +515,8 @@ export function NativeSubtitleOverlay({
             style={{
               color: palette.main,
               fontSize: primaryFontSize,
-              lineHeight: Math.round(primaryFontSize * 1.24),
-              fontWeight: '700',
+              lineHeight: Math.round(primaryFontSize * 1.2),
+              fontWeight: '500',
               textAlign: 'center',
               fontFamily,
             }}

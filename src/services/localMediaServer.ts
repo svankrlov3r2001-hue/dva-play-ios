@@ -2,6 +2,7 @@ import { requireOptionalNativeModule } from 'expo-modules-core';
 
 interface DvaNativeMediaServerBridge {
   dvaStartOfflineMediaServer(rootDirPath: string): Promise<number>;
+  dvaRestartOfflineMediaServer?: (rootDirPath: string) => Promise<number>;
   dvaGetOfflineMediaServerPort(): Promise<number>;
   dvaStopOfflineMediaServer(): Promise<boolean>;
   dvaHasPipSubtitleProxy?: () => boolean;
@@ -108,11 +109,51 @@ export function getCachedOfflineMediaServerPort(): number {
   return cachedPort;
 }
 
+async function pingLocalMediaServer(port: number): Promise<boolean> {
+  if (!port || port <= 0) return false;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 500);
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/hls-pip/ping`, {
+      method: 'GET',
+      signal: ctrl.signal,
+    });
+    return Boolean(res && res.ok);
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function restartOfflineMediaServer(rootDirUri: string): Promise<number> {
+  if (!rootDirUri) return 0;
+  const bridge = getNativeMediaBridge();
+  if (!bridge) return 0;
+  cachedPort = 0;
+  cachedRootDir = rootDirUri;
+  try {
+    let port = 0;
+    if (typeof bridge.dvaRestartOfflineMediaServer === 'function') {
+      port = await bridge.dvaRestartOfflineMediaServer(rootDirUri);
+    } else {
+      try {
+        await bridge.dvaStopOfflineMediaServer();
+      } catch {}
+      port = await bridge.dvaStartOfflineMediaServer(rootDirUri);
+    }
+    if (typeof port === 'number' && port > 0 && port <= 65535) {
+      cachedPort = Math.trunc(port);
+      return cachedPort;
+    }
+    return 0;
+  } catch {
+    return 0;
+  }
+}
+
 export async function ensureOfflineMediaServer(rootDirUri: string): Promise<number> {
   if (!rootDirUri) return 0;
-  if (cachedPort > 0 && cachedRootDir === rootDirUri) {
-    return cachedPort;
-  }
   const bridge = getNativeMediaBridge();
   if (!bridge) {
     return 0;
@@ -120,9 +161,25 @@ export async function ensureOfflineMediaServer(rootDirUri: string): Promise<numb
   if (startingPromise && cachedRootDir === rootDirUri) {
     return startingPromise;
   }
+  const previousRoot = cachedRootDir;
   cachedRootDir = rootDirUri;
   startingPromise = (async () => {
     try {
+      if (cachedPort > 0 && previousRoot === rootDirUri) {
+        const alive = await pingLocalMediaServer(cachedPort);
+        if (alive) {
+          return cachedPort;
+        }
+        // Loopback socket was reclaimed while app was backgrounded; force clean native restart
+        cachedPort = 0;
+        if (typeof bridge.dvaRestartOfflineMediaServer === 'function') {
+          const restartedPort = await bridge.dvaRestartOfflineMediaServer(rootDirUri);
+          if (typeof restartedPort === 'number' && restartedPort > 0 && restartedPort <= 65535) {
+            cachedPort = Math.trunc(restartedPort);
+            return cachedPort;
+          }
+        }
+      }
       const port = await bridge.dvaStartOfflineMediaServer(rootDirUri);
       if (typeof port === 'number' && port > 0 && port <= 65535) {
         cachedPort = Math.trunc(port);

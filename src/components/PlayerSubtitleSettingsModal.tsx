@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import {
+  ActivityIndicator,
   FlatList,
   Modal,
   Pressable,
@@ -12,11 +13,12 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { Feather, Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { showAppAlert } from './AppAlertModal';
 import { GlassSurface } from './GlassSurface';
+import { IosRulerSlider } from './IosRulerSlider';
 import { COLORS } from '../constants/config';
 import { useSettings } from '../context/SettingsContext';
 import {
@@ -44,15 +46,16 @@ interface PlayerSubtitleSettingsModalProps {
   visible: boolean;
   onClose: () => void;
   subHighRaw?: string;
+  onReloadSubtitles?: () => void | Promise<void>;
+  isReloadingSubtitles?: boolean;
 }
-
-const FONT_STEP_VALUES = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-const VOLUME_VALUES = [0, 20, 40, 60, 80, 100];
 
 export function PlayerSubtitleSettingsModal({
   visible,
   onClose,
   subHighRaw,
+  onReloadSubtitles,
+  isReloadingSubtitles = false,
 }: PlayerSubtitleSettingsModalProps) {
   const insets = useSafeAreaInsets();
   const { width: winWidth, height: winHeight } = useWindowDimensions();
@@ -86,11 +89,11 @@ export function PlayerSubtitleSettingsModal({
   if (!visible) return null;
 
   const cardWidth = isLandscape
-    ? Math.min(540, winWidth - Math.max(40, insets.left + insets.right + 20))
+    ? Math.min(580, winWidth - Math.max(40, insets.left + insets.right + 20))
     : Math.min(440, winWidth - 24);
   const cardHeight = isLandscape
-    ? Math.min(352, winHeight - 18)
-    : Math.min(winHeight * 0.82, 600);
+    ? Math.min(362, winHeight - 14)
+    : Math.min(winHeight * 0.84, 620);
 
   const handleClose = () => {
     setSubView('grid');
@@ -217,9 +220,11 @@ export function PlayerSubtitleSettingsModal({
 
             <TouchableOpacity style={styles.tileBtn} onPress={() => setSubView('layout')}>
               <Ionicons name="resize-outline" size={20} color="#FFF" />
-              <Text style={styles.tileTitle}>Kích thước</Text>
+              <Text style={styles.tileTitle}>Kích thước & Vị trí</Text>
               <Text style={styles.tileSub} numberOfLines={1}>
-                {settings.subAutoLayout ? 'Tự động' : `Cỡ ${settings.subFontSizeStep}`}
+                {settings.subAutoLayout
+                  ? 'Tự động'
+                  : `Cỡ ${settings.subFontSizeStep} • ${settings.subPositionPct}%`}
               </Text>
             </TouchableOpacity>
 
@@ -234,13 +239,13 @@ export function PlayerSubtitleSettingsModal({
             <TouchableOpacity style={styles.tileBtn} onPress={() => setSubView('delay')}>
               <Ionicons name="hourglass-outline" size={20} color="#FFF" />
               <Text style={styles.tileTitle}>Độ trễ</Text>
-              <Text style={styles.tileSub}>{settings.subDelaySec.toFixed(2)} s</Text>
+              <Text style={styles.tileSub}>{settings.subDelaySec.toFixed(2)}s</Text>
             </TouchableOpacity>
 
             <TouchableOpacity style={styles.tileBtn} onPress={() => setSubView('extend')}>
               <Ionicons name="swap-horizontal-outline" size={20} color="#FFF" />
               <Text style={styles.tileTitle}>Kéo dài</Text>
-              <Text style={styles.tileSub}>{settings.subExtendSec.toFixed(2)} s</Text>
+              <Text style={styles.tileSub}>{settings.subExtendSec.toFixed(2)}s</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -248,7 +253,7 @@ export function PlayerSubtitleSettingsModal({
               onPress={() => setSubView('translate')}
             >
               <Ionicons name="language-outline" size={20} color="#FFF" />
-              <Text style={styles.tileTitle}>Ngôn ngữ</Text>
+              <Text style={styles.tileTitle}>Dịch thuật</Text>
               <Text style={styles.tileSub} numberOfLines={1}>
                 {activeTransLabel}
               </Text>
@@ -265,12 +270,32 @@ export function PlayerSubtitleSettingsModal({
               </Text>
             </TouchableOpacity>
 
-            <TouchableOpacity style={styles.tileBtn} onPress={handleResetAll}>
-              <Ionicons name="refresh-outline" size={20} color="#FCA5A5" />
-              <Text style={[styles.tileTitle, { color: '#FECACA' }]}>Đặt lại</Text>
-              <Text style={styles.tileSub}>Mặc định</Text>
+            <TouchableOpacity
+              style={[styles.tileBtn, styles.tileBtnReload]}
+              disabled={isReloadingSubtitles}
+              onPress={() => {
+                Haptics.selectionAsync();
+                void onReloadSubtitles?.();
+              }}
+            >
+              {isReloadingSubtitles ? (
+                <ActivityIndicator size="small" color="#60A5FA" />
+              ) : (
+                <Feather name="refresh-cw" size={18} color="#60A5FA" />
+              )}
+              <Text style={[styles.tileTitle, { color: '#93C5FD' }]}>Nạp lại</Text>
+              <Text style={styles.tileSub}>Tải mới phụ đề</Text>
             </TouchableOpacity>
           </View>
+
+          <TouchableOpacity
+            activeOpacity={0.8}
+            style={styles.resetBannerBtn}
+            onPress={handleResetAll}
+          >
+            <Feather name="rotate-ccw" size={15} color="#FCA5A5" />
+            <Text style={styles.resetBannerTxt}>Đặt lại tất cả về mặc định</Text>
+          </TouchableOpacity>
         </ScrollView>
       );
     }
@@ -331,13 +356,24 @@ export function PlayerSubtitleSettingsModal({
     }
 
     if (subView === 'layout') {
+      const displayStep = settings.subAutoLayout
+        ? autoDefaults.fontStep
+        : settings.subFontSizeStep || 10;
+      const displayPos = settings.subAutoLayout
+        ? autoDefaults.positionPct
+        : settings.subPositionPct ?? 12;
+
       return (
-        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ gap: 14 }}>
+        <ScrollView
+          nestedScrollEnabled
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={{ gap: 10, paddingBottom: 6 }}
+        >
           <View style={styles.switchRow}>
             <View style={{ flex: 1, paddingRight: 10 }}>
               <Text style={styles.switchTitle}>Tự động cân chỉnh phụ đề</Text>
-              <Text style={styles.switchSub}>
-                Tự tối ưu cỡ chữ ({autoDefaults.fontStep}) và vị trí ({autoDefaults.positionPct}%)
+              <Text style={[styles.switchSub, { textAlign: 'left' }]}>
+                Tối ưu cỡ {autoDefaults.fontStep} • Vị trí {autoDefaults.positionPct}% (kéo thước để tùy chỉnh)
               </Text>
             </View>
             <Switch
@@ -350,96 +386,56 @@ export function PlayerSubtitleSettingsModal({
             />
           </View>
 
-          <View style={{ opacity: settings.subAutoLayout ? 0.45 : 1, gap: 12 }}>
-            <View>
-              <View style={styles.stepperHeader}>
-                <Text style={styles.switchTitle}>Cỡ chữ</Text>
-                <Text style={styles.valBadge}>Mức {settings.subFontSizeStep}</Text>
-              </View>
-              <View style={styles.chipsWrap}>
-                {FONT_STEP_VALUES.map((n) => {
-                  const sel = settings.subFontSizeStep === n;
-                  return (
-                    <TouchableOpacity
-                      key={n}
-                      disabled={settings.subAutoLayout}
-                      style={[styles.smallChip, sel && styles.smallChipActive]}
-                      onPress={() => {
-                        Haptics.selectionAsync();
-                        void updateSetting('subFontSizeStep', n);
-                      }}
-                    >
-                      <Text style={styles.smallChipTxt}>{n}</Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            </View>
+          <IosRulerSlider
+            label="Kích cỡ chữ (1 – 20)"
+            value={displayStep}
+            min={1}
+            max={20}
+            step={1}
+            majorStep={1}
+            defaultValue={10}
+            valueText={`Cỡ ${displayStep}`}
+            tickSpacing={28}
+            resetLabel="Cỡ 10"
+            onChange={(v) =>
+              void updateSettingsBatch({
+                subAutoLayout: false,
+                subFontSizeStep: Math.round(v),
+              })
+            }
+            onReset={() =>
+              void updateSettingsBatch({
+                subAutoLayout: false,
+                subFontSizeStep: 10,
+              })
+            }
+          />
 
-            <View>
-              <View style={styles.stepperHeader}>
-                <Text style={styles.switchTitle}>Vị trí từ dưới lên</Text>
-                <Text style={styles.valBadge}>{settings.subPositionPct}%</Text>
-              </View>
-              <View style={styles.stepperControls}>
-                <TouchableOpacity
-                  disabled={settings.subAutoLayout}
-                  style={styles.stepBtn}
-                  onPress={() =>
-                    void updateSetting(
-                      'subPositionPct',
-                      Math.max(-5, (settings.subPositionPct ?? 4) - 5)
-                    )
-                  }
-                >
-                  <Text style={styles.stepBtnTxt}>-5%</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  disabled={settings.subAutoLayout}
-                  style={styles.stepBtn}
-                  onPress={() =>
-                    void updateSetting(
-                      'subPositionPct',
-                      Math.max(-5, (settings.subPositionPct ?? 4) - 1)
-                    )
-                  }
-                >
-                  <Text style={styles.stepBtnTxt}>-1%</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  disabled={settings.subAutoLayout}
-                  style={styles.stepBtn}
-                  onPress={() => void updateSetting('subPositionPct', autoDefaults.positionPct)}
-                >
-                  <Text style={styles.stepBtnTxt}>Chuẩn</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  disabled={settings.subAutoLayout}
-                  style={styles.stepBtn}
-                  onPress={() =>
-                    void updateSetting(
-                      'subPositionPct',
-                      Math.min(40, (settings.subPositionPct ?? 4) + 1)
-                    )
-                  }
-                >
-                  <Text style={styles.stepBtnTxt}>+1%</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  disabled={settings.subAutoLayout}
-                  style={styles.stepBtn}
-                  onPress={() =>
-                    void updateSetting(
-                      'subPositionPct',
-                      Math.min(40, (settings.subPositionPct ?? 4) + 5)
-                    )
-                  }
-                >
-                  <Text style={styles.stepBtnTxt}>+5%</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          </View>
+          <IosRulerSlider
+            label="Vị trí từ dưới lên (-10% – 40%)"
+            value={displayPos}
+            min={-10}
+            max={40}
+            step={1}
+            majorStep={5}
+            defaultValue={12}
+            valueText={`${displayPos}%`}
+            formatTickLabel={(v) => `${v}%`}
+            tickSpacing={14}
+            resetLabel="12%"
+            onChange={(v) =>
+              void updateSettingsBatch({
+                subAutoLayout: false,
+                subPositionPct: Math.round(v),
+              })
+            }
+            onReset={() =>
+              void updateSettingsBatch({
+                subAutoLayout: false,
+                subPositionPct: 12,
+              })
+            }
+          />
         </ScrollView>
       );
     }
@@ -475,12 +471,30 @@ export function PlayerSubtitleSettingsModal({
         void updateSetting(isDelay ? 'subDelaySec' : 'subExtendSec', next);
       };
       return (
-        <View style={styles.timeAdjustBox}>
-          <Text style={styles.timeBigValue}>{val.toFixed(2)} s</Text>
+        <ScrollView
+          nestedScrollEnabled
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={{ gap: 12, paddingTop: 4 }}
+        >
+          <IosRulerSlider
+            label={isDelay ? 'Độ trễ phụ đề (giây)' : 'Kéo dài hiển thị (giây)'}
+            value={val}
+            min={-30}
+            max={30}
+            step={0.25}
+            majorStep={1}
+            defaultValue={0}
+            valueText={`${val > 0 ? '+' : ''}${val.toFixed(2)}s`}
+            formatTickLabel={(v) => `${v}s`}
+            tickSpacing={11}
+            resetLabel="0.00s"
+            onChange={(v) => void updateSetting(isDelay ? 'subDelaySec' : 'subExtendSec', v)}
+            onReset={() => void updateSetting(isDelay ? 'subDelaySec' : 'subExtendSec', 0)}
+          />
           <Text style={styles.switchSub}>
             {isDelay
-              ? 'Âm (-) để phụ đề hiện sớm hơn, dương (+) để hiện trễ hơn'
-              : 'Tăng thêm thời lượng hiển thị mỗi câu phụ đề (-30s đến +30s)'}
+              ? 'Kéo sang trái (-) để phụ đề hiện sớm hơn, sang phải (+) để hiện trễ hơn'
+              : 'Kéo dài hoặc rút ngắn thời lượng hiển thị mỗi câu phụ đề (-30s đến +30s)'}
           </Text>
           <View style={styles.stepperControls}>
             {[-5, -1, -0.25, 0.25, 1, 5].map((d) => (
@@ -495,13 +509,7 @@ export function PlayerSubtitleSettingsModal({
               </TouchableOpacity>
             ))}
           </View>
-          <TouchableOpacity
-            style={styles.resetInlineBtn}
-            onPress={() => void updateSetting(isDelay ? 'subDelaySec' : 'subExtendSec', 0)}
-          >
-            <Text style={styles.stepBtnTxt}>Về 0.00 s (Mặc định)</Text>
-          </TouchableOpacity>
-        </View>
+        </ScrollView>
       );
     }
 
@@ -561,7 +569,27 @@ export function PlayerSubtitleSettingsModal({
 
     // subView === 'aivoice'
     return (
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ gap: 10 }}>
+      <ScrollView
+        nestedScrollEnabled
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ gap: 10, paddingBottom: 6 }}
+      >
+        <IosRulerSlider
+          label="Âm lượng thuyết minh"
+          value={Math.round(settings.subAiVoiceVolume ?? 80)}
+          min={0}
+          max={100}
+          step={5}
+          majorStep={10}
+          defaultValue={80}
+          valueText={`${Math.round(settings.subAiVoiceVolume ?? 80)}%`}
+          formatTickLabel={(v) => `${v}%`}
+          tickSpacing={14}
+          resetLabel="80%"
+          onChange={(v) => void updateSetting('subAiVoiceVolume', Math.round(v))}
+          onReset={() => void updateSetting('subAiVoiceVolume', 80)}
+        />
+
         {AI_VOICE_OPTIONS.map((opt) => {
           const isSelected =
             opt.value === 'none'
@@ -585,7 +613,7 @@ export function PlayerSubtitleSettingsModal({
             >
               <View style={{ flex: 1 }}>
                 <Text style={styles.listOptionTxt}>{opt.label}</Text>
-                <Text style={styles.switchSub}>{opt.subtitle}</Text>
+                <Text style={[styles.switchSub, { textAlign: 'left' }]}>{opt.subtitle}</Text>
               </View>
               {isSelected ? (
                 <Ionicons name="checkmark-circle" size={18} color={COLORS.accent} />
@@ -593,30 +621,6 @@ export function PlayerSubtitleSettingsModal({
             </TouchableOpacity>
           );
         })}
-
-        <View style={styles.volumeBox}>
-          <View style={styles.stepperHeader}>
-            <Text style={styles.switchTitle}>Âm lượng thuyết minh</Text>
-            <Text style={styles.valBadge}>{settings.subAiVoiceVolume}%</Text>
-          </View>
-          <View style={styles.chipsWrap}>
-            {VOLUME_VALUES.map((vol) => {
-              const sel = settings.subAiVoiceVolume === vol;
-              return (
-                <TouchableOpacity
-                  key={vol}
-                  style={[styles.smallChip, sel && styles.smallChipActive]}
-                  onPress={() => {
-                    Haptics.selectionAsync();
-                    void updateSetting('subAiVoiceVolume', vol);
-                  }}
-                >
-                  <Text style={styles.smallChipTxt}>{vol}%</Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-        </View>
       </ScrollView>
     );
   };
@@ -761,6 +765,29 @@ const styles = StyleSheet.create({
   },
   tileBtnActive: {
     backgroundColor: 'rgba(229, 9, 20, 0.25)',
+    borderWidth: 1,
+    borderColor: 'rgba(229, 9, 20, 0.5)',
+  },
+  tileBtnReload: {
+    backgroundColor: 'rgba(59, 130, 246, 0.16)',
+    borderWidth: 1,
+    borderColor: 'rgba(96, 165, 250, 0.32)',
+  },
+  resetBannerBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    height: 40,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255, 69, 58, 0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 69, 58, 0.3)',
+  },
+  resetBannerTxt: {
+    color: '#FCA5A5',
+    fontSize: 13,
+    fontWeight: '700',
   },
   tileTitle: {
     color: '#FFF',
