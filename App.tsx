@@ -12,6 +12,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import * as ScreenOrientation from 'expo-screen-orientation';
+import * as SecureStore from 'expo-secure-store';
 import { StatusBar } from 'expo-status-bar';
 import {
   EdgeInsets,
@@ -21,6 +22,7 @@ import {
 } from 'react-native-safe-area-context';
 import { AmbientAppBackground } from './src/components/AmbientAppBackground';
 import { AppMenuBar, AppTabKey } from './src/components/AppMenuBar';
+import { AppUpdateModal } from './src/components/AppUpdateModal';
 import { GlassSurface } from './src/components/GlassSurface';
 import { PreviewSheetModal } from './src/components/PreviewSheetModal';
 import { SplashOverlay } from './src/components/SplashOverlay';
@@ -46,10 +48,19 @@ import {
   flushPendingOfflineProgressToServer,
   loadOfflineDownloads,
   pullOnlineProgressForOfflineItems,
+  resumeBackgroundQueueIfNeeded,
   subscribeOfflineDownloads,
 } from './src/services/downloadService';
-import { runSilentBackgroundOtaSync } from './src/services/otaService';
-import { EpisodeItem, MovieItem, OfflineDownloadItem } from './src/types/models';
+import {
+  checkAndFetchOtaCombinedAsync,
+  runSilentBackgroundOtaSync,
+} from './src/services/otaService';
+import {
+  EpisodeItem,
+  MovieItem,
+  OfflineDownloadItem,
+  VersionManifest,
+} from './src/types/models';
 
 type PlayerTransitionPhase = 'idle' | 'hiding' | 'rotating' | 'active' | 'closing';
 
@@ -119,6 +130,9 @@ function RootAppContent() {
   const closingRafRef = useRef<number | null>(null);
   const [castVisible, setCastVisible] = useState(false);
   const [quickLoginQrVisible, setQuickLoginQrVisible] = useState(false);
+  const [updateManifest, setUpdateManifest] = useState<VersionManifest | null>(null);
+  const [updateModalVisible, setUpdateModalVisible] = useState(false);
+  const startupUpdateCheckedRef = useRef(false);
   const [castMovie, setCastMovie] = useState<{
     videosId: number;
     streamCode: string;
@@ -150,8 +164,22 @@ function RootAppContent() {
 
   useEffect(() => {
     ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => {});
-    loadOfflineDownloads().then(setOfflineItems).catch(() => {});
-    return subscribeOfflineDownloads(setOfflineItems);
+    loadOfflineDownloads()
+      .then((items) => {
+        setOfflineItems(items);
+        return resumeBackgroundQueueIfNeeded();
+      })
+      .catch(() => {});
+    const unsubDl = subscribeOfflineDownloads(setOfflineItems);
+    const appStateSub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        resumeBackgroundQueueIfNeeded().catch(() => {});
+      }
+    });
+    return () => {
+      unsubDl();
+      appStateSub.remove();
+    };
   }, []);
 
   useEffect(() => {
@@ -183,6 +211,53 @@ function RootAppContent() {
       if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
     };
   }, [probeServerConnection]);
+
+  useEffect(() => {
+    if (
+      startupUpdateCheckedRef.current ||
+      bootstrapping ||
+      !serverReady ||
+      splashVisible ||
+      splashDismissing ||
+      !user ||
+      offlineModeActive ||
+      isLocked ||
+      playerPhase !== 'idle'
+    ) {
+      return;
+    }
+    startupUpdateCheckedRef.current = true;
+    let active = true;
+    (async () => {
+      try {
+        const res = await checkAndFetchOtaCombinedAsync();
+        if (!active) return;
+        if (!res.canDirectInstall || !res.ipaAvailable || !res.directInstallReady || !res.manifest) {
+          return;
+        }
+        const dismissedCode = await SecureStore.getItemAsync('dva_dismissed_update_code').catch(
+          () => null
+        );
+        if (!active || dismissedCode === String(res.manifest.versionCode)) {
+          return;
+        }
+        setUpdateManifest(res.manifest);
+        setUpdateModalVisible(true);
+      } catch {}
+    })();
+    return () => {
+      active = false;
+    };
+  }, [
+    bootstrapping,
+    serverReady,
+    splashVisible,
+    splashDismissing,
+    user,
+    offlineModeActive,
+    isLocked,
+    playerPhase,
+  ]);
 
   const prevAuthTransitionRef = useRef<'login' | 'logout' | null>(null);
 
@@ -777,6 +852,19 @@ function RootAppContent() {
     <View style={[styles.root, playerPhase !== 'idle' && { backgroundColor: '#000000' }]}>
       <StatusBar hidden={playerPhase !== 'idle'} style="light" />
       {renderMainContent()}
+      <AppUpdateModal
+        visible={updateModalVisible && playerPhase === 'idle' && !isLocked && !splashVisible}
+        manifest={updateManifest}
+        onDismiss={() => {
+          setUpdateModalVisible(false);
+          if (updateManifest?.versionCode) {
+            SecureStore.setItemAsync(
+              'dva_dismissed_update_code',
+              String(updateManifest.versionCode)
+            ).catch(() => {});
+          }
+        }}
+      />
       <SplashOverlay
         visible={splashVisible}
         dismissing={splashDismissing}

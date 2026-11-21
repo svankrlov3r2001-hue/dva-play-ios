@@ -4,6 +4,20 @@ interface DvaNativeMediaServerBridge {
   dvaStartOfflineMediaServer(rootDirPath: string): Promise<number>;
   dvaGetOfflineMediaServerPort(): Promise<number>;
   dvaStopOfflineMediaServer(): Promise<boolean>;
+  dvaHasPipSubtitleProxy?: () => boolean;
+  dvaGetSigningInfo?: () => string;
+  dvaSetBackgroundDownloadActive?: (active: boolean) => boolean;
+  dvaIsBackgroundDownloadActive?: () => boolean;
+}
+
+export interface AppSigningInfo {
+  isP12Signed: boolean;
+  canDirectInstall: boolean;
+  bundleId: string;
+  teamId: string;
+  teamName: string;
+  expiresAt: string;
+  ttlDays: number;
 }
 
 let cachedPort = 0;
@@ -26,6 +40,68 @@ function getNativeMediaBridge(): DvaNativeMediaServerBridge | null {
 
 export function isOfflineMediaServerSupported(): boolean {
   return getNativeMediaBridge() !== null;
+}
+
+export function isNativePipProxySupported(): boolean {
+  const bridge = getNativeMediaBridge();
+  if (!bridge || typeof bridge.dvaHasPipSubtitleProxy !== 'function') {
+    return false;
+  }
+  try {
+    return Boolean(bridge.dvaHasPipSubtitleProxy());
+  } catch {
+    return false;
+  }
+}
+
+const DEFAULT_SIGNING_INFO: AppSigningInfo = {
+  isP12Signed: false,
+  canDirectInstall: false,
+  bundleId: '',
+  teamId: '',
+  teamName: '',
+  expiresAt: '',
+  ttlDays: 0,
+};
+
+export function getAppSigningInfo(): AppSigningInfo {
+  const bridge = getNativeMediaBridge();
+  if (!bridge || typeof bridge.dvaGetSigningInfo !== 'function') {
+    return DEFAULT_SIGNING_INFO;
+  }
+  try {
+    const raw = bridge.dvaGetSigningInfo();
+    if (!raw || typeof raw !== 'string') return DEFAULT_SIGNING_INFO;
+    const parsed = JSON.parse(raw);
+    return {
+      isP12Signed: Boolean(parsed?.isP12Signed),
+      canDirectInstall: Boolean(parsed?.canDirectInstall ?? parsed?.isP12Signed),
+      bundleId: String(parsed?.bundleId || ''),
+      teamId: String(parsed?.teamId || ''),
+      teamName: String(parsed?.teamName || ''),
+      expiresAt: String(parsed?.expiresAt || ''),
+      ttlDays: Number(parsed?.ttlDays || 0),
+    };
+  } catch {
+    return DEFAULT_SIGNING_INFO;
+  }
+}
+
+export function isNativeBackgroundDownloadSupported(): boolean {
+  const bridge = getNativeMediaBridge();
+  return Boolean(bridge && typeof bridge.dvaSetBackgroundDownloadActive === 'function');
+}
+
+export function setNativeBackgroundDownloadActive(active: boolean): boolean {
+  const bridge = getNativeMediaBridge();
+  if (!bridge || typeof bridge.dvaSetBackgroundDownloadActive !== 'function') {
+    return false;
+  }
+  try {
+    return Boolean(bridge.dvaSetBackgroundDownloadActive(Boolean(active)));
+  } catch {
+    return false;
+  }
 }
 
 export function getCachedOfflineMediaServerPort(): number {

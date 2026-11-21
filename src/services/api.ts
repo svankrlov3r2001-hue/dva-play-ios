@@ -330,6 +330,33 @@ export async function checkOtaUpdateApi(): Promise<VersionManifest> {
   return apiRequest<VersionManifest>('', {}, `${OTA_MANIFEST_URL}?t=${Date.now()}`);
 }
 
+export interface DirectInstallStatusResponse {
+  success: boolean;
+  signed_ipa_ready: boolean;
+  versionName: string;
+  versionCode: number;
+  signed_bundle_id: string;
+  file_size: number;
+}
+
+export interface DirectInstallUrlResponse {
+  success: boolean;
+  itms_url: string;
+  manifest_url: string;
+  versionName: string;
+  versionCode: number;
+  file_size: number;
+  bundle_id: string;
+}
+
+export async function fetchDirectInstallStatusApi(): Promise<DirectInstallStatusResponse> {
+  return apiRequest<DirectInstallStatusResponse>(`itms_install.php?action=status&_t=${Date.now()}`);
+}
+
+export async function fetchDirectInstallUrlApi(): Promise<DirectInstallUrlResponse> {
+  return apiRequest<DirectInstallUrlResponse>(`itms_install.php?action=get_install_url&_t=${Date.now()}`);
+}
+
 export async function fetchProxyPresetsApi(): Promise<{
   success: boolean;
   presets: ProxyPreset[];

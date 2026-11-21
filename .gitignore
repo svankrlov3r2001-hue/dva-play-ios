@@ -7,6 +7,7 @@ android/
 *.ipa
 *.p12
 *.mobileprovision
+*.b64
 *.jks
 *.keystore
 *.log

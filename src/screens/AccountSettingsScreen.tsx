@@ -18,6 +18,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AmbientAppBackground } from '../components/AmbientAppBackground';
+import { AppUpdateModal } from '../components/AppUpdateModal';
 import { GlassSurface } from '../components/GlassSurface';
 import {
   APP_RELEASE_DATE,
@@ -95,6 +96,7 @@ export function AccountSettingsScreen({
   const [offlineItems, setOfflineItems] = useState<OfflineDownloadItem[]>([]);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [manifest, setManifest] = useState<VersionManifest | null>(null);
+  const [directUpdateOpen, setDirectUpdateOpen] = useState(false);
   const [changelogOpen, setChangelogOpen] = useState(false);
   const [proxyCfg, setProxyCfg] = useState<ProxyRuntimeConfig>(() => getProxyConfig());
   const [proxyPresets, setProxyPresets] = useState<ProxyPreset[]>([
@@ -124,6 +126,7 @@ export function AccountSettingsScreen({
         useNativeDriver: true,
       }).start();
     } else {
+      setDirectUpdateOpen(false);
       enterAnim.stopAnimation();
       enterAnim.setValue(0);
     }
@@ -431,7 +434,10 @@ export function AccountSettingsScreen({
         setManifest(res.manifest);
       }
 
-      if (res.otaUpdated) {
+      if (res.canDirectInstall && res.ipaAvailable && res.directInstallReady && res.manifest) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        setDirectUpdateOpen(true);
+      } else if (res.otaUpdated) {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         Alert.alert(
           'Đã tải bản cập nhật mới!',
@@ -1155,6 +1161,11 @@ export function AccountSettingsScreen({
         <Text style={styles.logoutTxt}>Đăng xuất tài khoản</Text>
       </TouchableOpacity>
     </ScrollView>
+      <AppUpdateModal
+        visible={directUpdateOpen}
+        manifest={manifest}
+        onDismiss={() => setDirectUpdateOpen(false)}
+      />
     </Animated.View>
   );
 }

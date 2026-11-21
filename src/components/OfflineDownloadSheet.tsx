@@ -567,6 +567,9 @@ export function OfflineDownloadSheet({
                   {title}
                   {currentEpisodeTitle ? ` • ${currentEpisodeTitle}` : ''}
                 </Text>
+                <Text style={styles.bgDownloadHint} numberOfLines={1}>
+                  Hỗ trợ tải ngầm ngay cả khi thoát ra màn hình chính hoặc khóa máy
+                </Text>
               </View>
               <TouchableOpacity style={styles.closeBtn} onPress={onClose}>
                 <Ionicons name="close" size={22} color="#FFF" />
@@ -623,6 +626,11 @@ const styles = StyleSheet.create({
   headerSub: {
     color: COLORS.textSecondary,
     fontSize: 12.5,
+    marginTop: 2,
+  },
+  bgDownloadHint: {
+    color: COLORS.muted,
+    fontSize: 11,
     marginTop: 2,
   },
   closeBtn: {

@@ -55,6 +55,12 @@ import Network
 #endif
 #if os(iOS) && canImport(WebKit)
 import WebKit
+#endif
+#if os(iOS) && canImport(UIKit)
+import UIKit
+#endif
+#if os(iOS) && canImport(AVFoundation)
+import AVFoundation
 #endif`
   );
 
@@ -490,7 +496,8 @@ private func dvaSendHttpText(
   statusLine: String,
   body: String = "",
   contentType: String = "text/plain; charset=utf-8",
-  extraHeaders: [String] = []
+  extraHeaders: [String] = [],
+  headOnly: Bool = false
 ) {
   let bodyBytes = Array(body.utf8)
   var lines = [
@@ -509,7 +516,7 @@ private func dvaSendHttpText(
     lines.append(contentsOf: extraHeaders)
   }
   var payload = Array((lines.joined(separator: "\\r\\n") + "\\r\\n\\r\\n").utf8)
-  if !bodyBytes.isEmpty {
+  if !headOnly && !bodyBytes.isEmpty {
     payload.append(contentsOf: bodyBytes)
   }
   _ = dvaWriteAll(clientFd, payload)
@@ -643,6 +650,10 @@ private func dvaFetchRemoteSync(urlStr: String, rangeBytes: String? = nil, timeo
 #endif
   var req = URLRequest(url: url)
   req.timeoutInterval = timeoutSec
+  req.setValue("https://dangvietanh.com/", forHTTPHeaderField: "Referer")
+  req.setValue("https://dangvietanh.com", forHTTPHeaderField: "Origin")
+  req.setValue("*/*", forHTTPHeaderField: "Accept")
+  req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
   if let rangeBytes, !rangeBytes.isEmpty {
     req.setValue(rangeBytes, forHTTPHeaderField: "Range")
   }
@@ -724,7 +735,7 @@ private func dvaSubtitleLabelAndLang(forFileName fileName: String) -> (label: St
   return (cleanLang.uppercased(), cleanLang)
 }
 
-private func dvaServeOfflinePipMaster(clientFd: Int32, itemDirURL: URL) -> Bool {
+private func dvaServeOfflinePipMaster(clientFd: Int32, itemDirURL: URL, method: String) -> Bool {
   let indexURL = itemDirURL.appendingPathComponent("index.m3u8")
   guard let indexText = try? String(contentsOf: indexURL, encoding: .utf8),
         indexText.contains("#EXTM3U") else {
@@ -753,7 +764,8 @@ private func dvaServeOfflinePipMaster(clientFd: Int32, itemDirURL: URL) -> Bool 
       clientFd: clientFd,
       statusLine: "200 OK",
       body: indexText,
-      contentType: "application/vnd.apple.mpegurl"
+      contentType: "application/vnd.apple.mpegurl",
+      headOnly: method == "HEAD"
     )
     return true
   }
@@ -785,7 +797,8 @@ private func dvaServeOfflinePipMaster(clientFd: Int32, itemDirURL: URL) -> Bool 
     clientFd: clientFd,
     statusLine: "200 OK",
     body: outLines.joined(separator: "\\n"),
-    contentType: "application/vnd.apple.mpegurl"
+    contentType: "application/vnd.apple.mpegurl",
+    headOnly: method == "HEAD"
   )
   return true
 }
@@ -804,6 +817,17 @@ private func dvaRewriteHlsAttributeUri(_ line: String, baseURL: URL) -> String {
 }
 
 private func dvaHandleOnlineHlsPip(clientFd: Int32, subPath: String, rawTarget: String, method: String) {
+  if subPath == "/hls-pip/ping" {
+    dvaSendHttpText(
+      clientFd: clientFd,
+      statusLine: "200 OK",
+      body: "{\\"ok\\":true,\\"pipProxy\\":true}",
+      contentType: "application/json; charset=utf-8",
+      headOnly: method == "HEAD"
+    )
+    return
+  }
+
   let query = dvaParseQueryParams(rawTarget)
 
   if subPath == "/hls-pip/master.m3u8" {
@@ -906,8 +930,9 @@ private func dvaHandleOnlineHlsPip(clientFd: Int32, subPath: String, rawTarget: 
       dvaSendHttpText(
         clientFd: clientFd,
         statusLine: "200 OK",
-        body: method == "HEAD" ? "" : outLines.joined(separator: "\\n"),
-        contentType: "application/vnd.apple.mpegurl"
+        body: outLines.joined(separator: "\\n"),
+        contentType: "application/vnd.apple.mpegurl",
+        headOnly: method == "HEAD"
       )
       return
     }
@@ -917,6 +942,7 @@ private func dvaHandleOnlineHlsPip(clientFd: Int32, subPath: String, rawTarget: 
     let durInt = Int(ceil(inspected.duration))
     let probeSegAbs = inspected.firstSeg.map { dvaResolveRelativeUrl($0, base: baseURL) } ?? ""
     let probeParam = !probeSegAbs.isEmpty ? ("&probe=" + dvaPercentEncodeQueryVal(probeSegAbs)) : ""
+    let mediaPlaylistTarget = (baseURL.scheme?.lowercased().hasPrefix("http") == true) ? baseURL.absoluteString : srcStr
 
     var outLines = ["#EXTM3U", "#EXT-X-VERSION:3"]
     var hasSub = false
@@ -930,19 +956,26 @@ private func dvaHandleOnlineHlsPip(clientFd: Int32, subPath: String, rawTarget: 
       outLines.append("#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\\"dvasubs\\",NAME=\\"English\\",LANGUAGE=\\"en\\",DEFAULT=NO,AUTOSELECT=NO,URI=\\"\\(subM3u8)\\"")
       hasSub = true
     }
-    if hasSub {
-      outLines.append("#EXT-X-STREAM-INF:BANDWIDTH=5000000,SUBTITLES=\\"dvasubs\\"")
-    } else {
-      outLines.append("#EXT-X-STREAM-INF:BANDWIDTH=5000000")
+    if !hasSub {
+      dvaSendHttpText(
+        clientFd: clientFd,
+        statusLine: "302 Found",
+        body: "",
+        extraHeaders: ["Location: \\(mediaPlaylistTarget)"],
+        headOnly: method == "HEAD"
+      )
+      return
     }
-    outLines.append(srcStr)
+    outLines.append("#EXT-X-STREAM-INF:BANDWIDTH=5000000,SUBTITLES=\\"dvasubs\\"")
+    outLines.append(mediaPlaylistTarget)
     outLines.append("")
 
     dvaSendHttpText(
       clientFd: clientFd,
       statusLine: "200 OK",
-      body: method == "HEAD" ? "" : outLines.joined(separator: "\\n"),
-      contentType: "application/vnd.apple.mpegurl"
+      body: outLines.joined(separator: "\\n"),
+      contentType: "application/vnd.apple.mpegurl",
+      headOnly: method == "HEAD"
     )
     return
   }
@@ -962,8 +995,9 @@ private func dvaHandleOnlineHlsPip(clientFd: Int32, subPath: String, rawTarget: 
     dvaSendHttpText(
       clientFd: clientFd,
       statusLine: "200 OK",
-      body: method == "HEAD" ? "" : body,
-      contentType: "application/vnd.apple.mpegurl"
+      body: body,
+      contentType: "application/vnd.apple.mpegurl",
+      headOnly: method == "HEAD"
     )
     return
   }
@@ -1005,8 +1039,9 @@ private func dvaHandleOnlineHlsPip(clientFd: Int32, subPath: String, rawTarget: 
     dvaSendHttpText(
       clientFd: clientFd,
       statusLine: "200 OK",
-      body: method == "HEAD" ? "" : normalizedVtt,
-      contentType: "text/vtt; charset=utf-8"
+      body: normalizedVtt,
+      contentType: "text/vtt; charset=utf-8",
+      headOnly: method == "HEAD"
     )
     return
   }
@@ -1138,7 +1173,7 @@ private func dvaHandleMediaClient(clientFd: Int32, rootDirURL: URL) {
   let fileNameLower = candidateURL.lastPathComponent.lowercased()
   let itemDirURL = candidateURL.deletingLastPathComponent().standardizedFileURL
   if fileNameLower == "pip_master.m3u8" {
-    if dvaServeOfflinePipMaster(clientFd: clientFd, itemDirURL: itemDirURL) {
+    if dvaServeOfflinePipMaster(clientFd: clientFd, itemDirURL: itemDirURL, method: method) {
       return
     }
   } else if fileNameLower == "pip_sub.m3u8" {
@@ -1155,8 +1190,9 @@ private func dvaHandleMediaClient(clientFd: Int32, rootDirURL: URL) {
     dvaSendHttpText(
       clientFd: clientFd,
       statusLine: "200 OK",
-      body: method == "HEAD" ? "" : m3u8Body,
-      contentType: "application/vnd.apple.mpegurl"
+      body: m3u8Body,
+      contentType: "application/vnd.apple.mpegurl",
+      headOnly: method == "HEAD"
     )
     return
   } else if fileNameLower == "pip_sub.vtt" {
@@ -1177,8 +1213,9 @@ private func dvaHandleMediaClient(clientFd: Int32, rootDirURL: URL) {
     dvaSendHttpText(
       clientFd: clientFd,
       statusLine: "200 OK",
-      body: method == "HEAD" ? "" : normalizedVtt,
-      contentType: "text/vtt; charset=utf-8"
+      body: normalizedVtt,
+      contentType: "text/vtt; charset=utf-8",
+      headOnly: method == "HEAD"
     )
     return
   }
@@ -1582,7 +1619,255 @@ private func dvaRunProxyProbe(
 
   updated = updated.replace(
     classTarget,
-    `public final class ExpoFetchModule: Module {
+    `private func dvaReadEmbeddedMobileProvision() -> [String: Any]? {
+  guard let provUrl = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
+        let data = try? Data(contentsOf: provUrl),
+        let latin = String(data: data, encoding: .isoLatin1),
+        let startRange = latin.range(of: "<?xml"),
+        let endRange = latin.range(of: "</plist>") else {
+    return nil
+  }
+  let xmlSub = String(latin[startRange.lowerBound..<endRange.upperBound])
+  guard let xmlData = xmlSub.data(using: .utf8),
+        let plistObj = try? PropertyListSerialization.propertyList(from: xmlData, options: [], format: nil),
+        let dict = plistObj as? [String: Any] else {
+    return nil
+  }
+  return dict
+}
+
+private func dvaBuildSigningInfoJson() -> String {
+  let infoDict = Bundle.main.infoDictionary ?? [:]
+  let infoSignedFlag = ((infoDict["DvaSignedBuild"] as? Bool) == true) ||
+    ((infoDict["DvaSignedBuild"] as? NSNumber)?.boolValue == true)
+  let infoTeamId = (infoDict["DvaSignedTeamId"] as? String) ?? ""
+  let bundleId = Bundle.main.bundleIdentifier ?? ""
+  let profile = dvaReadEmbeddedMobileProvision()
+
+  var hasEmbeddedProfile = false
+  var isAdHocOrDist = false
+  var teamId = infoTeamId
+  var teamName = ""
+  var expiresAt = ""
+  var notExpired = false
+  var ttl = 0
+
+  if let profile {
+    hasEmbeddedProfile = true
+    let ent = (profile["Entitlements"] as? [String: Any]) ?? [:]
+    let getTaskAllow = ((ent["get-task-allow"] as? Bool) ?? ((ent["get-task-allow"] as? NSNumber)?.boolValue)) ?? false
+    isAdHocOrDist = !getTaskAllow
+    ttl = (profile["TimeToLive"] as? Int) ?? ((profile["TimeToLive"] as? NSNumber)?.intValue ?? 0)
+    if let teamArr = profile["TeamIdentifier"] as? [String], let firstTeam = teamArr.first, !firstTeam.isEmpty {
+      teamId = firstTeam
+    }
+    teamName = (profile["TeamName"] as? String) ?? ""
+    if let expDate = profile["ExpirationDate"] as? Date {
+      expiresAt = ISO8601DateFormatter().string(from: expDate)
+      notExpired = expDate > Date()
+    } else {
+      notExpired = ttl > 30
+    }
+  }
+
+  let teamMatches = infoTeamId.isEmpty || (!teamId.isEmpty && infoTeamId == teamId)
+  let isP12Signed = infoSignedFlag && hasEmbeddedProfile && isAdHocOrDist && ttl > 30 && notExpired && teamMatches
+
+  let payload: [String: Any] = [
+    "isP12Signed": isP12Signed,
+    "canDirectInstall": isP12Signed,
+    "bundleId": bundleId,
+    "teamId": teamId,
+    "teamName": teamName,
+    "expiresAt": expiresAt,
+    "ttlDays": ttl
+  ]
+  if let data = try? JSONSerialization.data(withJSONObject: payload),
+     let str = String(data: data, encoding: .utf8) {
+    return str
+  }
+  return "{\\"isP12Signed\\":false,\\"canDirectInstall\\":false,\\"bundleId\\":\\"\\",\\"teamId\\":\\"\\",\\"teamName\\":\\"\\",\\"expiresAt\\":\\"\\",\\"ttlDays\\":0}"
+}
+
+private func dvaMakeSilentWavData() -> Data {
+  let sampleRate: UInt32 = 8000
+  let numChannels: UInt16 = 1
+  let bitsPerSample: UInt16 = 16
+  let numSamples: UInt32 = 8000
+  let dataSize: UInt32 = numSamples * UInt32(numChannels) * UInt32(bitsPerSample / 8)
+  let byteRate: UInt32 = sampleRate * UInt32(numChannels) * UInt32(bitsPerSample / 8)
+  let blockAlign: UInt16 = numChannels * (bitsPerSample / 8)
+  let chunkSize: UInt32 = 36 + dataSize
+
+  var header = Data()
+  header.append(contentsOf: "RIFF".utf8)
+  var cs = chunkSize.littleEndian
+  header.append(Data(bytes: &cs, count: 4))
+  header.append(contentsOf: "WAVE".utf8)
+  header.append(contentsOf: "fmt ".utf8)
+  var sub1: UInt32 = 16.littleEndian
+  header.append(Data(bytes: &sub1, count: 4))
+  var audioFmt: UInt16 = 1.littleEndian
+  header.append(Data(bytes: &audioFmt, count: 2))
+  var ch = numChannels.littleEndian
+  header.append(Data(bytes: &ch, count: 2))
+  var sr = sampleRate.littleEndian
+  header.append(Data(bytes: &sr, count: 4))
+  var br = byteRate.littleEndian
+  header.append(Data(bytes: &br, count: 4))
+  var ba = blockAlign.littleEndian
+  header.append(Data(bytes: &ba, count: 2))
+  var bps = bitsPerSample.littleEndian
+  header.append(Data(bytes: &bps, count: 2))
+  header.append(contentsOf: "data".utf8)
+  var ds = dataSize.littleEndian
+  header.append(Data(bytes: &ds, count: 4))
+  header.append(Data(count: Int(dataSize)))
+  return header
+}
+
+private final class DvaBackgroundDownloadGuard: @unchecked Sendable {
+  static let shared = DvaBackgroundDownloadGuard()
+
+  private let lock = NSLock()
+  private var active = false
+#if os(iOS) && canImport(UIKit) && canImport(AVFoundation)
+  nonisolated(unsafe) private var bgTaskId: UIBackgroundTaskIdentifier = .invalid
+  nonisolated(unsafe) private var silentPlayer: AVAudioPlayer? = nil
+  nonisolated(unsafe) private var didActivateAudio = false
+#endif
+
+  var isActive: Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    return active
+  }
+
+  private init() {
+#if os(iOS) && canImport(UIKit) && canImport(AVFoundation)
+    let nc = NotificationCenter.default
+    nc.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+      MainActor.assumeIsolated {
+        guard let self, self.isActive else { return }
+        self.startKeepAliveOnMain()
+      }
+    }
+    nc.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in
+      MainActor.assumeIsolated {
+        self?.stopKeepAliveOnMain(deactivateAudio: false)
+      }
+    }
+    nc.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+      MainActor.assumeIsolated {
+        self?.stopKeepAliveOnMain(deactivateAudio: false)
+      }
+    }
+    nc.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] notif in
+      MainActor.assumeIsolated {
+        guard let self else { return }
+        let userInfo = notif.userInfo
+        let typeVal = (userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt) ?? 0
+        if let interType = AVAudioSession.InterruptionType(rawValue: typeVal) {
+          if interType == .began {
+            self.silentPlayer?.pause()
+          } else if interType == .ended {
+            if self.isActive && UIApplication.shared.applicationState != .active {
+              self.startKeepAliveOnMain()
+            }
+          }
+        }
+      }
+    }
+#endif
+  }
+
+  func setActive(_ nextActive: Bool) {
+    lock.lock()
+    active = nextActive
+    lock.unlock()
+#if os(iOS) && canImport(UIKit) && canImport(AVFoundation)
+    DispatchQueue.main.async {
+      MainActor.assumeIsolated {
+        if nextActive {
+          if UIApplication.shared.applicationState != .active {
+            self.startKeepAliveOnMain()
+          }
+        } else {
+          let isBg = UIApplication.shared.applicationState != .active
+          self.stopKeepAliveOnMain(deactivateAudio: isBg)
+        }
+      }
+    }
+#endif
+  }
+
+#if os(iOS) && canImport(UIKit) && canImport(AVFoundation)
+  @MainActor
+  private func startKeepAliveOnMain() {
+    guard isActive else { return }
+    if bgTaskId == .invalid {
+      bgTaskId = UIApplication.shared.beginBackgroundTask(withName: "DvaOfflineBackgroundDownload") { [weak self] in
+        if Thread.isMainThread {
+          MainActor.assumeIsolated {
+            self?.endBgTaskOnly()
+          }
+        } else {
+          DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+              self?.endBgTaskOnly()
+            }
+          }
+        }
+      }
+    }
+    do {
+      let session = AVAudioSession.sharedInstance()
+      try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+      try session.setActive(true)
+      didActivateAudio = true
+    } catch {}
+
+    if silentPlayer == nil {
+      let wavData = dvaMakeSilentWavData()
+      if let p = try? AVAudioPlayer(data: wavData, fileTypeHint: AVFileType.wav.rawValue) {
+        p.volume = 0.0
+        p.numberOfLoops = -1
+        p.prepareToPlay()
+        silentPlayer = p
+      }
+    }
+    if let p = silentPlayer, !p.isPlaying {
+      p.play()
+    }
+  }
+
+  @MainActor
+  private func endBgTaskOnly() {
+    if bgTaskId != .invalid {
+      let taskToEnd = bgTaskId
+      bgTaskId = .invalid
+      UIApplication.shared.endBackgroundTask(taskToEnd)
+    }
+  }
+
+  @MainActor
+  private func stopKeepAliveOnMain(deactivateAudio: Bool) {
+    if let p = silentPlayer, p.isPlaying {
+      p.stop()
+    }
+    silentPlayer = nil
+    endBgTaskOnly()
+    if deactivateAudio && didActivateAudio {
+      didActivateAudio = false
+      try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+    } else if !deactivateAudio {
+      didActivateAudio = false
+    }
+  }
+#endif
+}
+
+public final class ExpoFetchModule: Module {
   private var dvaProxySpec: DvaProxySpec?
   private var dvaActiveRelay: DvaLocalProxyRelay?
   private var dvaMediaServer: DvaLocalMediaServer?
@@ -1593,6 +1878,7 @@ private func dvaRunProxyProbe(
   updated = updated.replace(
     onDestroyTarget,
     `    OnDestroy {
+      DvaBackgroundDownloadGuard.shared.setActive(false)
       dvaActiveRelay?.stop()
       dvaActiveRelay = nil
       dvaMediaServer?.stop()
@@ -1638,6 +1924,23 @@ private func dvaRunProxyProbe(
       self.dvaMediaServer = nil
       return true
     }.runOnQueue(fetchRequestQueue)
+
+    Function("dvaHasPipSubtitleProxy") { () -> Bool in
+      return true
+    }
+
+    Function("dvaGetSigningInfo") { () -> String in
+      return dvaBuildSigningInfoJson()
+    }
+
+    Function("dvaSetBackgroundDownloadActive") { (active: Bool) -> Bool in
+      DvaBackgroundDownloadGuard.shared.setActive(active)
+      return true
+    }
+
+    Function("dvaIsBackgroundDownloadActive") { () -> Bool in
+      return DvaBackgroundDownloadGuard.shared.isActive
+    }
 
     Function("dvaIsProxySupported") { () -> Bool in
 #if canImport(Network)

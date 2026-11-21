@@ -339,6 +339,8 @@ export interface VersionManifest {
   releaseDate: string;
   ipaUrl?: string;
   portalUrl?: string;
+  signedBundleId?: string;
+  directInstallEndpoint?: string;
   changelog: string;
   history: VersionHistoryEntry[];
 }

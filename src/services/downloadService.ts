@@ -13,7 +13,7 @@ import {
   resolveStreamApi,
   saveWatchProgressApi,
 } from './api';
-import { buildLocalOfflineUrl } from './localMediaServer';
+import { buildLocalOfflineUrl, isNativePipProxySupported, setNativeBackgroundDownloadActive } from './localMediaServer';
 
 const OFFLINE_DIR = `${FileSystem.documentDirectory ?? ''}dva_offline/`;
 const INDEX_FILE = `${FileSystem.documentDirectory ?? ''}dva_offline_index.json`;
@@ -62,6 +62,7 @@ export interface OfflineWebViewRegistryItem {
 export interface OfflineWebViewRegistry {
   enabled: boolean;
   baseUrl: string;
+  pipProxy?: boolean;
   items: OfflineWebViewRegistryItem[];
 }
 
@@ -75,6 +76,21 @@ let initialized = false;
 let isProcessingQueue = false;
 let currentDownloadingId: string | null = null;
 let workerConcurrencyPref = 3;
+
+function hasActiveDownloadWork(): boolean {
+  if (isProcessingQueue || downloadQueue.length > 0 || activeControllers.size > 0) {
+    return true;
+  }
+  return cachedItems.some(
+    (it) => it.status === 'downloading' || it.status === 'preparing' || it.status === 'queued'
+  );
+}
+
+function syncBackgroundDownloadGuard(): void {
+  try {
+    setNativeBackgroundDownloadActive(hasActiveDownloadWork());
+  } catch {}
+}
 
 export function getOfflineRootDir(): string {
   return OFFLINE_DIR;
@@ -253,13 +269,13 @@ export async function loadOfflineDownloads(): Promise<OfflineDownloadItem[]> {
             if (!item.media_format && item.local_uri) {
               item.media_format = item.local_uri.toLowerCase().includes('.m3u8') ? 'hls' : 'mp4';
             }
-            if (
-              item.status === 'downloading' ||
-              item.status === 'preparing' ||
-              item.status === 'queued'
-            ) {
+            if (item.status === 'downloading' || item.status === 'preparing') {
               item.status = 'paused';
               item.status_text = 'Đã tạm dừng';
+            } else if (item.status === 'queued') {
+              if (!downloadQueue.includes(item.id)) {
+                downloadQueue.push(item.id);
+              }
             }
             return item;
           });
@@ -563,10 +579,12 @@ async function downloadFileChunkSafe(
   if (signal.aborted) throw createAbortError();
   let attemptUrl = remoteUrl;
   let lastErr: Error | null = null;
-  for (let attempt = 0; attempt < 4; attempt++) {
+  for (let attempt = 0; attempt < 6; attempt++) {
     if (signal.aborted) throw createAbortError();
     try {
-      const dlRes = await FileSystem.downloadAsync(attemptUrl, destUri);
+      const dlRes = await FileSystem.downloadAsync(attemptUrl, destUri, {
+        sessionType: FileSystem.FileSystemSessionType.BACKGROUND,
+      });
       if (signal.aborted) {
         await FileSystem.deleteAsync(destUri, { idempotent: true }).catch(() => {});
         throw createAbortError();
@@ -842,7 +860,7 @@ async function downloadMp4Item(
   let attemptUrl = mp4Url;
   let lastErr: Error | null = null;
 
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < 5; attempt++) {
     if (signal.aborted) throw createAbortError();
     let lastUpdateMs = 0;
     const startedAt = Date.now();
@@ -850,7 +868,7 @@ async function downloadMp4Item(
     const resumable = FileSystem.createDownloadResumable(
       attemptUrl,
       localVideoUri,
-      {},
+      { sessionType: FileSystem.FileSystemSessionType.BACKGROUND },
       (dp) => {
         if (signal.aborted) return;
         const now = Date.now();
@@ -946,7 +964,9 @@ async function downloadSubtitlesAndPoster(
     const relPath = `${item.id}/sub_${normLang}.vtt`;
     const destUri = `${OFFLINE_DIR}${relPath}`;
     try {
-      const res = await FileSystem.downloadAsync(sub.url, destUri);
+      const res = await FileSystem.downloadAsync(sub.url, destUri, {
+        sessionType: FileSystem.FileSystemSessionType.BACKGROUND,
+      });
       if (res && res.status < 400) {
         const content = await FileSystem.readAsStringAsync(destUri);
         if (content && (content.includes('WEBVTT') || content.includes('-->'))) {
@@ -973,7 +993,9 @@ async function downloadSubtitlesAndPoster(
   if (imgUrl && /^https?:\/\//i.test(imgUrl)) {
     const posterDest = `${itemDir}poster.jpg`;
     try {
-      const pRes = await FileSystem.downloadAsync(imgUrl, posterDest);
+      const pRes = await FileSystem.downloadAsync(imgUrl, posterDest, {
+        sessionType: FileSystem.FileSystemSessionType.BACKGROUND,
+      });
       const pInfo = await FileSystem.getInfoAsync(posterDest);
       const pSz = pInfo.exists && 'size' in pInfo ? Number(pInfo.size || 0) : 0;
       if (pRes && pRes.status < 400 && pInfo.exists && pSz > 500) {
@@ -1070,7 +1092,7 @@ async function processSingleItem(id: string): Promise<void> {
       if (!alternate) throw primaryErr;
       updateItemInMemory(id, {
         status: 'preparing',
-        status_text: `Chuyển sang tải dạng ${alternate.format.toUpperCase()}...`,
+        status_text: 'Đang chuyển nguồn tải...',
       });
       if (alternate.format === 'hls') {
         completedMedia = await downloadHlsItem(
@@ -1119,7 +1141,7 @@ async function processSingleItem(id: string): Promise<void> {
       completed_segments: completedMedia.completedSegments,
       progress: 100,
       status: 'completed',
-      status_text: `Sẵn sàng (${chosen.format.toUpperCase()})`,
+      status_text: 'Sẵn sàng',
       error_message: undefined,
       updated_at: new Date().toISOString(),
     };
@@ -1157,8 +1179,12 @@ async function processSingleItem(id: string): Promise<void> {
 }
 
 async function processDownloadQueue(): Promise<void> {
-  if (isProcessingQueue) return;
+  if (isProcessingQueue) {
+    syncBackgroundDownloadGuard();
+    return;
+  }
   isProcessingQueue = true;
+  syncBackgroundDownloadGuard();
   try {
     while (downloadQueue.length > 0) {
       const nextId = downloadQueue.shift();
@@ -1168,9 +1194,30 @@ async function processDownloadQueue(): Promise<void> {
         continue;
       }
       await processSingleItem(nextId);
+      syncBackgroundDownloadGuard();
     }
   } finally {
     isProcessingQueue = false;
+    syncBackgroundDownloadGuard();
+  }
+}
+
+export async function resumeBackgroundQueueIfNeeded(): Promise<void> {
+  await loadOfflineDownloads();
+  let hasQueued = false;
+  for (const it of cachedItems) {
+    if (it.status === 'queued') {
+      hasQueued = true;
+      if (!downloadQueue.includes(it.id)) {
+        downloadQueue.push(it.id);
+      }
+    }
+  }
+  if (hasQueued && !isProcessingQueue) {
+    syncBackgroundDownloadGuard();
+    void processDownloadQueue();
+  } else {
+    syncBackgroundDownloadGuard();
   }
 }
 
@@ -1238,6 +1285,7 @@ export async function enqueueOfflineDownload(
   if (!downloadQueue.includes(id)) {
     downloadQueue.push(id);
   }
+  syncBackgroundDownloadGuard();
   void processDownloadQueue();
   return newItem;
 }
@@ -1281,6 +1329,7 @@ export async function pauseOfflineDownload(id: string): Promise<void> {
       await res.pauseAsync();
     } catch {}
   }
+  syncBackgroundDownloadGuard();
 }
 
 export async function resumeOfflineDownload(id: string): Promise<void> {
@@ -1303,6 +1352,7 @@ export async function resumeOfflineDownload(id: string): Promise<void> {
   if (!downloadQueue.includes(id)) {
     downloadQueue.push(id);
   }
+  syncBackgroundDownloadGuard();
   void processDownloadQueue();
 }
 
@@ -1339,6 +1389,7 @@ export async function removeOfflineDownload(id: string): Promise<void> {
     }
   }
   await persistIndex(cachedItems.filter((i) => i.id !== id));
+  syncBackgroundDownloadGuard();
 }
 
 export async function cancelOfflineDownload(id: string): Promise<void> {
@@ -1366,6 +1417,7 @@ export async function clearAllOfflineDownloads(): Promise<void> {
     await ensureDir(OFFLINE_DIR);
   } catch {}
   await persistIndex([]);
+  syncBackgroundDownloadGuard();
 }
 
 const lastResumeDiskFlushById = new Map<string, number>();
@@ -1584,6 +1636,7 @@ export function buildOfflineRegistryForWebView(
 ): OfflineWebViewRegistry {
   const enabled = Boolean(preferOfflineWhenOnline && serverPort > 0);
   const baseUrl = serverPort > 0 ? `http://127.0.0.1:${serverPort}/offline/` : '';
+  const pipProxy = Boolean(serverPort > 0 && isNativePipProxySupported());
   const items: OfflineWebViewRegistryItem[] = [];
 
   if (serverPort > 0) {
@@ -1597,7 +1650,7 @@ export function buildOfflineRegistryForWebView(
       const fmt: 'hls' | 'mp4' =
         it.media_format || (rel.toLowerCase().includes('.m3u8') ? 'hls' : 'mp4');
       const effectiveRel =
-        fmt === 'hls' && rel.toLowerCase().endsWith('index.m3u8')
+        pipProxy && fmt === 'hls' && rel.toLowerCase().endsWith('index.m3u8')
           ? `${rel.slice(0, -'index.m3u8'.length)}pip_master.m3u8`
           : rel;
       const localUrl = buildLocalOfflineUrl(effectiveRel, serverPort);
@@ -1633,7 +1686,7 @@ export function buildOfflineRegistryForWebView(
     }
   }
 
-  return { enabled, baseUrl, items };
+  return { enabled, baseUrl, pipProxy, items };
 }
 
 export async function exportOfflineToFiles(localUri: string): Promise<void> {

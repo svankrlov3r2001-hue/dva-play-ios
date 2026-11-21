@@ -53,6 +53,7 @@ import {
   buildLocalOfflineUrl,
   ensureOfflineMediaServer,
   getCachedOfflineMediaServerPort,
+  isNativePipProxySupported,
 } from '../services/localMediaServer';
 import {
   getProxyConfig,
@@ -329,7 +330,7 @@ function OfflineNativePlayer({
         ? params.offlineUri.substring(params.offlineUri.indexOf('dva_offline/') + 'dva_offline/'.length)
         : '');
     const pipRel =
-      isHlsOffline && rawRel.toLowerCase().endsWith('index.m3u8')
+      isHlsOffline && isNativePipProxySupported() && rawRel.toLowerCase().endsWith('index.m3u8')
         ? `${rawRel.slice(0, -'index.m3u8'.length)}pip_master.m3u8`
         : rawRel;
     const httpUrl = pipRel ? buildLocalOfflineUrl(pipRel, localServerPort) : null;

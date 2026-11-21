@@ -1,12 +1,18 @@
 import Constants from 'expo-constants';
 import * as Updates from 'expo-updates';
+import { Linking } from 'react-native';
 import {
   APP_RUNTIME_VERSION,
   APP_VERSION,
   APP_VERSION_CODE,
   EXPO_UPDATES_URL,
 } from '../constants/config';
-import { checkOtaUpdateApi } from './api';
+import {
+  checkOtaUpdateApi,
+  fetchDirectInstallStatusApi,
+  fetchDirectInstallUrlApi,
+} from './api';
+import { AppSigningInfo, getAppSigningInfo } from './localMediaServer';
 import { VersionManifest } from '../types/models';
 
 export interface OtaRuntimeState {
@@ -26,6 +32,9 @@ export interface CombinedUpdateCheckResult {
   otaUpdateId: string | null;
   otaError?: string;
   ipaAvailable: boolean;
+  canDirectInstall: boolean;
+  directInstallReady: boolean;
+  signingInfo: AppSigningInfo;
   manifest: VersionManifest | null;
 }
 
@@ -91,10 +100,13 @@ export async function runSilentBackgroundOtaSync(): Promise<boolean> {
 }
 
 /**
- * Explicit OTA + .ipa check triggered from Account & Settings.
+ * Explicit OTA + .ipa + P12 direct overwrite install check.
  */
 export async function checkAndFetchOtaCombinedAsync(): Promise<CombinedUpdateCheckResult> {
   const state = getOtaRuntimeState();
+  const signingInfo = getAppSigningInfo();
+  const canDirectInstall = Boolean(signingInfo.canDirectInstall && signingInfo.isP12Signed);
+
   let otaUpdated = false;
   let otaUpdateId: string | null = state.updateId;
   let otaError: string | undefined;
@@ -110,7 +122,7 @@ export async function checkAndFetchOtaCombinedAsync(): Promise<CombinedUpdateChe
         }
       }
     } catch (err: any) {
-      otaError = err?.message || 'Không thể kiểm tra gói OTA.';
+      otaError = err?.message || 'Không thể kiểm tra bản cập nhật.';
     }
   }
 
@@ -122,12 +134,25 @@ export async function checkAndFetchOtaCombinedAsync(): Promise<CombinedUpdateChe
       (Boolean(manifest?.versionName) && manifest.versionName !== APP_VERSION && manifest.versionCode >= APP_VERSION_CODE);
   } catch {}
 
+  let directInstallReady = false;
+  if (canDirectInstall && ipaAvailable) {
+    try {
+      const status = await fetchDirectInstallStatusApi();
+      directInstallReady = Boolean(status?.signed_ipa_ready);
+    } catch {
+      directInstallReady = false;
+    }
+  }
+
   return {
     otaSupported: state.isEnabled,
     otaUpdated,
     otaUpdateId,
     otaError,
     ipaAvailable,
+    canDirectInstall,
+    directInstallReady,
+    signingInfo,
     manifest,
   };
 }
@@ -136,4 +161,12 @@ export async function applyOtaReloadNow(): Promise<void> {
   const state = getOtaRuntimeState();
   if (!state.isEnabled) return;
   await Updates.reloadAsync();
+}
+
+export async function triggerDirectP12InstallNow(): Promise<void> {
+  const res = await fetchDirectInstallUrlApi();
+  if (!res?.success || !res?.itms_url || !res.itms_url.startsWith('itms-services://')) {
+    throw new Error('Không thể khởi tạo liên kết cập nhật trực tiếp.');
+  }
+  await Linking.openURL(res.itms_url);
 }
