@@ -1705,9 +1705,9 @@ private func dvaMakeSilentWavData() -> Data {
   header.append(Data(bytes: &cs, count: 4))
   header.append(contentsOf: "WAVE".utf8)
   header.append(contentsOf: "fmt ".utf8)
-  var sub1: UInt32 = 16.littleEndian
+  var sub1: UInt32 = UInt32(16).littleEndian
   header.append(Data(bytes: &sub1, count: 4))
-  var audioFmt: UInt16 = 1.littleEndian
+  var audioFmt: UInt16 = UInt16(1).littleEndian
   header.append(Data(bytes: &audioFmt, count: 2))
   var ch = numChannels.littleEndian
   header.append(Data(bytes: &ch, count: 2))
