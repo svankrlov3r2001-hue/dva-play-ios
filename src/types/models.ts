@@ -226,6 +226,20 @@ export interface StreamMemberInfo {
   expiry_date?: string;
 }
 
+export interface NextEpisodeStreamMeta {
+  stream_code: string;
+  server_file_key?: string;
+  server_movie_title?: string;
+  server_tap_phim?: string;
+  skip_intro_sec: number;
+  end_credits_sec: number;
+  font_size?: string;
+  sub_high?: string;
+  ggdriver_1?: boolean;
+  ggdriver_2?: boolean;
+  ggdriver_3?: boolean;
+}
+
 export interface StreamResolvedData {
   success: boolean;
   stream_code: string;
@@ -242,7 +256,15 @@ export interface StreamResolvedData {
   subtitles: StreamSubtitle[];
   skip_intro_sec: number;
   end_credits_sec: number;
+  font_size?: string;
+  sub_high?: string;
+  ggdriver_1?: boolean;
+  ggdriver_2?: boolean;
+  ggdriver_3?: boolean;
+  hanquoc_url?: string;
+  phien40_url?: string;
   next_episode_slug: string;
+  next_episode_meta?: NextEpisodeStreamMeta | null;
   resume_seconds: number;
   webview_url: string;
   movie?: StreamMovieContext | null;
@@ -305,6 +327,18 @@ export interface OfflineDownloadItem {
   updated_at?: string;
 }
 
+export type ContrastLevelOption = 'Thấp' | 'Mặc định' | 'Cao' | 'Rất cao';
+export type HoldSeekSpeedOption = 0.5 | 1 | 1.25 | 1.5 | 2;
+export type SubtitleFontOption =
+  | 'Arial,Helvetica,sans-serif'
+  | 'Noto Sans'
+  | 'Roboto'
+  | 'Inter'
+  | 'Literata';
+export type SubtitleColorOption = 'white' | 'beige' | 'lightblue' | 'red' | 'yellow' | 'pink';
+export type SubtitleOutlineOption = 'raise' | 'lower' | 'uniform' | 'uniform2' | 'shadow' | 'none';
+export type SubtitleAiVoiceMode = 'adaptive' | 'hoaimy' | 'namminh' | 'google';
+
 export interface AppSettings {
   preferredQuality: 'auto' | '1080p' | '720p' | '360p';
   autoPlayNext: boolean;
@@ -323,6 +357,32 @@ export interface AppSettings {
   preferOfflineWhenOnline: boolean;
   offlineDownloadFormat: 'auto' | 'hls' | 'mp4';
   offlineDownloadConcurrency: number;
+  // General player settings (ported from setting_ST)
+  autoOptimalServer: boolean;
+  autoDubNext: boolean;
+  contrastLevel: ContrastLevelOption;
+  resumeOnHome: boolean;
+  seekWarningEnabled: boolean;
+  holdSeekSpeed: HoldSeekSpeedOption;
+  nextEpisodeDelaySec: number;
+  seamlessPreloadEnabled: boolean;
+  transitionEffectEnabled: boolean;
+  // Subtitle settings (ported from subtitleST & subtitleUI)
+  subShowVi: boolean;
+  subShowEn: boolean;
+  subReverse: boolean;
+  subFont: SubtitleFontOption;
+  subColor: SubtitleColorOption;
+  subAutoLayout: boolean;
+  subFontSizeStep: number;
+  subPositionPct: number;
+  subOutline: SubtitleOutlineOption;
+  subDelaySec: number;
+  subExtendSec: number;
+  subTranslateLang: string;
+  subAiVoiceEnabled: boolean;
+  subAiVoiceMode: SubtitleAiVoiceMode;
+  subAiVoiceVolume: number;
 }
 
 export interface VersionHistoryEntry {

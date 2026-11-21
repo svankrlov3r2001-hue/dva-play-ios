@@ -21,6 +21,7 @@ import {
   useSafeAreaInsets,
 } from 'react-native-safe-area-context';
 import { AmbientAppBackground } from './src/components/AmbientAppBackground';
+import { AppAlertHost } from './src/components/AppAlertModal';
 import { AppMenuBar, AppTabKey } from './src/components/AppMenuBar';
 import { AppUpdateModal } from './src/components/AppUpdateModal';
 import { GlassSurface } from './src/components/GlassSurface';
@@ -615,7 +616,7 @@ function RootAppContent() {
         {lockPromptVisible ? (
           <>
             <AmbientAppBackground />
-            <GlassSurface intensity={55} radius={30} style={styles.lockCard}>
+            <GlassSurface variant="liquid" intensity={85} radius={40} style={styles.lockCard}>
               <Ionicons name="lock-closed" size={42} color={COLORS.accent} />
               <Text style={styles.lockTitle}>Đã khóa bằng Face ID</Text>
               <Text style={styles.lockSub}>Xác thực để tiếp tục xem phim trên Đặng Việt Anh</Text>
@@ -887,6 +888,7 @@ function RootAppContent() {
           setSplashDismissing(true);
         }}
       />
+      <AppAlertHost />
     </View>
   );
 }

@@ -1,7 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Animated,
   Easing,
   KeyboardAvoidingView,
@@ -21,6 +20,7 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AmbientAppBackground } from '../components/AmbientAppBackground';
+import { showAppAlert } from '../components/AppAlertModal';
 import { GlassSurface } from '../components/GlassSurface';
 import { COLORS } from '../constants/config';
 import {
@@ -126,7 +126,7 @@ export function CastModal({
           setPairCode('');
           setTvStatus(null);
           setScanned(false);
-          Alert.alert('Đã ngắt kết nối', 'Phiên trình chiếu trên TV đã kết thúc.');
+          showAppAlert('Đã ngắt kết nối', 'Phiên trình chiếu trên TV đã kết thúc.');
           return;
         }
         setTvStatus(res);
@@ -183,14 +183,14 @@ export function CastModal({
       setTvPaused(false);
       onCastStarted?.();
     } else if (res?.error || res?.err) {
-      Alert.alert('Không thể phát lên TV', res.error || 'Nguồn phát chưa sẵn sàng để trình chiếu.');
+      showAppAlert('Không thể phát lên TV', res.error || 'Nguồn phát chưa sẵn sàng để trình chiếu.');
     }
   };
 
   const handlePair = async (codeRaw: string) => {
     const code = extractCode(codeRaw);
     if (!code) {
-      Alert.alert('Thiếu mã ghép đôi', 'Vui lòng quét mã QR trên TV hoặc nhập đúng mã 6 ký tự.');
+      showAppAlert('Thiếu mã ghép đôi', 'Vui lòng quét mã QR trên TV hoặc nhập đúng mã 6 ký tự.');
       setScanned(false);
       return;
     }
@@ -207,15 +207,15 @@ export function CastModal({
           try {
             await pushMovieToTv(tok, movieToCast);
           } catch (pushErr: any) {
-            Alert.alert('Đã ghép đôi TV', pushErr?.message || 'Chưa thể đẩy phim tự động, hãy bấm nút phát lại.');
+            showAppAlert('Đã ghép đôi TV', pushErr?.message || 'Chưa thể đẩy phim tự động, hãy bấm nút phát lại.');
           }
         }
       } else {
-        Alert.alert('Không thể ghép đôi', res?.error || res?.message || 'Mã TV không hợp lệ hoặc đã hết hạn.');
+        showAppAlert('Không thể ghép đôi', res?.error || res?.message || 'Mã TV không hợp lệ hoặc đã hết hạn.');
         setScanned(false);
       }
     } catch (err: any) {
-      Alert.alert('Lỗi DVA Cast', err?.message || 'Không kết nối được tới máy chủ DVA Cast.');
+      showAppAlert('Lỗi DVA Cast', err?.message || 'Không kết nối được tới máy chủ DVA Cast.');
       setScanned(false);
     } finally {
       setPairing(false);
@@ -232,7 +232,7 @@ export function CastModal({
         setPairCode('');
         setTvStatus(null);
         setScanned(false);
-        Alert.alert('Đã ngắt kết nối', 'Phiên trình chiếu trên TV đã kết thúc.');
+        showAppAlert('Đã ngắt kết nối', 'Phiên trình chiếu trên TV đã kết thúc.');
         return;
       }
       if (res?.ok || res?.success) {
@@ -241,7 +241,7 @@ export function CastModal({
         if (typeof res?.muted === 'boolean') setTvMuted(res.muted);
       }
     } catch (err: any) {
-      Alert.alert('Lỗi điều khiển', err?.message || 'Không thể gửi lệnh tới TV.');
+      showAppAlert('Lỗi điều khiển', err?.message || 'Không thể gửi lệnh tới TV.');
     }
   };
 
@@ -436,7 +436,7 @@ export function CastModal({
           >
             <GlassSurface
               variant="liquid"
-              intensity={82}
+              intensity={85}
               radius={40}
               style={{ width: cardWidth, height: cardHeight }}
             >
@@ -530,7 +530,7 @@ export function CastModal({
 
         {senderToken ? (
           <View style={styles.remoteWrap}>
-            <GlassSurface variant="liquid" intensity={72} radius={32} style={styles.remoteCard}>
+            <GlassSurface variant="liquid" intensity={85} radius={40} style={styles.remoteCard}>
               {remoteControlsContent(false)}
             </GlassSurface>
           </View>
@@ -545,7 +545,7 @@ export function CastModal({
 
             {cameraBox(false)}
 
-            <GlassSurface variant="liquid" intensity={68} radius={26} style={styles.manualCard}>
+            <GlassSurface variant="liquid" intensity={85} radius={40} style={styles.manualCard}>
               {manualInputBox}
             </GlassSurface>
           </ScrollView>

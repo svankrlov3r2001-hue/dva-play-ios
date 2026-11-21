@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Animated,
   Easing,
   Image,
@@ -18,6 +17,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AmbientAppBackground } from '../components/AmbientAppBackground';
+import { showAppAlert } from '../components/AppAlertModal';
 import { AppUpdateModal } from '../components/AppUpdateModal';
 import { GlassSurface } from '../components/GlassSurface';
 import {
@@ -222,7 +222,7 @@ export function AccountSettingsScreen({
     }
 
     if (!nativeProxyReady) {
-      Alert.alert(
+      showAppAlert(
         'Cần cập nhật ứng dụng (v1.0.17)',
         'Tính năng kết nối Proxy trực tiếp trên iPhone yêu cầu cài đặt bản ứng dụng iOS mới nhất (v1.0.17).'
       );
@@ -233,7 +233,7 @@ export function AccountSettingsScreen({
       proxyCfg.mode === 'custom' &&
       !normalizeCustomProxyInput(proxyCfg.customHost, proxyCfg.customPort)
     ) {
-      Alert.alert(
+      showAppAlert(
         'Thiếu thông tin Proxy',
         'Vui lòng nhập đầy đủ Địa chỉ IP/Host và Cổng (1 - 65535) trước khi bật Proxy tự cấu hình.'
       );
@@ -439,7 +439,7 @@ export function AccountSettingsScreen({
         setDirectUpdateOpen(true);
       } else if (res.otaUpdated) {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        Alert.alert(
+        showAppAlert(
           'Đã tải bản cập nhật mới!',
           'Giao diện và tính năng xem phim mới đã sẵn sàng ngay trên iPhone của bạn.',
           [
@@ -451,7 +451,7 @@ export function AccountSettingsScreen({
           ]
         );
       } else if (res.ipaAvailable && res.manifest) {
-        Alert.alert(
+        showAppAlert(
           `Có phiên bản mới v${res.manifest.versionName}`,
           res.manifest.changelog || 'Phiên bản ứng dụng mới đã sẵn sàng trên trang Tải Ứng Dụng.',
           [
@@ -463,18 +463,18 @@ export function AccountSettingsScreen({
           ]
         );
       } else if (!res.otaSupported) {
-        Alert.alert(
+        showAppAlert(
           'Đã là phiên bản mới nhất',
           `Phiên bản hiện tại: v${APP_VERSION} • Phát hành ${APP_RELEASE_DATE}`
         );
       } else {
-        Alert.alert(
+        showAppAlert(
           'Đã là phiên bản mới nhất',
           `Phiên bản hiện tại: v${APP_VERSION} • Phát hành ${APP_RELEASE_DATE}`
         );
       }
     } catch {
-      Alert.alert('Lỗi', 'Không thể kiểm tra cập nhật lúc này.');
+      showAppAlert('Lỗi', 'Không thể kiểm tra cập nhật lúc này.');
     } finally {
       setCheckingUpdate(false);
     }
@@ -482,7 +482,7 @@ export function AccountSettingsScreen({
 
   const handleClearOffline = () => {
     if (offlineItems.length === 0) return;
-    Alert.alert('Xóa toàn bộ phim ngoại tuyến?', 'Tất cả phim đã tải để xem ngoại tuyến trên iPhone sẽ bị xóa.', [
+    showAppAlert('Xóa toàn bộ phim ngoại tuyến?', 'Tất cả phim đã tải để xem ngoại tuyến trên iPhone sẽ bị xóa.', [
       { text: 'Hủy', style: 'cancel' },
       {
         text: 'Xóa hết',
@@ -493,7 +493,7 @@ export function AccountSettingsScreen({
   };
 
   const handleLogout = () => {
-    Alert.alert('Đăng xuất?', 'Bạn muốn đăng xuất tài khoản khỏi iPhone?', [
+    showAppAlert('Đăng xuất?', 'Bạn muốn đăng xuất tài khoản khỏi iPhone?', [
       { text: 'Hủy', style: 'cancel' },
       { text: 'Đăng xuất', style: 'destructive', onPress: logout },
     ]);
@@ -633,7 +633,7 @@ export function AccountSettingsScreen({
               await updateSetting('faceIdEnabled', true);
             } else {
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-              Alert.alert(
+              showAppAlert(
                 'Không thể bật khóa Face ID',
                 res.reason || 'Vui lòng kiểm tra quyền Face ID hoặc mật mã trong Cài đặt iPhone.'
               );

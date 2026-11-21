@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Modal,
   Pressable,
   ScrollView,
@@ -15,6 +14,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { showAppAlert } from './AppAlertModal';
 import { GlassSurface } from './GlassSurface';
 import { COLORS } from '../constants/config';
 import { useSettings } from '../context/SettingsContext';
@@ -190,7 +190,7 @@ export function OfflineDownloadSheet({
     try {
       await enqueueEpisodeBatch(pendingNextEpisodes.map((ep) => buildEnqueueReq(ep)));
     } catch (e: any) {
-      Alert.alert('Lỗi tải ngoại tuyến', e?.message || 'Không thể đưa vào hàng chờ.');
+      showAppAlert('Lỗi tải ngoại tuyến', e?.message || 'Không thể đưa vào hàng chờ.');
     } finally {
       setSubmittingBatch(false);
     }
@@ -198,7 +198,7 @@ export function OfflineDownloadSheet({
 
   const handleDownloadCurrentAndNext = async (includeNext: boolean) => {
     if (!targetStreamCode) {
-      Alert.alert('Thông báo', 'Không tìm thấy nguồn phát cho mục này.');
+      showAppAlert('Thông báo', 'Không tìm thấy nguồn phát cho mục này.');
       return;
     }
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -216,7 +216,7 @@ export function OfflineDownloadSheet({
         await enqueueOfflineDownload(buildEnqueueReq(curEp));
       }
     } catch (e: any) {
-      Alert.alert('Lỗi tải ngoại tuyến', e?.message || 'Không thể đưa vào hàng chờ.');
+      showAppAlert('Lỗi tải ngoại tuyến', e?.message || 'Không thể đưa vào hàng chờ.');
     } finally {
       setSubmittingBatch(false);
     }
@@ -242,7 +242,7 @@ export function OfflineDownloadSheet({
     } else if (existing.status === 'queued') {
       await cancelOfflineDownload(existing.id);
     } else if (existing.status === 'completed') {
-      Alert.alert('Đã tải ngoại tuyến', `Xóa "${ep.episodes_name}" khỏi máy?`, [
+      showAppAlert('Đã tải ngoại tuyến', `Xóa "${ep.episodes_name}" khỏi máy?`, [
         { text: 'Giữ lại', style: 'cancel' },
         {
           text: 'Xóa',
@@ -264,7 +264,7 @@ export function OfflineDownloadSheet({
           </Text>
           <TouchableOpacity
             onPress={() =>
-              Alert.alert('Xóa tệp ngoại tuyến?', 'Tệp phim này sẽ bị xóa khỏi bộ nhớ máy.', [
+              showAppAlert('Xóa tệp ngoại tuyến?', 'Tệp phim này sẽ bị xóa khỏi bộ nhớ máy.', [
                 { text: 'Hủy', style: 'cancel' },
                 { text: 'Xóa', style: 'destructive', onPress: () => removeOfflineDownload(item.id) },
               ])

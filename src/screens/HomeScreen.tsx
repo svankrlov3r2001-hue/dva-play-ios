@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Alert,
   Animated,
   Easing,
   FlatList,
@@ -19,6 +18,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { showAppAlert } from '../components/AppAlertModal';
 import { GlassSurface } from '../components/GlassSurface';
 import { Hero3DCarousel } from '../components/Hero3DCarousel';
 import {
@@ -207,7 +207,7 @@ export function HomeScreen({
       } catch (err: any) {
         if (reqId !== requestSeqRef.current) return;
         if (!isRefresh) {
-          Alert.alert('Lỗi kết nối', err?.message || 'Không thể tải trang chủ.');
+          showAppAlert('Lỗi kết nối', err?.message || 'Không thể tải trang chủ.');
         }
       } finally {
         if (reqId !== requestSeqRef.current) return;
@@ -281,7 +281,7 @@ export function HomeScreen({
   };
 
   const handleRemoveWatched = (item: MovieItem) => {
-    Alert.alert(
+    showAppAlert(
       'Xóa khỏi Đang xem?',
       `Bạn muốn ẩn "${item.title_primary || item.title}" khỏi danh sách Đang xem?`,
       [

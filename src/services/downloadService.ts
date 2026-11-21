@@ -20,7 +20,7 @@ const INDEX_FILE = `${FileSystem.documentDirectory ?? ''}dva_offline_index.json`
 
 const CHECK_API_URL = 'https://dangvietanh.io.vn/check_file';
 const TRIGGER_DOWNLOAD_API = 'https://dangvietanh.io.vn/download_file_gdrive';
-const SHARD_DOMAINS = ['s1dangvietanh.io.vn', 'dangvietanh.io.vn'];
+const SHARD_DOMAINS = ['s1dangvietanh.io.vn'];
 
 type ProgressListener = (items: OfflineDownloadItem[]) => void;
 
@@ -103,9 +103,6 @@ function getShardedBaseUrl(): string {
     prefix += chars.charAt(Math.floor(Math.random() * chars.length));
   }
   const domain = SHARD_DOMAINS[Math.floor(Math.random() * SHARD_DOMAINS.length)];
-  if (domain === 'dangvietanh.io.vn') {
-    return `https://${domain}/uploads/`;
-  }
   return `https://dl${prefix}.${domain}/uploads/`;
 }
 

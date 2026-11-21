@@ -242,7 +242,7 @@ export function PlayerOverlayPanels({
   return (
     <View style={styles.overlayWrap} pointerEvents="box-none">
       <Pressable style={styles.backdrop} onPress={onClose} />
-      <GlassSurface variant="liquid" intensity={82} radius={40} style={[styles.panelCard, isWide && styles.panelCardWide]}>
+      <GlassSurface variant="liquid" intensity={85} radius={40} style={[styles.panelCard, isWide && styles.panelCardWide]}>
         <View style={styles.panelHeader}>
           <Text style={styles.panelTitle}>{PANEL_TITLES[activePanel]}</Text>
           <TouchableOpacity style={styles.closeIconBtn} onPress={onClose}>
@@ -622,16 +622,6 @@ export function PlayerOverlayPanels({
                   }}
                 />
               ) : null}
-              <Text style={styles.sectionHeading}>Tính năng cộng đồng qua Web Player</Text>
-              <OptionRow
-                icon="people-outline"
-                label="Xem chung / Chat AI / Khoảnh khắc"
-                badge="Web Player"
-                onPress={() => {
-                  onClose();
-                  onOpenWebPlayer();
-                }}
-              />
             </>
           ) : null}
         </ScrollView>

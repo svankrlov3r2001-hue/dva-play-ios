@@ -1,8 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Animated,
   AppState,
   Easing,
+  Image,
   PanResponder,
   Pressable,
   ScrollView,
@@ -13,29 +15,42 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { isPictureInPictureSupported, SubtitleTrack, useVideoPlayer, VideoView } from 'expo-video';
-import * as FileSystem from 'expo-file-system/legacy';
-import * as ScreenOrientation from 'expo-screen-orientation';
-import * as SecureStore from 'expo-secure-store';
+import {
+  isPictureInPictureSupported,
+  SubtitleTrack,
+  useVideoPlayer,
+  VideoPlayer,
+  VideoView,
+} from 'expo-video';
 import * as Haptics from 'expo-haptics';
-import { WebView } from 'react-native-webview';
+import * as ScreenOrientation from 'expo-screen-orientation';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { showAppAlert } from '../components/AppAlertModal';
 import { GlassSurface } from '../components/GlassSurface';
+import { NativeSubtitleOverlay } from '../components/NativeSubtitleOverlay';
 import { OfflineDownloadSheet } from '../components/OfflineDownloadSheet';
+import { PlayerEpisodeListModal } from '../components/PlayerEpisodeListModal';
+import {
+  PlayerGeneralSettingsModal,
+  PreloadVisualState,
+  SleepTimerSettingValue,
+} from '../components/PlayerGeneralSettingsModal';
 import { PlayerOverlayPanels, PlayerPanelType } from '../components/PlayerOverlayPanels';
+import { PlayerServerPanelModal } from '../components/PlayerServerPanelModal';
+import { PlayerSubtitleSettingsModal } from '../components/PlayerSubtitleSettingsModal';
 import { PlayerLandscapeSkeleton } from '../components/SkeletonLoaders';
 import { CastModal, CastMoviePayload } from './CastModal';
-import { API_BASE_URL, COLORS, RADII, SITE_BASE_URL } from '../constants/config';
+import { COLORS } from '../constants/config';
 import { useAuth } from '../context/AuthContext';
 import { useSettings } from '../context/SettingsContext';
 import {
   fetchMovieDetailsApi,
   fetchWatchProgressApi,
-  getApiAuthToken,
+  resolveStreamApi,
   saveWatchProgressApi,
+  toggleWishlistApi,
 } from '../services/api';
 import {
-  buildOfflineRegistryForWebView,
   enqueueEpisodeBatch,
   findCompletedOfflineItem,
   flushPendingOfflineProgressToServer,
@@ -50,123 +65,35 @@ import {
   syncOnlineProgressToOffline,
 } from '../services/downloadService';
 import {
-  buildLocalOfflineUrl,
   ensureOfflineMediaServer,
   getCachedOfflineMediaServerPort,
-  isNativePipProxySupported,
 } from '../services/localMediaServer';
 import {
-  getProxyConfig,
-  isNativeProxySupported,
-  isProxyActiveForConfig,
-  subscribeProxyConfig,
-} from '../services/proxyService';
-import { EpisodeItem, OfflineDownloadItem, StreamResolvedData } from '../types/models';
-
-const B64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
-function encodeBase64UrlUtf8(str: string): string {
-  const bytes = encodeURIComponent(str).replace(/%([0-9A-F]{2})/g, (_, p1) =>
-    String.fromCharCode(parseInt(p1, 16))
-  );
-  let out = '';
-  for (let i = 0; i < bytes.length; i += 3) {
-    const b1 = bytes.charCodeAt(i);
-    const has2 = i + 1 < bytes.length;
-    const has3 = i + 2 < bytes.length;
-    const b2 = has2 ? bytes.charCodeAt(i + 1) : 0;
-    const b3 = has3 ? bytes.charCodeAt(i + 2) : 0;
-    const trip = (b1 << 16) | (b2 << 8) | b3;
-    out += B64_CHARS[(trip >> 18) & 63];
-    out += B64_CHARS[(trip >> 12) & 63];
-    out += has2 ? B64_CHARS[(trip >> 6) & 63] : '=';
-    out += has3 ? B64_CHARS[trip & 63] : '=';
-  }
-  return out.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-const HGLK_STORE_KEY = 'dva_ios_hglk_cookie';
-const HGLK_ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
-let cachedDeviceHglk: string | null = null;
-
-function generateHglkToken(length = 24): string {
-  let out = '';
-  for (let i = 0; i < length; i++) {
-    out += HGLK_ALPHABET.charAt(Math.floor(Math.random() * HGLK_ALPHABET.length));
-  }
-  return out;
-}
-
-async function getOrCreateDeviceHglk(): Promise<string> {
-  if (cachedDeviceHglk && cachedDeviceHglk.length >= 8) {
-    return cachedDeviceHglk;
-  }
-  try {
-    const stored = await SecureStore.getItemAsync(HGLK_STORE_KEY);
-    if (stored && /^[A-Za-z0-9_-]{8,64}$/.test(stored)) {
-      cachedDeviceHglk = stored;
-      return stored;
-    }
-  } catch {}
-  const fresh = generateHglkToken(24);
-  cachedDeviceHglk = fresh;
-  try {
-    await SecureStore.setItemAsync(HGLK_STORE_KEY, fresh);
-  } catch {}
-  return fresh;
-}
-
-interface VttCueItem {
-  start: number;
-  end: number;
-  text: string;
-}
-
-function parseVttTimestamp(raw: string): number {
-  const clean = raw.trim().replace(',', '.');
-  const parts = clean.split(':').map((p) => parseFloat(p));
-  if (parts.some((n) => isNaN(n))) return 0;
-  if (parts.length === 3) {
-    return parts[0] * 3600 + parts[1] * 60 + parts[2];
-  }
-  if (parts.length === 2) {
-    return parts[0] * 60 + parts[1];
-  }
-  return parts[0] || 0;
-}
-
-function parseVttCues(vttText: string): VttCueItem[] {
-  if (!vttText) return [];
-  const lines = vttText.replace(/\r/g, '').split('\n');
-  const cues: VttCueItem[] = [];
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i].trim();
-    if (!line || line.startsWith('WEBVTT') || line.startsWith('NOTE')) {
-      i++;
-      continue;
-    }
-    const arrowIdx = line.indexOf('-->');
-    if (arrowIdx >= 0) {
-      const startPart = line.slice(0, arrowIdx).trim();
-      const endPart = line.slice(arrowIdx + 3).trim().split(/\s+/)[0] || '';
-      const start = parseVttTimestamp(startPart);
-      const end = parseVttTimestamp(endPart);
-      i++;
-      const buf: string[] = [];
-      while (i < lines.length && lines[i].trim() !== '') {
-        buf.push(lines[i].replace(/<[^>]*>/g, '').trim());
-        i++;
-      }
-      const txt = buf.filter(Boolean).join('\n');
-      if (txt && end > start) {
-        cues.push({ start, end, text: txt });
-      }
-    } else {
-      i++;
-    }
-  }
-  return cues;
-}
+  applyCheckFileToServers,
+  BackupServerId,
+  buildInitialServerStates,
+  buildOfflineServerUrl,
+  buildServer11Or36MediaUrl,
+  checkGgdriverApi,
+  checkServerFileStatus,
+  isServerPlayable,
+  measureAllServerPings,
+  probeVideoQualityLabel,
+  selectOptimalServer,
+  ServerRuntimeState,
+  triggerServerPrepare,
+  wrapUrlForIosNativePlayer,
+} from '../services/playerServerService';
+import {
+  buildSubtitleUrls,
+  loadDualSubtitles,
+  ParsedVttCue,
+} from '../services/subtitleService';
+import {
+  EpisodeItem,
+  OfflineDownloadItem,
+  StreamResolvedData,
+} from '../types/models';
 
 export interface PlayerLaunchParams {
   videosId: number;
@@ -192,6 +119,27 @@ interface PlayerModalProps {
   onSwitchOfflineItem?: (item: OfflineDownloadItem) => void;
 }
 
+interface PreloadedNextPackage {
+  streamCode: string;
+  episode: EpisodeItem;
+  episodeIndex: number;
+  resolved: StreamResolvedData;
+  vnCues: ParsedVttCue[];
+  enCues: ParsedVttCue[];
+  vnUrl: string;
+  enUrl: string;
+  serverId: BackupServerId;
+  serverLabel: string;
+  streamUrl: string;
+  qualityLabel: string;
+  skipIntroSec: number;
+  endCreditsSec: number;
+  subHighRaw: string;
+  offlineItem: OfflineDownloadItem | null;
+}
+
+const SPEED_OPTIONS = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
+
 function formatClock(sec: number): string {
   const s = Math.max(0, Math.floor(sec || 0));
   const h = Math.floor(s / 3600);
@@ -203,15 +151,29 @@ function formatClock(sec: number): string {
   return `${String(m).padStart(2, '0')}:${String(rem).padStart(2, '0')}`;
 }
 
-function resolveEpisodeMetaFromParams(params: PlayerLaunchParams | null, activeStreamCode: string) {
-  let epNum = params?.episodeNumber || 0;
-  let sId = params?.seasonId ? String(params.seasonId) : '';
-  const eps = params?.episodes || [];
-  if (eps.length > 0) {
-    const idx = eps.findIndex(
+function formatDurationShort(sec: number): string {
+  const totalMins = Math.floor(Math.max(0, sec || 0) / 60);
+  if (totalMins <= 0) return '';
+  const h = Math.floor(totalMins / 60);
+  const m = totalMins % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
+function resolveEpisodeMetaFromParams(
+  episodes: EpisodeItem[],
+  activeStreamCode: string,
+  fallbackEpNum?: number,
+  fallbackSeasonId?: string,
+  episodeId?: number
+) {
+  let epNum = fallbackEpNum || 0;
+  let sId = fallbackSeasonId ? String(fallbackSeasonId) : '';
+  if (episodes.length > 0) {
+    const idx = episodes.findIndex(
       (ep) =>
         (activeStreamCode && ep.stream_code === activeStreamCode) ||
-        (params?.episodeId && ep.episodes_id === params.episodeId)
+        (episodeId && ep.episodes_id === episodeId)
     );
     if (idx >= 0) {
       const parseEpNum = (name?: string) => {
@@ -221,1075 +183,225 @@ function resolveEpisodeMetaFromParams(params: PlayerLaunchParams | null, activeS
         const mAny = str.match(/0*(\d+)/);
         return mAny ? parseInt(mAny[1], 10) : null;
       };
-      const parsedNameNum = parseEpNum(eps[idx].episodes_name);
+      const parsedNameNum = parseEpNum(episodes[idx].episodes_name);
       if (parsedNameNum && parsedNameNum > 0) {
         epNum = parsedNameNum;
       } else if (epNum <= 0) {
-        const firstN = parseEpNum(eps[0].episodes_name);
-        const lastN = parseEpNum(eps[eps.length - 1].episodes_name);
+        const firstN = parseEpNum(episodes[0].episodes_name);
+        const lastN = parseEpNum(episodes[episodes.length - 1].episodes_name);
         const isDesc = firstN !== null && lastN !== null && firstN > lastN;
-        epNum = isDesc ? eps.length - idx : idx + 1;
+        epNum = isDesc ? episodes.length - idx : idx + 1;
       }
-      if (!sId && eps[idx].seasons_id) sId = String(eps[idx].seasons_id);
+      if (!sId && episodes[idx].seasons_id) sId = String(episodes[idx].seasons_id);
     }
   }
   return { episodeNumber: epNum, seasonId: sId };
-}
-
-interface OfflineNativePlayerProps {
-  params: PlayerLaunchParams;
-  localServerPort: number;
-  onClose: () => void;
-  onReady: () => void;
-  onPipChange: (active: boolean) => void;
-  onSwitchOfflineItem?: (item: OfflineDownloadItem) => void;
-}
-
-/**
- * Isolated native AVPlayer surface mounted strictly for local offline HLS & MP4 playback.
- * Never mounted during online streaming so it never flickers or competes with WebView PiP.
- */
-function OfflineNativePlayer({
-  params,
-  localServerPort,
-  onClose,
-  onReady,
-  onPipChange,
-  onSwitchOfflineItem,
-}: OfflineNativePlayerProps) {
-  const insets = useSafeAreaInsets();
-  const { width: winWidth } = useWindowDimensions();
-  const { user, isLocked } = useAuth();
-  const { settings, updateSetting } = useSettings();
-
-  const offlineItem = params.offlineItem;
-  const offlineEpisodes = useMemo(
-    () => (params.offlineEpisodes && params.offlineEpisodes.length > 0 ? params.offlineEpisodes : []),
-    [params.offlineEpisodes]
-  );
-
-  const isLockedRef = useRef(isLocked);
-  isLockedRef.current = isLocked;
-  const prevLockedRef = useRef(isLocked);
-  const wasPlayingBeforeLockRef = useRef(false);
-  const preBackgroundPlayingRef = useRef<boolean | null>(null);
-
-  const [hudVisible, setHudVisible] = useState(true);
-  const [activePanel, setActivePanel] = useState<PlayerPanelType>(null);
-  const [isPlaying, setIsPlaying] = useState(true);
-  const [currentTime, setCurrentTime] = useState(0);
-  const [duration, setDuration] = useState(offlineItem?.duration_sec || 0);
-  const [barWidth, setBarWidth] = useState(400);
-  const [dragRatio, setDragRatio] = useState<number | null>(null);
-  const [playbackRate, setPlaybackRate] = useState(1.0);
-  const [sleepMinutesLeft, setSleepMinutesLeft] = useState<number | null>(null);
-  const [toastMsg, setToastMsg] = useState('');
-  const [activeSubIndex, setActiveSubIndex] = useState(0);
-  const [parsedCuesByIdx, setParsedCuesByIdx] = useState<VttCueItem[][]>([]);
-  const [isInPip, setIsInPip] = useState(false);
-
-  const isPlayingRef = useRef(isPlaying);
-  isPlayingRef.current = isPlaying;
-  const barWidthRef = useRef(400);
-  barWidthRef.current = barWidth;
-  const durationRef = useRef(0);
-  durationRef.current = duration;
-  const currentTimeRef = useRef(0);
-  currentTimeRef.current = currentTime;
-  const restoredForIdRef = useRef('');
-  const hasUserScrubbedRef = useRef(false);
-  const lastServerPushAtRef = useRef(0);
-  const availableSubTracksRef = useRef<SubtitleTrack[]>([]);
-  const activeSubIndexRef = useRef(activeSubIndex);
-  activeSubIndexRef.current = activeSubIndex;
-  const subtitleEnabledRef = useRef(settings.subtitleEnabled);
-  subtitleEnabledRef.current = settings.subtitleEnabled;
-  const isInPipRef = useRef(false);
-  isInPipRef.current = isInPip;
-
-  const videoViewRef = useRef<VideoView | null>(null);
-  const hudTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const showToast = useCallback((msg: string) => {
-    setToastMsg(msg);
-    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-    toastTimerRef.current = setTimeout(() => {
-      setToastMsg('');
-    }, 2600);
-  }, []);
-
-  const isHlsOffline = Boolean(
-    offlineItem?.media_format === 'hls' || params.offlineUri?.toLowerCase().includes('.m3u8')
-  );
-
-  const playbackSource = useMemo(() => {
-    const rawRel =
-      offlineItem?.relative_entry ||
-      (params.offlineUri && params.offlineUri.includes('dva_offline/')
-        ? params.offlineUri.substring(params.offlineUri.indexOf('dva_offline/') + 'dva_offline/'.length)
-        : '');
-    const pipRel =
-      isHlsOffline && isNativePipProxySupported() && rawRel.toLowerCase().endsWith('index.m3u8')
-        ? `${rawRel.slice(0, -'index.m3u8'.length)}pip_master.m3u8`
-        : rawRel;
-    const httpUrl = pipRel ? buildLocalOfflineUrl(pipRel, localServerPort) : null;
-    if (isHlsOffline) {
-      if (httpUrl) {
-        return {
-          uri: httpUrl,
-          contentType: 'hls' as const,
-          metadata: { title: params.title, artist: 'Đặng Việt Anh' },
-        };
-      }
-      return params.offlineUri
-        ? {
-            uri: params.offlineUri,
-            contentType: 'hls' as const,
-            metadata: { title: params.title, artist: 'Đặng Việt Anh' },
-          }
-        : null;
-    }
-    const mp4Uri = params.offlineUri || httpUrl;
-    if (!mp4Uri) return null;
-    return {
-      uri: mp4Uri,
-      contentType: 'progressive' as const,
-      metadata: { title: params.title, artist: 'Đặng Việt Anh' },
-    };
-  }, [isHlsOffline, localServerPort, offlineItem?.relative_entry, params.offlineUri, params.title]);
-
-  // Load local VTT subtitle files into cue arrays
-  useEffect(() => {
-    const tracks = offlineItem?.subtitles || [];
-    if (tracks.length === 0) {
-      setParsedCuesByIdx([]);
-      return;
-    }
-    let active = true;
-    Promise.all(
-      tracks.map(async (t) => {
-        try {
-          const text = await FileSystem.readAsStringAsync(t.local_uri);
-          return parseVttCues(text);
-        } catch {
-          return [];
-        }
-      })
-    ).then((all) => {
-      if (active) {
-        setParsedCuesByIdx(all);
-        setActiveSubIndex(0);
-      }
-    });
-    return () => {
-      active = false;
-    };
-  }, [offlineItem?.id, offlineItem?.subtitles]);
-
-  const activeCueText = useMemo(() => {
-    if (!settings.subtitleEnabled) return '';
-    const cues = parsedCuesByIdx[activeSubIndex];
-    if (!cues || cues.length === 0) return '';
-    const hit = cues.find((c) => currentTime >= c.start && currentTime <= c.end);
-    return hit ? hit.text : '';
-  }, [settings.subtitleEnabled, parsedCuesByIdx, activeSubIndex, currentTime]);
-
-  const player = useVideoPlayer(null, (p) => {
-    p.allowsExternalPlayback = false;
-    p.timeUpdateEventInterval = 0.5;
-    p.keepScreenOnWhilePlaying = true;
-    p.staysActiveInBackground = Boolean(settings.pipEnabled);
-  });
-
-  const syncNativePipSubtitle = useCallback(
-    (enable: boolean) => {
-      try {
-        if (!enable || !subtitleEnabledRef.current) {
-          player.subtitleTrack = null;
-          return;
-        }
-        const pool =
-          availableSubTracksRef.current.length > 0
-            ? availableSubTracksRef.current
-            : player.availableSubtitleTracks || [];
-        if (pool.length === 0) return;
-
-        const chosenMeta = offlineItem?.subtitles?.[activeSubIndexRef.current];
-        const targetLang = (chosenMeta?.lang || '').toLowerCase();
-        const targetLabel = (chosenMeta?.label || '').toLowerCase();
-        let matched = pool.find((t) => {
-          const lang = String(t.language || '').toLowerCase();
-          const lbl = String(t.label || '').toLowerCase();
-          return (
-            (targetLang && (lang === targetLang || lang.startsWith(targetLang))) ||
-            (targetLabel && lbl === targetLabel)
-          );
-        });
-        if (!matched) matched = pool[0];
-        player.subtitleTrack = matched || null;
-      } catch {}
-    },
-    [player, offlineItem?.subtitles]
-  );
-
-  useEffect(() => {
-    syncNativePipSubtitle(isInPip);
-  }, [isInPip, activeSubIndex, settings.subtitleEnabled, syncNativePipSubtitle]);
-
-  useEffect(() => {
-    try {
-      player.staysActiveInBackground = Boolean(settings.pipEnabled);
-    } catch {}
-  }, [player, settings.pipEnabled]);
-
-  useEffect(() => {
-    if (!playbackSource) return;
-    if (isHlsOffline && !playbackSource.uri.startsWith('http://127.0.0.1') && localServerPort <= 0) {
-      // Wait for local loopback HTTP server if available before falling back to file://
-    }
-    restoredForIdRef.current = '';
-    hasUserScrubbedRef.current = false;
-    availableSubTracksRef.current = [];
-    setCurrentTime(0);
-    setDuration(offlineItem?.duration_sec || 0);
-    setHudVisible(true);
-    player.replaceAsync(playbackSource).catch(() => {});
-  }, [playbackSource, isHlsOffline, localServerPort, offlineItem?.duration_sec, player]);
-
-  useEffect(() => {
-    const subTime = player.addListener('timeUpdate', (e) => {
-      const sec = e.currentTime || 0;
-      setCurrentTime(sec);
-      if (player.duration > 0) setDuration(player.duration);
-      if (offlineItem?.id && sec > 3) {
-        void saveOfflineResumePosition(
-          offlineItem.id,
-          sec,
-          player.duration || offlineItem.duration_sec,
-          { flushDisk: false }
-        );
-        const now = Date.now();
-        if (now - lastServerPushAtRef.current >= 15000) {
-          lastServerPushAtRef.current = now;
-          void syncOfflineItemProgressToServer(offlineItem.id);
-        }
-      }
-    });
-    const subPlay = player.addListener('playingChange', (e) => {
-      setIsPlaying(e.isPlaying);
-      if (!e.isPlaying && offlineItem?.id && currentTimeRef.current > 3) {
-        void saveOfflineResumePosition(
-          offlineItem.id,
-          currentTimeRef.current,
-          durationRef.current || offlineItem.duration_sec,
-          { flushDisk: true }
-        ).then(() => syncOfflineItemProgressToServer(offlineItem.id));
-      }
-    });
-    const subAvailSubs = player.addListener('availableSubtitleTracksChange', (e) => {
-      availableSubTracksRef.current = e.availableSubtitleTracks || [];
-      syncNativePipSubtitle(isInPipRef.current);
-    });
-    const subLoad = player.addListener('sourceLoad', (e) => {
-      onReady();
-      if (e.duration > 0) setDuration(e.duration);
-      player.playbackRate = playbackRate;
-      availableSubTracksRef.current = player.availableSubtitleTracks || [];
-      syncNativePipSubtitle(isInPipRef.current);
-
-      const itemKey = offlineItem?.id || params.offlineUri || '';
-      if (itemKey && restoredForIdRef.current !== itemKey) {
-        restoredForIdRef.current = itemKey;
-        const savedResume = offlineItem?.resume_sec || 0;
-        const skipIntro = settings.autoSkipIntro ? offlineItem?.skip_intro_sec || 0 : 0;
-        const seekTarget =
-          savedResume > 5 && (!e.duration || savedResume < e.duration - 15)
-            ? savedResume
-            : skipIntro > 0 && (!e.duration || skipIntro < e.duration - 30)
-              ? skipIntro
-              : 0;
-        if (seekTarget > 0) {
-          try {
-            player.currentTime = seekTarget;
-          } catch {}
-        }
-
-        // Pull latest online watch progress if not holding unsynced offline progress
-        if (offlineItem?.id && !offlineItem.resume_sync_pending && params.streamCode) {
-          Promise.race([
-            fetchWatchProgressApi(params.streamCode, params.videosId),
-            new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
-          ])
-            .then((srvRes) => {
-              if (!srvRes || !srvRes.success || hasUserScrubbedRef.current) return;
-              const srvSec = Math.floor(srvRes.resume_seconds || 0);
-              const totalDur = e.duration || offlineItem.duration_sec || 0;
-              if (
-                srvSec > 5 &&
-                (!totalDur || srvSec < totalDur - 15) &&
-                Math.abs(srvSec - (currentTimeRef.current || seekTarget)) > 5
-              ) {
-                try {
-                  player.currentTime = srvSec;
-                } catch {}
-                void saveOfflineResumePosition(offlineItem.id, srvSec, totalDur, {
-                  fromOnline: true,
-                  flushDisk: true,
-                });
-                showToast(`Tiếp tục từ ${formatClock(srvSec)}`);
-              }
-            })
-            .catch(() => {});
-        }
-      }
-      if (isLockedRef.current) {
-        try {
-          player.pause();
-        } catch {}
-      } else {
-        player.play();
-      }
-    });
-    const subStatus = player.addListener('statusChange', (e) => {
-      if (e.status === 'readyToPlay') {
-        onReady();
-      } else if (e.status === 'error') {
-        onReady();
-        showToast('Không thể phát tệp ngoại tuyến này');
-      }
-    });
-    return () => {
-      subTime.remove();
-      subPlay.remove();
-      subAvailSubs.remove();
-      subLoad.remove();
-      subStatus.remove();
-    };
-  }, [
-    player,
-    playbackRate,
-    onReady,
-    showToast,
-    syncNativePipSubtitle,
-    offlineItem?.id,
-    offlineItem?.resume_sec,
-    offlineItem?.resume_sync_pending,
-    offlineItem?.skip_intro_sec,
-    offlineItem?.duration_sec,
-    params.offlineUri,
-    params.streamCode,
-    params.videosId,
-    settings.autoSkipIntro,
-  ]);
-
-  // Snapshot playing state before backgrounding in case Face ID locks
-  useEffect(() => {
-    const sub = AppState.addEventListener('change', (nextState) => {
-      if (nextState !== 'active') {
-        if (!isLockedRef.current) {
-          const playingNow =
-            Boolean((player as { playing?: boolean }).playing) || isPlayingRef.current;
-          preBackgroundPlayingRef.current = playingNow;
-        }
-      } else if (!isLockedRef.current) {
-        preBackgroundPlayingRef.current = null;
-      }
-    });
-    return () => sub.remove();
-  }, [player]);
-
-  useEffect(() => {
-    const wasLocked = prevLockedRef.current;
-    prevLockedRef.current = isLocked;
-    if (!isLocked) {
-      const shouldResume = wasLocked && wasPlayingBeforeLockRef.current;
-      wasPlayingBeforeLockRef.current = false;
-      preBackgroundPlayingRef.current = null;
-      if (shouldResume) {
-        try {
-          player.play();
-        } catch {}
-      }
-      return;
-    }
-
-    if (!wasLocked) {
-      const snapshot = preBackgroundPlayingRef.current;
-      preBackgroundPlayingRef.current = null;
-      wasPlayingBeforeLockRef.current =
-        snapshot !== null
-          ? snapshot
-          : Boolean((player as { playing?: boolean }).playing) || isPlayingRef.current;
-    }
-    try {
-      player.pause();
-    } catch {}
-  }, [isLocked, player]);
-
-  const scheduleHideHud = useCallback(() => {
-    if (hudTimerRef.current) clearTimeout(hudTimerRef.current);
-    if (activePanel !== null) return;
-    hudTimerRef.current = setTimeout(() => {
-      setHudVisible(false);
-    }, 4500);
-  }, [activePanel]);
-
-  useEffect(() => {
-    if (hudVisible && activePanel === null) {
-      scheduleHideHud();
-    } else if (hudTimerRef.current) {
-      clearTimeout(hudTimerRef.current);
-    }
-    return () => {
-      if (hudTimerRef.current) clearTimeout(hudTimerRef.current);
-    };
-  }, [hudVisible, activePanel, scheduleHideHud]);
-
-  useEffect(() => {
-    if (sleepMinutesLeft === null) return;
-    if (sleepMinutesLeft <= 0) {
-      try {
-        player.pause();
-      } catch {}
-      setSleepMinutesLeft(null);
-      showToast('Hẹn giờ ngủ: đã tạm dừng phim');
-      return;
-    }
-    const timer = setTimeout(() => {
-      setSleepMinutesLeft((m) => (m !== null ? Math.max(0, m - 1) : null));
-    }, 60000);
-    return () => clearTimeout(timer);
-  }, [sleepMinutesLeft, player, showToast]);
-
-  useEffect(() => {
-    return () => {
-      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-      if (offlineItem?.id && currentTimeRef.current > 3) {
-        void saveOfflineResumePosition(
-          offlineItem.id,
-          currentTimeRef.current,
-          durationRef.current || offlineItem.duration_sec,
-          { flushDisk: true }
-        ).then(() => syncOfflineItemProgressToServer(offlineItem.id));
-      }
-      try {
-        player.pause();
-      } catch {}
-    };
-  }, [player, offlineItem?.id, offlineItem?.duration_sec]);
-
-  const scrubberPanResponder = useMemo(
-    () =>
-      PanResponder.create({
-        onStartShouldSetPanResponder: () => true,
-        onMoveShouldSetPanResponder: () => true,
-        onPanResponderGrant: (e) => {
-          const bw = barWidthRef.current;
-          if (bw <= 0 || durationRef.current <= 0) return;
-          const r = Math.max(0, Math.min(1, e.nativeEvent.locationX / bw));
-          setDragRatio(r);
-          scheduleHideHud();
-        },
-        onPanResponderMove: (e) => {
-          const bw = barWidthRef.current;
-          if (bw <= 0 || durationRef.current <= 0) return;
-          const r = Math.max(0, Math.min(1, e.nativeEvent.locationX / bw));
-          setDragRatio(r);
-        },
-        onPanResponderRelease: (e) => {
-          hasUserScrubbedRef.current = true;
-          const bw = barWidthRef.current;
-          const dur = durationRef.current;
-          if (bw > 0 && dur > 0) {
-            const r = Math.max(0, Math.min(1, e.nativeEvent.locationX / bw));
-            player.currentTime = r * dur;
-          }
-          setDragRatio(null);
-          scheduleHideHud();
-        },
-        onPanResponderTerminate: () => {
-          setDragRatio(null);
-        },
-      }),
-    [player, scheduleHideHud]
-  );
-
-  const syntheticEpisodes: EpisodeItem[] = useMemo(
-    () =>
-      offlineEpisodes.map((it, idx) => ({
-        episodes_id: it.episode_id || idx + 1,
-        seasons_id: 0,
-        episodes_name: it.episode_title || `Tập ${it.episode_number || idx + 1}`,
-        stream_code: it.stream_code,
-        player_url: '',
-        full_url: '',
-        order: it.episode_number || idx + 1,
-      })),
-    [offlineEpisodes]
-  );
-
-  const nextOfflineEpisode = useMemo(() => {
-    if (!offlineItem || offlineEpisodes.length <= 1) return null;
-    const idx = offlineEpisodes.findIndex((i) => i.id === offlineItem.id);
-    if (idx < 0 || idx + 1 >= offlineEpisodes.length) return null;
-    return offlineEpisodes[idx + 1];
-  }, [offlineItem, offlineEpisodes]);
-
-  const syntheticResolved: StreamResolvedData | null = useMemo(() => {
-    const subs = (offlineItem?.subtitles || []).map((s) => ({
-      label: s.label,
-      url: s.local_uri,
-      lang: s.lang,
-    }));
-    if (subs.length === 0 && syntheticEpisodes.length === 0) return null;
-    return {
-      success: true,
-      stream_code: params.streamCode,
-      can_play_native: true,
-      primary_url: '',
-      stream_type: isHlsOffline ? 'hls' : 'mp4',
-      download_mp4_url: '',
-      qualities: [],
-      subtitles: subs,
-      skip_intro_sec: offlineItem?.skip_intro_sec || 0,
-      end_credits_sec: offlineItem?.end_credits_sec || 0,
-      next_episode_slug: '',
-      resume_seconds: offlineItem?.resume_sec || 0,
-      webview_url: '',
-      episodes: syntheticEpisodes,
-    };
-  }, [offlineItem, params.streamCode, isHlsOffline, syntheticEpisodes]);
-
-  const effectiveRatio =
-    dragRatio !== null
-      ? dragRatio
-      : duration > 0
-        ? Math.min(1, Math.max(0, currentTime / duration))
-        : 0;
-  const shownClockSec = dragRatio !== null ? dragRatio * duration : currentTime;
-  const progressPct = effectiveRatio * 100;
-  const displayMetaParts = [
-    params.episodeTitle,
-    'Ngoại tuyến',
-    duration > 0 ? formatClock(duration) : '',
-  ].filter(Boolean);
-
-  return (
-    <View style={[styles.flex, { backgroundColor: '#000000' }]}>
-      <VideoView
-        ref={videoViewRef}
-        player={player}
-        style={StyleSheet.absoluteFill}
-        contentFit={settings.videoFillMode || 'contain'}
-        nativeControls={false}
-        allowsPictureInPicture={settings.pipEnabled}
-        startsPictureInPictureAutomatically={settings.pipEnabled}
-        {...({ contrastEnhance: settings.highContrastMode } as any)}
-        onPictureInPictureStart={() => {
-          setIsInPip(true);
-          syncNativePipSubtitle(true);
-          setTimeout(() => syncNativePipSubtitle(true), 150);
-          onPipChange(true);
-        }}
-        onPictureInPictureStop={() => {
-          setIsInPip(false);
-          syncNativePipSubtitle(false);
-          onPipChange(false);
-        }}
-      />
-
-      {!isInPip && activeCueText ? (
-        <View
-          pointerEvents="none"
-          style={[
-            styles.subOverlayWrap,
-            { bottom: Math.max(20, settings.subtitleBottomOffset || 34) },
-          ]}
-        >
-          <Text
-            style={[
-              styles.subOverlayTxt,
-              {
-                fontSize: settings.subtitleFontSize || 17,
-                backgroundColor: `rgba(0, 0, 0, ${settings.subtitleBgOpacity ?? 0.55})`,
-              },
-            ]}
-          >
-            {activeCueText}
-          </Text>
-        </View>
-      ) : null}
-
-      <Pressable
-        style={StyleSheet.absoluteFill}
-        onPress={() => {
-          if (activePanel) {
-            setActivePanel(null);
-          } else {
-            setHudVisible((v) => !v);
-          }
-        }}
-      />
-
-      {toastMsg ? (
-        <View pointerEvents="none" style={styles.toastWrap}>
-          <GlassSurface variant="liquid" intensity={82} radius={40} style={styles.toastCard}>
-            <Ionicons name="sparkles" size={16} color={COLORS.accent} />
-            <Text style={styles.toastTxt}>{toastMsg}</Text>
-          </GlassSurface>
-        </View>
-      ) : null}
-
-      {hudVisible ? (
-        <View
-          pointerEvents="box-none"
-          style={[
-            styles.hudLayer,
-            {
-              paddingLeft: Math.max(20, insets.left + 10),
-              paddingRight: Math.max(20, insets.right + 10),
-              paddingTop: 14,
-              paddingBottom: 14,
-            },
-          ]}
-        >
-          <View style={styles.topHud}>
-            <View style={styles.topLeft}>
-              <TouchableOpacity
-                activeOpacity={0.78}
-                onPress={() => {
-                  if (offlineItem?.id && currentTimeRef.current > 3) {
-                    void saveOfflineResumePosition(
-                      offlineItem.id,
-                      currentTimeRef.current,
-                      durationRef.current || offlineItem.duration_sec,
-                      { flushDisk: true }
-                    ).then(() => syncOfflineItemProgressToServer(offlineItem.id));
-                  }
-                  try {
-                    player.pause();
-                  } catch {}
-                  onClose();
-                }}
-              >
-                <GlassSurface variant="liquid" intensity={82} radius={40} style={styles.glassIconBtn}>
-                  <Ionicons name="chevron-back" size={28} color="#FFF" />
-                </GlassSurface>
-              </TouchableOpacity>
-              <View style={{ maxWidth: winWidth * 0.44 }}>
-                <Text style={styles.hudTitle} numberOfLines={1}>
-                  {params.title}
-                </Text>
-                <Text style={styles.hudSub} numberOfLines={1}>
-                  {displayMetaParts.join(' • ')}
-                </Text>
-              </View>
-            </View>
-
-            <GlassSurface variant="liquid" intensity={82} radius={40} style={styles.topRightCapsule}>
-              {(offlineItem?.subtitles?.length || 0) > 0 ? (
-                <TouchableOpacity
-                  style={styles.capsuleIconBtn}
-                  onPress={() => setActivePanel('subtitles')}
-                >
-                  <Ionicons name="chatbox-ellipses-outline" size={25} color="#FFF" />
-                </TouchableOpacity>
-              ) : null}
-              {settings.pipEnabled ? (
-                <TouchableOpacity
-                  style={styles.capsuleIconBtn}
-                  onPress={async () => {
-                    Haptics.selectionAsync();
-                    scheduleHideHud();
-                    try {
-                      if (
-                        typeof isPictureInPictureSupported === 'function' &&
-                        !isPictureInPictureSupported()
-                      ) {
-                        showToast('Thiết bị hiện chưa hỗ trợ thu nhỏ khung hình');
-                        return;
-                      }
-                      setIsInPip(true);
-                      syncNativePipSubtitle(true);
-                      await videoViewRef.current?.startPictureInPicture();
-                    } catch {
-                      setIsInPip(false);
-                      syncNativePipSubtitle(false);
-                      showToast('Không thể mở thu nhỏ khung hình lúc này');
-                    }
-                  }}
-                >
-                  <Ionicons name="albums-outline" size={25} color="#FFF" />
-                </TouchableOpacity>
-              ) : null}
-              <TouchableOpacity
-                style={styles.capsuleIconBtn}
-                onPress={() => setActivePanel('settings')}
-              >
-                <Ionicons name="settings-outline" size={26} color="#FFF" />
-              </TouchableOpacity>
-            </GlassSurface>
-          </View>
-
-          <GlassSurface
-            variant="liquid"
-            intensity={82}
-            radius={40}
-            style={[styles.sideToggles, { right: Math.max(16, insets.right + 10) }]}
-          >
-            <TouchableOpacity
-              style={[
-                styles.sideIconBtn,
-                settings.highContrastMode && styles.sideIconBtnActive,
-              ]}
-              onPress={() => {
-                const nextVal = !settings.highContrastMode;
-                Haptics.selectionAsync();
-                updateSetting('highContrastMode', nextVal);
-                showToast(nextVal ? 'Đã bật Tăng độ tương phản' : 'Đã tắt Tăng độ tương phản');
-                scheduleHideHud();
-              }}
-            >
-              <Ionicons name="contrast" size={24} color="#FFF" />
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[
-                styles.sideIconBtn,
-                settings.videoFillMode === 'cover' && styles.sideIconBtnActive,
-              ]}
-              onPress={() => {
-                const nextMode = settings.videoFillMode === 'cover' ? 'contain' : 'cover';
-                Haptics.selectionAsync();
-                updateSetting('videoFillMode', nextMode);
-                showToast(nextMode === 'cover' ? 'Tràn viền màn hình: Bật' : 'Tỷ lệ màn hình gốc');
-                scheduleHideHud();
-              }}
-            >
-              <Ionicons name="scan" size={24} color="#FFF" />
-            </TouchableOpacity>
-          </GlassSurface>
-
-          <View style={styles.centerControls} pointerEvents="box-none">
-            <TouchableOpacity
-              activeOpacity={0.78}
-              onPress={() => {
-                hasUserScrubbedRef.current = true;
-                Haptics.selectionAsync();
-                player.currentTime = Math.max(0, player.currentTime - 10);
-                scheduleHideHud();
-              }}
-            >
-              <GlassSurface variant="liquid" intensity={82} radius={40} style={styles.seekBtn}>
-                <Ionicons name="play-back" size={30} color="#FFF" />
-                <Text style={styles.seekLabel}>10s</Text>
-              </GlassSurface>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              activeOpacity={0.78}
-              onPress={() => {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                if (player.playing) player.pause();
-                else player.play();
-                scheduleHideHud();
-              }}
-            >
-              <GlassSurface variant="liquid" intensity={82} radius={40} style={styles.mainPlayBtn}>
-                <Ionicons name={isPlaying ? 'pause' : 'play'} size={40} color="#FFF" />
-              </GlassSurface>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              activeOpacity={0.78}
-              onPress={() => {
-                hasUserScrubbedRef.current = true;
-                Haptics.selectionAsync();
-                player.currentTime = player.currentTime + 10;
-                scheduleHideHud();
-              }}
-            >
-              <GlassSurface variant="liquid" intensity={82} radius={40} style={styles.seekBtn}>
-                <Ionicons name="play-forward" size={30} color="#FFF" />
-                <Text style={styles.seekLabel}>10s</Text>
-              </GlassSurface>
-            </TouchableOpacity>
-          </View>
-
-          <View style={styles.bottomSection}>
-            <View style={styles.timeHeaderRow}>
-              <Text style={styles.timeTxt}>
-                {formatClock(shownClockSec)} / {formatClock(duration)}
-              </Text>
-              {sleepMinutesLeft !== null ? (
-                <Text style={styles.sleepBadge}>Hẹn tắt: {sleepMinutesLeft}p</Text>
-              ) : null}
-            </View>
-
-            <View
-              style={styles.scrubberHit}
-              onLayout={(e) => setBarWidth(e.nativeEvent.layout.width || 400)}
-              {...scrubberPanResponder.panHandlers}
-            >
-              <View style={styles.scrubberBg}>
-                <View style={[styles.scrubberFill, { width: `${progressPct}%` }]} />
-              </View>
-              <View style={[styles.scrubberThumb, { left: `${progressPct}%` }]} />
-            </View>
-
-            <View style={styles.actionBarRow}>
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                style={{ flex: 1 }}
-                contentContainerStyle={styles.actionsLeftScroll}
-              >
-                {nextOfflineEpisode && onSwitchOfflineItem ? (
-                  <TouchableOpacity
-                    activeOpacity={0.78}
-                    onPress={() => {
-                      if (offlineItem?.id && currentTimeRef.current > 3) {
-                        void saveOfflineResumePosition(
-                          offlineItem.id,
-                          currentTimeRef.current,
-                          durationRef.current || offlineItem.duration_sec,
-                          { flushDisk: true }
-                        ).then(() => syncOfflineItemProgressToServer(offlineItem.id));
-                      }
-                      onSwitchOfflineItem(nextOfflineEpisode);
-                    }}
-                  >
-                    <GlassSurface variant="liquid" intensity={82} radius={40} style={styles.actionPill}>
-                      <Ionicons name="play-skip-forward" size={22} color="#FFF" />
-                      <Text style={styles.actionPillTxt}>Tập tiếp theo</Text>
-                    </GlassSurface>
-                  </TouchableOpacity>
-                ) : null}
-                {syntheticEpisodes.length > 1 ? (
-                  <TouchableOpacity
-                    activeOpacity={0.78}
-                    onPress={() => setActivePanel('episodes')}
-                  >
-                    <GlassSurface
-                      variant="liquid"
-                      intensity={82}
-                      radius={40}
-                      style={[styles.actionPill, styles.actionIconPill]}
-                    >
-                      <Ionicons name="list-outline" size={23} color="#FFF" />
-                    </GlassSurface>
-                  </TouchableOpacity>
-                ) : null}
-                <TouchableOpacity
-                  activeOpacity={0.78}
-                  onPress={() => setActivePanel('info')}
-                >
-                  <GlassSurface
-                    variant="liquid"
-                    intensity={82}
-                    radius={40}
-                    style={[styles.actionPill, styles.actionIconPill]}
-                  >
-                    <Ionicons name="person-circle-outline" size={23} color="#FFF" />
-                  </GlassSurface>
-                </TouchableOpacity>
-              </ScrollView>
-
-              <View style={styles.actionsRightFixed}>
-                <TouchableOpacity
-                  activeOpacity={0.78}
-                  onPress={() => setActivePanel('speed')}
-                >
-                  <GlassSurface variant="liquid" intensity={82} radius={40} style={styles.actionPill}>
-                    <Ionicons name="play" size={18} color="#FFF" />
-                    <Text style={styles.actionPillTxt}>{playbackRate}x</Text>
-                  </GlassSurface>
-                </TouchableOpacity>
-              </View>
-            </View>
-          </View>
-        </View>
-      ) : null}
-
-      <PlayerOverlayPanels
-        activePanel={activePanel}
-        onClose={() => setActivePanel(null)}
-        onSwitchPanel={setActivePanel}
-        title={params.title}
-        episodeTitle={params.episodeTitle}
-        currentStreamCode={params.streamCode}
-        resolved={syntheticResolved}
-        activeQuality={null}
-        onSelectQuality={() => {}}
-        onSelectSourceServer={() => {}}
-        episodes={syntheticEpisodes}
-        seasons={[]}
-        onSelectEpisode={(_ep, idx) => {
-          const targetItem = offlineEpisodes[idx];
-          if (targetItem && onSwitchOfflineItem) {
-            if (offlineItem?.id && currentTimeRef.current > 3) {
-              void saveOfflineResumePosition(
-                offlineItem.id,
-                currentTimeRef.current,
-                durationRef.current || offlineItem.duration_sec,
-                { flushDisk: true }
-              ).then(() => syncOfflineItemProgressToServer(offlineItem.id));
-            }
-            onSwitchOfflineItem(targetItem);
-          }
-        }}
-        activeSubIndex={activeSubIndex}
-        onSelectSubtitleIndex={(idx) => setActiveSubIndex(idx)}
-        playbackRate={playbackRate}
-        onSelectRate={(rate) => {
-          setPlaybackRate(rate);
-          player.playbackRate = rate;
-          showToast(`Tốc độ phát: ${rate}x`);
-        }}
-        settings={settings}
-        onUpdateSetting={(key, val) => updateSetting(key, val)}
-        sleepMinutesLeft={sleepMinutesLeft}
-        onSelectSleepTimer={(mins) => {
-          setSleepMinutesLeft(mins);
-          showToast(mins ? `Hẹn giờ tắt sau ${mins} phút` : 'Đã tắt hẹn giờ ngủ');
-        }}
-        inWishlist={false}
-        onToggleWishlist={() => {}}
-        offlineItem={offlineItem || null}
-        onDownloadOffline={() => {}}
-        onOpenWebPlayer={() => {}}
-        user={user}
-      />
-    </View>
-  );
-}
-
-interface ActiveEpisodeCtx {
-  streamCode: string;
-  serverTitle: string;
-  serverTapPhim: string;
-  serverFileKey: string;
-  nextStreamCode: string;
-  title: string;
-  episodeTitle: string;
 }
 
 export function PlayerModal({
   visible,
   params,
   onClose,
+  onSwitchEpisode,
   onSwitchOfflineItem,
 }: PlayerModalProps) {
   const insets = useSafeAreaInsets();
   const { width: winWidth, height: winHeight } = useWindowDimensions();
-  const { cookies, isLocked } = useAuth();
-  const { settings } = useSettings();
-  const isLockedRef = useRef(isLocked);
-  isLockedRef.current = isLocked;
-  const winDimsRef = useRef({ width: winWidth, height: winHeight });
-  winDimsRef.current = { width: winWidth, height: winHeight };
+  const { user, isLocked } = useAuth();
+  const { settings, updateSetting } = useSettings();
 
-  const [deviceHglk, setDeviceHglk] = useState<string>(cachedDeviceHglk || '');
-  const [webHudReady, setWebHudReady] = useState(false);
-  const [offlineReady, setOfflineReady] = useState(false);
-  const [renderSkeleton, setRenderSkeleton] = useState(true);
+  // Mount two AVPlayers unconditionally for zero-glitch 2-layer ping-pong transitions
+  const playerA = useVideoPlayer(null, (p) => {
+    p.allowsExternalPlayback = true;
+    p.timeUpdateEventInterval = 0.25;
+    p.keepScreenOnWhilePlaying = true;
+    p.staysActiveInBackground = Boolean(settings.pipEnabled);
+  });
+  const playerB = useVideoPlayer(null, (p) => {
+    p.allowsExternalPlayback = true;
+    p.timeUpdateEventInterval = 0.25;
+    p.keepScreenOnWhilePlaying = true;
+    p.staysActiveInBackground = Boolean(settings.pipEnabled);
+  });
+
+  const viewARef = useRef<VideoView | null>(null);
+  const viewBRef = useRef<VideoView | null>(null);
+  const layerAOpacity = useRef(new Animated.Value(1)).current;
+  const layerBOpacity = useRef(new Animated.Value(0)).current;
+
+  const [activeLayer, setActiveLayer] = useState<'A' | 'B'>('A');
+  const activeLayerRef = useRef<'A' | 'B'>('A');
+  activeLayerRef.current = activeLayer;
+
+  const getActivePlayer = useCallback((): VideoPlayer => {
+    return activeLayerRef.current === 'A' ? playerA : playerB;
+  }, [playerA, playerB]);
+
+  const getInactivePlayer = useCallback((): VideoPlayer => {
+    return activeLayerRef.current === 'A' ? playerB : playerA;
+  }, [playerA, playerB]);
+
+  // Core player UI states
   const [localServerPort, setLocalServerPort] = useState<number>(() =>
     getCachedOfflineMediaServerPort()
   );
-  const [offlineItems, setOfflineItems] = useState<OfflineDownloadItem[]>([]);
-  const [offlineSheetOpen, setOfflineSheetOpen] = useState(false);
-  const [castPopupOpen, setCastPopupOpen] = useState(false);
-  const [castMoviePayload, setCastMoviePayload] = useState<CastMoviePayload | null>(null);
-  const [activeEpisodeCtx, setActiveEpisodeCtx] = useState<ActiveEpisodeCtx | null>(null);
+  const [offlineItems, setOfflineItems] = useState<OfflineDownloadItem[]>(() =>
+    getOfflineDownloadsSnapshot()
+  );
+  const [resolved, setResolved] = useState<StreamResolvedData | null>(null);
   const [detailEpisodes, setDetailEpisodes] = useState<EpisodeItem[]>([]);
   const [moviePosterMeta, setMoviePosterMeta] = useState<{ poster: string; thumb: string }>({
     poster: '',
     thumb: '',
   });
+  const [activeStreamCode, setActiveStreamCode] = useState('');
+  const [activeEpTitle, setActiveEpTitle] = useState('');
+  const [qualityBadge, setQualityBadge] = useState('1080pHD');
+  const [inWishlist, setInWishlist] = useState(false);
+  const [reaction, setReaction] = useState<'like' | 'dislike' | null>(null);
 
-  const webProgressRef = useRef<{ position: number; duration: number; streamCode: string }>({
-    position: 0,
-    duration: 0,
-    streamCode: '',
-  });
+  // Server orchestration states
+  const [servers, setServers] = useState<ServerRuntimeState[]>([]);
+  const serversRef = useRef<ServerRuntimeState[]>([]);
+  serversRef.current = servers;
+  const [activeServerId, setActiveServerId] = useState<BackupServerId | null>(null);
+  const activeServerIdRef = useRef<BackupServerId | null>(null);
+  activeServerIdRef.current = activeServerId;
+  const manualLockedServerRef = useRef<BackupServerId | null>(null);
+  const erroredServersRef = useRef<Set<BackupServerId>>(new Set());
+  const pipProxyBrokenRef = useRef(false);
+  const activeMediaUrlRef = useRef('');
+  const [pingRefreshing, setPingRefreshing] = useState(false);
+
+  // Playback & timeline states
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [isBuffering, setIsBuffering] = useState(true);
+  const [firstFrameReady, setFirstFrameReady] = useState(false);
+  const [renderSkeleton, setRenderSkeleton] = useState(true);
   const skeletonOpacity = useRef(new Animated.Value(0)).current;
   const skeletonShownAtRef = useRef(0);
-  const [proxyConfig, setProxyConfigState] = useState(() => getProxyConfig());
-  const isProxyActive = useMemo(
-    () => isNativeProxySupported() && isProxyActiveForConfig(proxyConfig),
-    [proxyConfig]
+
+  const [currentTime, setCurrentTime] = useState(0);
+  const currentTimeRef = useRef(0);
+  currentTimeRef.current = currentTime;
+  const [duration, setDuration] = useState(0);
+  const durationRef = useRef(0);
+  durationRef.current = duration;
+  const [bufferedPos, setBufferedPos] = useState(0);
+  const [dragRatio, setDragRatio] = useState<number | null>(null);
+  const [barWidth, setBarWidth] = useState(400);
+  const barWidthRef = useRef(400);
+  barWidthRef.current = barWidth;
+
+  const [playbackRate, setPlaybackRate] = useState(1.0);
+  const [holdBoostActive, setHoldBoostActive] = useState(false);
+  const savedRateBeforeHoldRef = useRef(1.0);
+  const [isInPip, setIsInPip] = useState(false);
+  const isInPipRef = useRef(false);
+  isInPipRef.current = isInPip;
+
+  // Subtitles & Preload states
+  const [vnCues, setVnCues] = useState<ParsedVttCue[]>([]);
+  const [enCues, setEnCues] = useState<ParsedVttCue[]>([]);
+  const [vnSubUrl, setVnSubUrl] = useState('');
+  const [enSubUrl, setEnSubUrl] = useState('');
+  const [preloadState, setPreloadState] = useState<PreloadVisualState>('idle');
+  const preloadStateRef = useRef<PreloadVisualState>('idle');
+  preloadStateRef.current = preloadState;
+  const preloadedNextRef = useRef<PreloadedNextPackage | null>(null);
+  const nextAutoSwitchTriggeredRef = useRef(false);
+  const [nextCountdownSec, setNextCountdownSec] = useState<number | null>(null);
+
+  // Seek warning & Intro skip toast
+  const [seekReturnSec, setSeekReturnSec] = useState<number | null>(null);
+  const seekReturnTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [toastMsg, setToastMsg] = useState('');
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // HUD & Popovers & Modals
+  const [hudVisible, setHudVisible] = useState(true);
+  const hudVisibleRef = useRef(true);
+  hudVisibleRef.current = hudVisible;
+  const hudHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hasAutoHiddenInitialHudRef = useRef(false);
+  const userInteractedHudRef = useRef(false);
+
+  const [speedMenuOpen, setSpeedMenuOpen] = useState(false);
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+  const [serverModalOpen, setServerModalOpen] = useState(false);
+  const [episodeModalOpen, setEpisodeModalOpen] = useState(false);
+  const [subSettingsOpen, setSubSettingsOpen] = useState(false);
+  const [generalSettingsOpen, setGeneralSettingsOpen] = useState(false);
+  const [offlineSheetOpen, setOfflineSheetOpen] = useState(false);
+  const [castPopupOpen, setCastPopupOpen] = useState(false);
+  const [infoPanel, setInfoPanel] = useState<PlayerPanelType>(null);
+
+  // Sleep timer
+  const [sleepTimerValue, setSleepTimerValue] = useState<SleepTimerSettingValue>(null);
+  const [sleepSecondsLeft, setSleepSecondsLeft] = useState<number | null>(null);
+
+  // Lifecycle guards & refs
+  const isLockedRef = useRef(isLocked);
+  isLockedRef.current = isLocked;
+  const prevLockedRef = useRef(isLocked);
+  const wasPlayingBeforeLockRef = useRef(false);
+  const preBackgroundPlayingRef = useRef<boolean | null>(null);
+  const winDimsRef = useRef({ width: winWidth, height: winHeight });
+  winDimsRef.current = { width: winWidth, height: winHeight };
+  const pipRestoreTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const initialSeekPendingRef = useRef<{ sec: number; done: boolean }>({ sec: 0, done: true });
+  const skipNextReloadCodeRef = useRef<string | null>(null);
+  const loadSeqRef = useRef(0);
+  const checkFilePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastServerProgressPushRef = useRef(0);
+  const lastAutoQueuedSigRef = useRef('');
+  const lastTapStageRef = useRef<{ time: number; side: 'left' | 'right' | 'center' }>({
+    time: 0,
+    side: 'center',
+  });
+  const holdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const holdActivatedRef = useRef(false);
+
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const resolvedRef = useRef<StreamResolvedData | null>(resolved);
+  resolvedRef.current = resolved;
+
+  const isOfflineOnlyMode = Boolean(params?.offlineUri || params?.offlineItem);
+
+  const showToast = useCallback((msg: string) => {
+    setToastMsg(msg);
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setToastMsg(''), 2600);
+  }, []);
+
+  const clearHudTimer = useCallback(() => {
+    if (hudHideTimerRef.current) {
+      clearTimeout(hudHideTimerRef.current);
+      hudHideTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleHudAutoHide = useCallback(
+    (delayMs = 3600) => {
+      clearHudTimer();
+      hudHideTimerRef.current = setTimeout(() => {
+        setSpeedMenuOpen(false);
+        setMoreMenuOpen(false);
+        setHudVisible(false);
+      }, delayMs);
+    },
+    [clearHudTimer]
   );
 
-  const webViewRef = useRef<React.ComponentRef<typeof WebView> | null>(null);
-  const isInPipRef = useRef(false);
-  const pipRestoreTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const prevLockedRef = useRef(isLocked);
-  const lastAutoQueuedSigRef = useRef('');
-  const detailEpisodesRef = useRef<EpisodeItem[]>([]);
-  detailEpisodesRef.current = detailEpisodes;
-  const fetchedDetailForVideoRef = useRef(0);
-  const prevPreferOfflineRef = useRef(settings.preferOfflineWhenOnline);
-
-  const isOfflineMode = Boolean(params?.offlineUri || params?.offlineItem);
-  const activeStreamCode = params?.streamCode || '';
-
-  useEffect(() => {
-    return subscribeProxyConfig(setProxyConfigState);
-  }, []);
-
-  useEffect(() => {
-    loadOfflineDownloads().then(setOfflineItems).catch(() => {});
-    return subscribeOfflineDownloads(setOfflineItems);
-  }, []);
-
-  // Ensure local HTTP loopback server is running for offline HLS & local-first online playback
-  useEffect(() => {
-    if (!visible) return;
-    ensureOfflineMediaServer(getOfflineRootDir())
-      .then((port) => {
-        if (port > 0) setLocalServerPort(port);
-      })
-      .catch(() => {});
-  }, [visible]);
-
-  // Seed episode list & poster metadata when online player opens
-  useEffect(() => {
-    if (!visible || !params || isOfflineMode) return;
-    setMoviePosterMeta({
-      poster: params.posterUrl || '',
-      thumb: params.thumbnailUrl || '',
-    });
-    if (params.episodes && params.episodes.length > 0) {
-      setDetailEpisodes(params.episodes);
-      fetchedDetailForVideoRef.current = params.videosId;
-    } else if (params.videosId > 0 && fetchedDetailForVideoRef.current !== params.videosId) {
-      fetchedDetailForVideoRef.current = params.videosId;
-      fetchMovieDetailsApi(params.videosId)
-        .then((res) => {
-          if (!res?.movie) return;
-          const allEps =
-            res.movie.episodes && res.movie.episodes.length > 0
-              ? res.movie.episodes
-              : res.movie.seasons?.[0]?.episodes || [];
-          setDetailEpisodes(allEps);
-          setMoviePosterMeta({
-            poster: res.movie.poster_url || '',
-            thumb: res.movie.thumbnail_url || '',
-          });
-        })
-        .catch(() => {});
-    }
-  }, [visible, params, isOfflineMode]);
-
-  // Preload device _hglk cookie token in background once on mount
-  useEffect(() => {
-    if (!cachedDeviceHglk) {
-      getOrCreateDeviceHglk()
-        .then((val) => setDeviceHglk((prev) => prev || val))
-        .catch(() => {});
-    }
-  }, []);
+  const showHudWithTimer = useCallback(
+    (delayMs = 3600) => {
+      setHudVisible(true);
+      scheduleHudAutoHide(delayMs);
+    },
+    [scheduleHudAutoHide]
+  );
 
   const clearPipRestoreTimer = useCallback(() => {
     if (pipRestoreTimerRef.current) {
@@ -1313,340 +425,1417 @@ export function PlayerModal({
     }, 650);
   }, [visible, clearPipRestoreTimer]);
 
-  // Pause WebView playback whenever app is locked by Face ID
-  const pauseWebViewForLock = useCallback(() => {
-    if (isOfflineMode) return;
-    webViewRef.current?.injectJavaScript(`
-      (function() {
-        try {
-          window.__dvaAppLockedPaused = true;
-          if (typeof window.__dvaWasPlayingBeforeLock !== 'boolean') {
-            var playingNow = false;
-            try {
-              if (window.jwplayer) {
-                var jwInst = window.jwplayer();
-                var jwSt = jwInst && typeof jwInst.getState === 'function' ? jwInst.getState() : '';
-                if (jwSt === 'playing' || jwSt === 'buffering') playingNow = true;
-              }
-            } catch (e) {}
-            if (!playingNow) {
-              var vidsCheck = document.getElementsByTagName('video');
-              for (var k = 0; k < vidsCheck.length; k++) {
-                if (!vidsCheck[k].paused && !vidsCheck[k].ended) {
-                  playingNow = true;
-                  break;
-                }
-              }
-            }
-            window.__dvaWasPlayingBeforeLock = playingNow;
-          }
-          if (window.jwplayer) {
-            var jw = window.jwplayer();
-            if (jw && typeof jw.pause === 'function') jw.pause();
-          }
-          var vids = document.getElementsByTagName('video');
-          for (var i = 0; i < vids.length; i++) {
-            vids[i].pause();
-          }
-        } catch (e) {}
-      })();
-      true;
-    `);
-  }, [isOfflineMode]);
+  // Subscriptions: offline store + loopback server
+  useEffect(() => {
+    loadOfflineDownloads().then(setOfflineItems).catch(() => {});
+    return subscribeOfflineDownloads(setOfflineItems);
+  }, []);
 
   useEffect(() => {
-    const wasLocked = prevLockedRef.current;
-    prevLockedRef.current = isLocked;
+    if (!visible) return;
+    ensureOfflineMediaServer(getOfflineRootDir())
+      .then((port) => {
+        if (port > 0) setLocalServerPort(port);
+      })
+      .catch(() => {});
+  }, [visible]);
 
-    if (!visible || isOfflineMode) {
-      return;
+  // Keep player staysActiveInBackground synced with PiP setting
+  useEffect(() => {
+    try {
+      playerA.staysActiveInBackground = Boolean(settings.pipEnabled);
+      playerB.staysActiveInBackground = Boolean(settings.pipEnabled);
+    } catch {}
+  }, [playerA, playerB, settings.pipEnabled]);
+
+  // Derive current episode list & next episode seamlessly
+  const effectiveEpisodes: EpisodeItem[] = useMemo(() => {
+    if (resolved?.episodes && resolved.episodes.length > 0) return resolved.episodes;
+    if (detailEpisodes.length > 0) return detailEpisodes;
+    if (params?.episodes && params.episodes.length > 0) return params.episodes;
+    if (params?.offlineEpisodes && params.offlineEpisodes.length > 0) {
+      return params.offlineEpisodes.map((it, idx) => ({
+        episodes_id: it.episode_id || idx + 1,
+        seasons_id: 0,
+        episodes_name: it.episode_title || `Tập ${it.episode_number || idx + 1}`,
+        stream_code: it.stream_code,
+        player_url: '',
+        full_url: '',
+        order: it.episode_number || idx + 1,
+      }));
     }
+    return [];
+  }, [resolved?.episodes, detailEpisodes, params?.episodes, params?.offlineEpisodes]);
 
-    if (!isLocked) {
-      webViewRef.current?.injectJavaScript(`
-        (function() {
-          try {
-            window.__dvaAppLockedPaused = false;
-            var shouldResume = ${wasLocked ? 'Boolean(window.__dvaWasPlayingBeforeLock)' : 'false'};
-            window.__dvaWasPlayingBeforeLock = undefined;
-            if (shouldResume) {
-              if (window.jwplayer) {
-                var jw = window.jwplayer();
-                if (jw && typeof jw.play === 'function') {
-                  jw.play(true);
-                  return;
-                }
+  const currentNextEpisode = useMemo(() => {
+    if (resolved?.next_episode && resolved.next_episode.stream_code !== activeStreamCode) {
+      return {
+        ep: resolved.next_episode,
+        index: resolved.next_episode.index ?? 0,
+      };
+    }
+    if (effectiveEpisodes.length > 1 && activeStreamCode) {
+      const idx = effectiveEpisodes.findIndex((e) => e.stream_code === activeStreamCode);
+      if (idx >= 0) {
+        const parseEpNum = (n?: string) => {
+          const m = String(n || '').match(/(\d+(?:\.\d+)?)/);
+          return m ? parseFloat(m[1]) : null;
+        };
+        const firstN = parseEpNum(effectiveEpisodes[0]?.episodes_name);
+        const lastN = parseEpNum(effectiveEpisodes[effectiveEpisodes.length - 1]?.episodes_name);
+        const isDesc = firstN !== null && lastN !== null && firstN > lastN;
+        const nextIdx = isDesc ? idx - 1 : idx + 1;
+        if (nextIdx >= 0 && nextIdx < effectiveEpisodes.length) {
+          return { ep: effectiveEpisodes[nextIdx], index: nextIdx };
+        }
+      }
+    }
+    return null;
+  }, [resolved?.next_episode, effectiveEpisodes, activeStreamCode]);
+
+  const matchedOfflineItem = useMemo(() => {
+    if (params?.offlineItem && params.offlineItem.stream_code === activeStreamCode) {
+      return params.offlineItem;
+    }
+    return findCompletedOfflineItem({
+      streamCode: activeStreamCode,
+      videosId: params?.videosId,
+      episodeId: params?.episodeId,
+    });
+  }, [params?.offlineItem, params?.videosId, params?.episodeId, activeStreamCode, offlineItems]);
+
+  const downloadingOfflineItem = useMemo(() => {
+    return (
+      offlineItems.find(
+        (i) =>
+          (activeStreamCode && i.stream_code === activeStreamCode) ||
+          (params?.videosId &&
+            i.videos_id === params.videosId &&
+            i.episode_id === (params.episodeId || 0))
+      ) || null
+    );
+  }, [offlineItems, activeStreamCode, params?.videosId, params?.episodeId]);
+
+  const syncNativePipSubtitleTrack = useCallback(
+    (player: VideoPlayer, enable: boolean) => {
+      try {
+        if (!enable || (!settingsRef.current.subShowVi && !settingsRef.current.subShowEn)) {
+          player.subtitleTrack = null;
+          return;
+        }
+        const pool: SubtitleTrack[] = player.availableSubtitleTracks || [];
+        if (pool.length === 0) return;
+        const preferEn = !settingsRef.current.subShowVi && settingsRef.current.subShowEn;
+        let chosen: SubtitleTrack | null = null;
+        if (preferEn) {
+          chosen =
+            pool.find(
+              (t) =>
+                (t.language || '').toLowerCase().startsWith('en') ||
+                (t.label || '').toLowerCase().includes('eng') ||
+                (t.label || '').toLowerCase().includes('anh')
+            ) || pool[0];
+        } else {
+          chosen =
+            pool.find(
+              (t) =>
+                (t.language || '').toLowerCase().startsWith('vi') ||
+                (t.label || '').toLowerCase().includes('việt') ||
+                (t.label || '').toLowerCase().includes('viet')
+            ) || pool[0];
+        }
+        player.subtitleTrack = chosen || null;
+      } catch {}
+    },
+    []
+  );
+
+  // Persist current watch progress to backend + bidirectional offline sync
+  const persistCurrentProgress = useCallback(
+    (forceFlush = false) => {
+      if (!params || !activeStreamCode) return;
+      const pos = Math.floor(currentTimeRef.current || 0);
+      const dur = Math.floor(durationRef.current || 0);
+      if (pos < 3) return;
+
+      if (matchedOfflineItem?.id) {
+        void saveOfflineResumePosition(matchedOfflineItem.id, pos, dur, {
+          flushDisk: forceFlush,
+        }).then(() => {
+          if (forceFlush && matchedOfflineItem?.id) {
+            void syncOfflineItemProgressToServer(matchedOfflineItem.id);
+          }
+        });
+      }
+
+      if (!isOfflineOnlyMode && params.videosId > 0) {
+        const { episodeNumber, seasonId } = resolveEpisodeMetaFromParams(
+          effectiveEpisodes,
+          activeStreamCode,
+          params.episodeNumber,
+          params.seasonId,
+          params.episodeId
+        );
+        saveWatchProgressApi({
+          videos_id: params.videosId,
+          stream_code: activeStreamCode,
+          position_sec: pos,
+          duration_sec: dur,
+          episode_number: episodeNumber,
+          season_id: seasonId,
+          title: params.title,
+        }).catch(() => {});
+        void syncOnlineProgressToOffline({
+          streamCode: activeStreamCode,
+          videosId: params.videosId,
+          episodeId: params.episodeId,
+          positionSec: pos,
+          durationSec: dur,
+          flushDisk: forceFlush,
+        });
+      }
+    },
+    [params, activeStreamCode, matchedOfflineItem?.id, isOfflineOnlyMode, effectiveEpisodes]
+  );
+
+  // Periodic watch progress save every 10s
+  useEffect(() => {
+    if (!visible || !activeStreamCode) return;
+    const iv = setInterval(() => {
+      if (isPlaying && !isLockedRef.current && currentTimeRef.current > 3) {
+        const now = Date.now();
+        if (now - lastServerProgressPushRef.current >= 9500) {
+          lastServerProgressPushRef.current = now;
+          persistCurrentProgress(false);
+        }
+      }
+    }, 5000);
+    return () => clearInterval(iv);
+  }, [visible, activeStreamCode, isPlaying, persistCurrentProgress]);
+
+  // Load media URL into active AVPlayer
+  const playServerOnActiveLayer = useCallback(
+    async (
+      srv: ServerRuntimeState,
+      opts: { seekToSec?: number; serverFileKey: string; vnUrl: string; enUrl: string; title: string }
+    ) => {
+      const player = getActivePlayer();
+      const inactive = getInactivePlayer();
+      try {
+        inactive.muted = true;
+        inactive.pause();
+      } catch {}
+
+      const wrapped = wrapUrlForIosNativePlayer({
+        rawUrl: srv.streamUrl,
+        format: srv.format,
+        serverId: srv.id,
+        vnSubUrl: opts.vnUrl,
+        enSubUrl: opts.enUrl,
+        localServerPort,
+        pipEnabled: settingsRef.current.pipEnabled,
+        pipProxyBroken: pipProxyBrokenRef.current,
+      });
+
+      if (!wrapped.uri) return;
+      activeMediaUrlRef.current = wrapped.uri;
+      setActiveServerId(srv.id);
+      activeServerIdRef.current = srv.id;
+      setIsBuffering(true);
+
+      if (opts.seekToSec && opts.seekToSec > 0) {
+        initialSeekPendingRef.current = { sec: opts.seekToSec, done: false };
+      }
+
+      try {
+        await player.replaceAsync({
+          uri: wrapped.uri,
+          contentType: wrapped.contentType,
+          metadata: { title: opts.title, artist: 'Đặng Việt Anh' },
+        });
+        player.muted = false;
+        player.playbackRate = playbackRate;
+        if (!isLockedRef.current) {
+          player.play();
+        }
+      } catch {}
+    },
+    [getActivePlayer, getInactivePlayer, localServerPort, playbackRate]
+  );
+
+  // Core episode loader (online + offline unified)
+  const loadEpisodeByCode = useCallback(
+    async (
+      streamCodeToLoad: string,
+      opts?: { episodeTitleHint?: string; offlineOverride?: OfflineDownloadItem | null }
+    ) => {
+      if (!params || !streamCodeToLoad) return;
+      const mySeq = ++loadSeqRef.current;
+
+      if (checkFilePollRef.current) {
+        clearInterval(checkFilePollRef.current);
+        checkFilePollRef.current = null;
+      }
+
+      manualLockedServerRef.current = null;
+      erroredServersRef.current = new Set();
+      pipProxyBrokenRef.current = false;
+      activeMediaUrlRef.current = '';
+      preloadedNextRef.current = null;
+      nextAutoSwitchTriggeredRef.current = false;
+      setPreloadState('idle');
+      setNextCountdownSec(null);
+      setSeekReturnSec(null);
+      setFirstFrameReady(false);
+      setIsBuffering(true);
+      setCurrentTime(0);
+      setDuration(0);
+      setBufferedPos(0);
+      setActiveStreamCode(streamCodeToLoad);
+      if (opts?.episodeTitleHint) setActiveEpTitle(opts.episodeTitleHint);
+
+      hasAutoHiddenInitialHudRef.current = false;
+      userInteractedHudRef.current = false;
+      setHudVisible(true);
+
+      // Pause both layers cleanly before starting new episode
+      try {
+        playerA.pause();
+        playerB.pause();
+      } catch {}
+
+      const localOffline =
+        opts?.offlineOverride ||
+        findCompletedOfflineItem({
+          streamCode: streamCodeToLoad,
+          videosId: params.videosId,
+          episodeId: params.episodeId,
+        });
+
+      // Pure offline mode when opened from Offline Library without network dependency
+      if (isOfflineOnlyMode && localOffline) {
+        const synthEps: EpisodeItem[] = (params.offlineEpisodes || []).map((it, idx) => ({
+          episodes_id: it.episode_id || idx + 1,
+          seasons_id: 0,
+          episodes_name: it.episode_title || `Tập ${it.episode_number || idx + 1}`,
+          stream_code: it.stream_code,
+          player_url: '',
+          full_url: '',
+          order: it.episode_number || idx + 1,
+        }));
+        const offIdx = (params.offlineEpisodes || []).findIndex(
+          (i) => i.id === localOffline.id
+        );
+        const nextOff =
+          offIdx >= 0 && params.offlineEpisodes && offIdx + 1 < params.offlineEpisodes.length
+            ? params.offlineEpisodes[offIdx + 1]
+            : null;
+        const synthResolved: StreamResolvedData = {
+          success: true,
+          stream_code: streamCodeToLoad,
+          server_file_key: localOffline.server_file_key || '',
+          server_movie_title: localOffline.server_movie_title || '',
+          title: localOffline.title,
+          episode_title: localOffline.episode_title || '',
+          can_play_native: true,
+          primary_url: localOffline.local_uri,
+          stream_type: localOffline.media_format || 'mp4',
+          download_mp4_url: '',
+          qualities: [],
+          subtitles: (localOffline.subtitles || []).map((s) => ({
+            label: s.label,
+            url: s.local_uri,
+            lang: s.lang,
+          })),
+          skip_intro_sec: localOffline.skip_intro_sec || 0,
+          end_credits_sec: localOffline.end_credits_sec || 0,
+          next_episode_slug: nextOff?.stream_code || '',
+          resume_seconds: localOffline.resume_sec || 0,
+          webview_url: '',
+          episodes: synthEps,
+          next_episode: nextOff
+            ? {
+                episodes_id: nextOff.episode_id || 0,
+                seasons_id: 0,
+                episodes_name: nextOff.episode_title || 'Tập tiếp theo',
+                stream_code: nextOff.stream_code,
+                player_url: '',
+                full_url: '',
+                order: nextOff.episode_number || 0,
               }
-              var vids = document.getElementsByTagName('video');
-              for (var i = 0; i < vids.length; i++) {
-                if (vids[i].paused && !vids[i].ended) {
-                  var pr = vids[i].play();
-                  if (pr && typeof pr.catch === 'function') pr.catch(function() {});
-                }
+            : null,
+        };
+        if (loadSeqRef.current !== mySeq) return;
+        setResolved(synthResolved);
+        setActiveEpTitle(localOffline.episode_title || '');
+        setQualityBadge('1080pHD');
+        if (localOffline.duration_sec) setDuration(localOffline.duration_sec);
+        const srvList = buildInitialServerStates({
+          serverFileKey: localOffline.server_file_key || '',
+          offlineItem: localOffline,
+          localServerPort,
+          resolved: synthResolved,
+        });
+        setServers(srvList);
+
+        const dual = await loadDualSubtitles({
+          serverFileKey: localOffline.server_file_key,
+          offlineItem: localOffline,
+        });
+        if (loadSeqRef.current !== mySeq) return;
+        setVnCues(dual.vnCues);
+        setEnCues(dual.enCues);
+        setVnSubUrl(dual.vnUrl);
+        setEnSubUrl(dual.enUrl);
+
+        let initialPos = localOffline.resume_sec || 0;
+        if (initialPos <= 2 && settingsRef.current.autoSkipIntro && synthResolved.skip_intro_sec > 0) {
+          initialPos = synthResolved.skip_intro_sec;
+          showToast('Đã bỏ qua đoạn giới thiệu');
+        }
+        const offSrv = srvList.find((s) => s.id === '99');
+        if (offSrv) {
+          await playServerOnActiveLayer(offSrv, {
+            seekToSec: initialPos,
+            serverFileKey: localOffline.server_file_key || '',
+            vnUrl: dual.vnUrl,
+            enUrl: dual.enUrl,
+            title: localOffline.title,
+          });
+        }
+        return;
+      }
+
+      // Online mode (with Local-First Phiên 99 support + full 11/36/40/3 engine)
+      try {
+        const [resData, serverProgRes] = await Promise.all([
+          resolveStreamApi(streamCodeToLoad, params.videosId),
+          params.videosId > 0
+            ? fetchWatchProgressApi(streamCodeToLoad, params.videosId).catch(() => null)
+            : Promise.resolve(null),
+        ]);
+        if (loadSeqRef.current !== mySeq) return;
+
+        setResolved(resData);
+        if (resData.episode_title) setActiveEpTitle(resData.episode_title);
+        if (resData.movie?.in_wishlist !== undefined) {
+          setInWishlist(Boolean(resData.movie.in_wishlist));
+        }
+        if (resData.movie?.poster_url || resData.movie?.thumbnail_url) {
+          setMoviePosterMeta({
+            poster: resData.movie?.poster_url || params.posterUrl || '',
+            thumb: resData.movie?.thumbnail_url || params.thumbnailUrl || '',
+          });
+        }
+        if (resData.episodes && resData.episodes.length > 0) {
+          setDetailEpisodes(resData.episodes);
+        }
+
+        const sfk = resData.server_file_key || localOffline?.server_file_key || '';
+        const { vnUrl: autoVnUrl, enUrl: autoEnUrl } = buildSubtitleUrls(sfk);
+        const effectiveVnUrl = autoVnUrl || resData.subtitles.find((s) => s.lang === 'vi')?.url || '';
+        const effectiveEnUrl = autoEnUrl || resData.subtitles.find((s) => s.lang === 'en')?.url || '';
+
+        // Load subtitles, measure pings, check GGD & Phiên 11/36 in parallel
+        const [dualSubs, pings, checkFileRes, apiGgd] = await Promise.all([
+          loadDualSubtitles({
+            serverFileKey: sfk,
+            resolvedSubtitles: resData.subtitles,
+            offlineItem: localOffline,
+          }),
+          measureAllServerPings(Boolean(localOffline)),
+          sfk ? checkServerFileStatus(sfk) : Promise.resolve(null),
+          sfk &&
+          !resData.ggdriver_1 &&
+          !resData.ggdriver_2 &&
+          !resData.ggdriver_3
+            ? checkGgdriverApi(sfk, resData.server_movie_title)
+            : Promise.resolve({
+                ggdriver_1: Boolean(resData.ggdriver_1),
+                ggdriver_2: Boolean(resData.ggdriver_2),
+                ggdriver_3: Boolean(resData.ggdriver_3),
+              }),
+        ]);
+        if (loadSeqRef.current !== mySeq) return;
+
+        setVnCues(dualSubs.vnCues);
+        setEnCues(dualSubs.enCues);
+        setVnSubUrl(effectiveVnUrl);
+        setEnSubUrl(effectiveEnUrl);
+
+        let initialServers = buildInitialServerStates({
+          serverFileKey: sfk,
+          offlineItem: localOffline,
+          localServerPort,
+          resolved: resData,
+          ggd: apiGgd,
+          pings,
+          erroredIds: erroredServersRef.current,
+        });
+
+        if (checkFileRes) {
+          initialServers = applyCheckFileToServers(initialServers, sfk, checkFileRes);
+          if (
+            sfk &&
+            (checkFileRes.status === 'error_file' || checkFileRes.status === 'error_file_log')
+          ) {
+            void triggerServerPrepare(sfk);
+          }
+        }
+        setServers(initialServers);
+
+        const hasGgdDirect = Boolean(
+          apiGgd.ggdriver_1 || apiGgd.ggdriver_2 || apiGgd.ggdriver_3
+        );
+        const chosen = selectOptimalServer(initialServers, {
+          preferOffline: settingsRef.current.preferOfflineWhenOnline,
+          hasGgdDirect,
+        });
+
+        // Compute best resume position across server + local offline
+        const serverResumeSec =
+          serverProgRes &&
+          serverProgRes.resume_seconds > (resData.resume_seconds || 0)
+            ? serverProgRes.resume_seconds
+            : resData.resume_seconds || 0;
+        const offlineResumeSec = localOffline?.resume_sec || 0;
+        let targetStartSec = Math.max(serverResumeSec, offlineResumeSec);
+        if (
+          targetStartSec <= 3 &&
+          settingsRef.current.autoSkipIntro &&
+          resData.skip_intro_sec > 0
+        ) {
+          targetStartSec = resData.skip_intro_sec;
+          showToast('Đã bỏ qua đoạn giới thiệu');
+        }
+
+        if (chosen) {
+          await playServerOnActiveLayer(chosen, {
+            seekToSec: targetStartSec,
+            serverFileKey: sfk,
+            vnUrl: effectiveVnUrl,
+            enUrl: effectiveEnUrl,
+            title: resData.title || params.title,
+          });
+          if (sfk) {
+            probeVideoQualityLabel(sfk, chosen.id, resData.movie?.video_quality)
+              .then((badge) => {
+                if (loadSeqRef.current === mySeq) setQualityBadge(badge);
+              })
+              .catch(() => {});
+          }
+        } else {
+          setFirstFrameReady(true);
+          setIsBuffering(false);
+        }
+
+        // Poll Phiên 11 / Phiên 36 progress while preparing so user sees live % & auto-upgrades to 100%
+        if (sfk && checkFileRes && checkFileRes.status !== 'success') {
+          checkFilePollRef.current = setInterval(async () => {
+            if (loadSeqRef.current !== mySeq) return;
+            const pollRes = await checkServerFileStatus(sfk);
+            if (loadSeqRef.current !== mySeq) return;
+
+            let updated: ServerRuntimeState[] = [];
+            setServers((prev) => {
+              updated = applyCheckFileToServers(prev, sfk, pollRes);
+              return updated;
+            });
+
+            if (pollRes.status === 'success') {
+              if (checkFilePollRef.current) {
+                clearInterval(checkFilePollRef.current);
+                checkFilePollRef.current = null;
               }
             }
-          } catch (e) {}
-        })();
-        true;
-      `);
+
+            // Auto-switch/upgrade logic if allowed & not manually locked
+            const curId = activeServerIdRef.current;
+            const lockedId = manualLockedServerRef.current;
+            const curSrv = updated.find((s) => s.id === curId);
+
+            if (!curId || !curSrv || !isServerPlayable(curSrv)) {
+              const firstPlayable = selectOptimalServer(updated, {
+                preferOffline: settingsRef.current.preferOfflineWhenOnline,
+                hasGgdDirect,
+              });
+              if (firstPlayable) {
+                await playServerOnActiveLayer(firstPlayable, {
+                  seekToSec: Math.max(targetStartSec, currentTimeRef.current),
+                  serverFileKey: sfk,
+                  vnUrl: effectiveVnUrl,
+                  enUrl: effectiveEnUrl,
+                  title: resData.title || params.title,
+                });
+              }
+              return;
+            }
+
+            // If playing preview on 11/36 (or waiting on locked 11/36) and preview expanded or 100% hit:
+            if (
+              (curId === '11' || curId === '36') &&
+              ((pollRes.status === 'success' && curSrv.previewTag !== '') ||
+                (pollRes.preview_30p &&
+                  pollRes.total_seconds >= 3600 &&
+                  curSrv.previewTag === '10p'))
+            ) {
+              const upgradedMedia = buildServer11Or36MediaUrl(curId, sfk, pollRes);
+              if (upgradedMedia.url && upgradedMedia.url !== curSrv.streamUrl) {
+                await playServerOnActiveLayer(
+                  { ...curSrv, streamUrl: upgradedMedia.url, format: upgradedMedia.format, previewTag: upgradedMedia.previewTag },
+                  {
+                    seekToSec: currentTimeRef.current,
+                    serverFileKey: sfk,
+                    vnUrl: effectiveVnUrl,
+                    enUrl: effectiveEnUrl,
+                    title: resData.title || params.title,
+                  }
+                );
+                if (pollRes.status === 'success') {
+                  showToast(`${curSrv.label}: Đã nâng cấp luồng đầy đủ 100%`);
+                }
+              }
+            } else if (
+              settingsRef.current.autoOptimalServer &&
+              !lockedId &&
+              curId !== '99' &&
+              pollRes.status === 'success' &&
+              curId !== '11' &&
+              curId !== '36'
+            ) {
+              const better = selectOptimalServer(updated, {
+                preferOffline: settingsRef.current.preferOfflineWhenOnline,
+                hasGgdDirect,
+              });
+              if (better && better.id !== curId && (better.pingMs ?? 9999) + 40 < (curSrv.pingMs ?? 9999)) {
+                await playServerOnActiveLayer(better, {
+                  seekToSec: currentTimeRef.current,
+                  serverFileKey: sfk,
+                  vnUrl: effectiveVnUrl,
+                  enUrl: effectiveEnUrl,
+                  title: resData.title || params.title,
+                });
+                showToast(`Đã chuyển sang ${better.label} (${better.pingMs || 0} ms)`);
+              }
+            }
+          }, 3200);
+        }
+      } catch {
+        setFirstFrameReady(true);
+        setIsBuffering(false);
+        showAppAlert('Lỗi kết nối', 'Không thể tải dữ liệu phát phim lúc này.');
+      }
+    },
+    [
+      params,
+      isOfflineOnlyMode,
+      localServerPort,
+      playerA,
+      playerB,
+      playServerOnActiveLayer,
+      showToast,
+    ]
+  );
+
+  // Preload next episode silently into inactive AVPlayer layer at T - outro - 120s
+  const preloadNextEpisodeToInactiveLayer = useCallback(async () => {
+    if (!currentNextEpisode || preloadStateRef.current !== 'idle') return;
+    setPreloadState('loading');
+    preloadStateRef.current = 'loading';
+
+    const targetEp = currentNextEpisode.ep;
+    const sfkHint = resolvedRef.current?.next_episode_meta?.server_file_key || '';
+
+    try {
+      const localNextOff = findCompletedOfflineItem({
+        streamCode: targetEp.stream_code,
+        videosId: params?.videosId,
+        episodeId: targetEp.episodes_id,
+      });
+
+      const nextResolved = await resolveStreamApi(targetEp.stream_code, params?.videosId).catch(
+        () => null
+      );
+
+      if (localNextOff && localNextOff.local_uri) {
+        const offUrl = buildOfflineServerUrl(localNextOff, localServerPort);
+        const dual = await loadDualSubtitles({
+          serverFileKey: sfkHint || nextResolved?.server_file_key,
+          offlineItem: localNextOff,
+        });
+        const nextSkip =
+          nextResolved?.skip_intro_sec ??
+          resolvedRef.current?.next_episode_meta?.skip_intro_sec ??
+          localNextOff.skip_intro_sec ??
+          0;
+        const nextEndCredits =
+          nextResolved?.end_credits_sec ??
+          resolvedRef.current?.next_episode_meta?.end_credits_sec ??
+          localNextOff.end_credits_sec ??
+          0;
+        const pkg: PreloadedNextPackage = {
+          streamCode: targetEp.stream_code,
+          episode: targetEp,
+          episodeIndex: currentNextEpisode.index,
+          resolved: nextResolved || {
+            success: true,
+            stream_code: targetEp.stream_code,
+            can_play_native: true,
+            primary_url: offUrl.url,
+            stream_type: offUrl.format,
+            download_mp4_url: '',
+            qualities: [],
+            subtitles: [],
+            skip_intro_sec: nextSkip,
+            end_credits_sec: nextEndCredits,
+            next_episode_slug: '',
+            resume_seconds: 0,
+            webview_url: '',
+          },
+          vnCues: dual.vnCues,
+          enCues: dual.enCues,
+          vnUrl: dual.vnUrl,
+          enUrl: dual.enUrl,
+          serverId: '99',
+          serverLabel: 'Phát từ máy',
+          streamUrl: offUrl.url,
+          qualityLabel: '1080pHD',
+          skipIntroSec: nextSkip,
+          endCreditsSec: nextEndCredits,
+          subHighRaw: nextResolved?.sub_high || '',
+          offlineItem: localNextOff,
+        };
+        preloadedNextRef.current = pkg;
+        const inactive = getInactivePlayer();
+        inactive.muted = true;
+        await inactive.replaceAsync({
+          uri: offUrl.url,
+          contentType: offUrl.format === 'hls' ? 'hls' : 'progressive',
+        });
+        return;
+      }
+
+      if (!nextResolved) {
+        setPreloadState('failed');
+        return;
+      }
+
+      const nextSfk = nextResolved.server_file_key || sfkHint;
+      const [dual, pings, cfRes, ggdRes] = await Promise.all([
+        loadDualSubtitles({
+          serverFileKey: nextSfk,
+          resolvedSubtitles: nextResolved.subtitles,
+        }),
+        measureAllServerPings(false),
+        nextSfk ? checkServerFileStatus(nextSfk) : Promise.resolve(null),
+        nextSfk && !nextResolved.ggdriver_1 && !nextResolved.ggdriver_2 && !nextResolved.ggdriver_3
+          ? checkGgdriverApi(nextSfk, nextResolved.server_movie_title)
+          : Promise.resolve({
+              ggdriver_1: Boolean(nextResolved.ggdriver_1),
+              ggdriver_2: Boolean(nextResolved.ggdriver_2),
+              ggdriver_3: Boolean(nextResolved.ggdriver_3),
+            }),
+      ]);
+
+      if (nextSfk && cfRes && (cfRes.status === 'error_file' || cfRes.status === 'error_file_log')) {
+        void triggerServerPrepare(nextSfk);
+      }
+
+      let nextServers = buildInitialServerStates({
+        serverFileKey: nextSfk,
+        localServerPort,
+        resolved: nextResolved,
+        ggd: ggdRes,
+        pings,
+      });
+      if (cfRes) nextServers = applyCheckFileToServers(nextServers, nextSfk, cfRes);
+
+      const best = selectOptimalServer(nextServers, {
+        preferOffline: settingsRef.current.preferOfflineWhenOnline,
+        hasGgdDirect: Boolean(ggdRes.ggdriver_1 || ggdRes.ggdriver_2 || ggdRes.ggdriver_3),
+      });
+
+      if (!best || !best.streamUrl) {
+        setPreloadState('failed');
+        return;
+      }
+
+      const wrapped = wrapUrlForIosNativePlayer({
+        rawUrl: best.streamUrl,
+        format: best.format,
+        serverId: best.id,
+        vnSubUrl: dual.vnUrl,
+        enSubUrl: dual.enUrl,
+        localServerPort,
+        pipEnabled: settingsRef.current.pipEnabled,
+        pipProxyBroken: pipProxyBrokenRef.current,
+      });
+
+      const pkg: PreloadedNextPackage = {
+        streamCode: targetEp.stream_code,
+        episode: targetEp,
+        episodeIndex: currentNextEpisode.index,
+        resolved: nextResolved,
+        vnCues: dual.vnCues,
+        enCues: dual.enCues,
+        vnUrl: dual.vnUrl,
+        enUrl: dual.enUrl,
+        serverId: best.id,
+        serverLabel: best.label,
+        streamUrl: wrapped.uri,
+        qualityLabel: qualityBadge,
+        skipIntroSec: nextResolved.skip_intro_sec || 0,
+        endCreditsSec: nextResolved.end_credits_sec || 0,
+        subHighRaw: nextResolved.sub_high || '',
+        offlineItem: null,
+      };
+      preloadedNextRef.current = pkg;
+
+      const inactive = getInactivePlayer();
+      inactive.muted = true;
+      await inactive.replaceAsync({
+        uri: wrapped.uri,
+        contentType: wrapped.contentType,
+        metadata: { title: nextResolved.title || params?.title || '', artist: 'Đặng Việt Anh' },
+      });
+    } catch {
+      setPreloadState('failed');
+    }
+  }, [currentNextEpisode, params?.videosId, params?.title, localServerPort, qualityBadge, getInactivePlayer]);
+
+  // Execute seamless 2-layer crossfade switch when preloaded next episode is ready
+  const triggerSwitchToNextEpisode = useCallback(() => {
+    if (!currentNextEpisode) return;
+    persistCurrentProgress(true);
+    setNextCountdownSec(null);
+
+    if (settingsRef.current.autoDubNext && !settingsRef.current.subAiVoiceEnabled) {
+      void updateSetting('subAiVoiceEnabled', true);
+    }
+
+    const pkg = preloadedNextRef.current;
+    if (
+      pkg &&
+      pkg.streamCode === currentNextEpisode.ep.stream_code &&
+      preloadStateRef.current === 'ready'
+    ) {
+      if (checkFilePollRef.current) {
+        clearInterval(checkFilePollRef.current);
+        checkFilePollRef.current = null;
+      }
+
+      const oldLayer = activeLayerRef.current;
+      const newLayer: 'A' | 'B' = oldLayer === 'A' ? 'B' : 'A';
+      const oldPlayer = oldLayer === 'A' ? playerA : playerB;
+      const promotedPlayer = newLayer === 'A' ? playerA : playerB;
+
+      try {
+        if (pkg.skipIntroSec > 0 && promotedPlayer.currentTime < pkg.skipIntroSec) {
+          promotedPlayer.currentTime = pkg.skipIntroSec;
+        }
+        promotedPlayer.playbackRate = playbackRate;
+        promotedPlayer.muted = false;
+        if (!isLockedRef.current) {
+          promotedPlayer.play();
+        }
+      } catch {}
+
+      const durMs = settingsRef.current.transitionEffectEnabled ? 620 : 0;
+      Animated.parallel([
+        Animated.timing(newLayer === 'A' ? layerAOpacity : layerBOpacity, {
+          toValue: 1,
+          duration: durMs,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+        Animated.timing(oldLayer === 'A' ? layerAOpacity : layerBOpacity, {
+          toValue: 0,
+          duration: durMs,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+      ]).start(() => {
+        try {
+          oldPlayer.muted = true;
+          oldPlayer.pause();
+        } catch {}
+      });
+
+      activeLayerRef.current = newLayer;
+      setActiveLayer(newLayer);
+      setResolved(pkg.resolved);
+      setActiveStreamCode(pkg.streamCode);
+      setActiveEpTitle(pkg.episode.episodes_name);
+      setVnCues(pkg.vnCues);
+      setEnCues(pkg.enCues);
+      setVnSubUrl(pkg.vnUrl);
+      setEnSubUrl(pkg.enUrl);
+      setActiveServerId(pkg.serverId);
+      activeServerIdRef.current = pkg.serverId;
+      activeMediaUrlRef.current = pkg.streamUrl;
+      preloadedNextRef.current = null;
+      nextAutoSwitchTriggeredRef.current = false;
+      setPreloadState('idle');
+      setCurrentTime(pkg.skipIntroSec || 0);
+      setDuration(promotedPlayer.duration || 0);
+      setFirstFrameReady(true);
+      setIsBuffering(false);
+
+      skipNextReloadCodeRef.current = pkg.streamCode;
+      if (pkg.offlineItem && onSwitchOfflineItem) {
+        onSwitchOfflineItem(pkg.offlineItem);
+      } else if (onSwitchEpisode) {
+        onSwitchEpisode(pkg.episode, pkg.episodeIndex);
+      }
+      showToast(`Đang phát ${pkg.episode.episodes_name}`);
       return;
     }
 
-    if (AppState.currentState === 'active') {
-      pauseWebViewForLock();
+    // Standard switch if not yet preloaded into Layer 2
+    if (pkg?.offlineItem && onSwitchOfflineItem) {
+      onSwitchOfflineItem(pkg.offlineItem);
+    } else if (onSwitchEpisode) {
+      onSwitchEpisode(currentNextEpisode.ep, currentNextEpisode.index);
+    } else {
+      void loadEpisodeByCode(currentNextEpisode.ep.stream_code, {
+        episodeTitleHint: currentNextEpisode.ep.episodes_name,
+      });
     }
+  }, [
+    currentNextEpisode,
+    persistCurrentProgress,
+    updateSetting,
+    playerA,
+    playerB,
+    playbackRate,
+    layerAOpacity,
+    layerBOpacity,
+    onSwitchOfflineItem,
+    onSwitchEpisode,
+    loadEpisodeByCode,
+    showToast,
+  ]);
 
-    const lockGuardTimer = setInterval(() => {
-      if (AppState.currentState === 'active') {
-        pauseWebViewForLock();
+  // Helper attaching listeners for Layer A and Layer B cleanly
+  const handleLayerTimeUpdate = useCallback(
+    (layer: 'A' | 'B', pos: number, buf: number) => {
+      if (activeLayerRef.current !== layer) return;
+      setCurrentTime(pos);
+      currentTimeRef.current = pos;
+      setBufferedPos(buf);
+
+      const dur = durationRef.current;
+      if (dur <= 0) return;
+      const endCredits = resolvedRef.current?.end_credits_sec || 0;
+
+      // Trigger Layer 2 preload at T - endCredits - 120s
+      if (
+        settingsRef.current.seamlessPreloadEnabled &&
+        currentNextEpisode &&
+        preloadStateRef.current === 'idle' &&
+        pos >= Math.max(5, dur - endCredits - 120)
+      ) {
+        void preloadNextEpisodeToInactiveLayer();
       }
-    }, 700);
 
-    const sub = AppState.addEventListener('change', (nextState) => {
-      if (nextState === 'active' && isLockedRef.current) {
-        pauseWebViewForLock();
+      // Trigger outro auto-next at T - endCredits (if endCredits > 15s and next ep exists)
+      if (
+        settingsRef.current.autoPlayNext &&
+        currentNextEpisode &&
+        !nextAutoSwitchTriggeredRef.current &&
+        endCredits > 15 &&
+        pos >= dur - endCredits &&
+        pos < dur - 2
+      ) {
+        nextAutoSwitchTriggeredRef.current = true;
+        const delaySec = settingsRef.current.nextEpisodeDelaySec || 0;
+        if (delaySec <= 0) {
+          triggerSwitchToNextEpisode();
+        } else {
+          setNextCountdownSec(delaySec);
+        }
+      }
+    },
+    [currentNextEpisode, preloadNextEpisodeToInactiveLayer, triggerSwitchToNextEpisode]
+  );
+
+  // Listeners for Player A
+  useEffect(() => {
+    const sSub = playerA.addListener('statusChange', (ev) => {
+      const st = ev.status;
+      if (activeLayerRef.current !== 'A') {
+        // Inactive Layer A finishing preload
+        if (st === 'readyToPlay' && preloadStateRef.current === 'loading') {
+          try {
+            const pkg = preloadedNextRef.current;
+            playerA.muted = true;
+            if (pkg && pkg.skipIntroSec > 0) {
+              playerA.currentTime = pkg.skipIntroSec;
+            }
+            playerA.pause();
+            setPreloadState('ready');
+          } catch {}
+        } else if (st === 'error' && preloadStateRef.current === 'loading') {
+          setPreloadState('failed');
+        }
+        return;
+      }
+
+      if (st === 'loading') {
+        setIsBuffering(true);
+      } else if (st === 'readyToPlay') {
+        setIsBuffering(false);
+        setFirstFrameReady(true);
+        const dur = playerA.duration || 0;
+        if (dur > 0) setDuration(dur);
+        if (!initialSeekPendingRef.current.done && initialSeekPendingRef.current.sec > 0) {
+          initialSeekPendingRef.current.done = true;
+          try {
+            playerA.currentTime = initialSeekPendingRef.current.sec;
+          } catch {}
+        }
+        syncNativePipSubtitleTrack(playerA, isInPipRef.current);
+      } else if (st === 'error') {
+        // If native HLS PiP proxy failed, retry direct URL cleanly before blacklisting server
+        if (activeMediaUrlRef.current.includes('/hls-pip/master.m3u8') && !pipProxyBrokenRef.current) {
+          pipProxyBrokenRef.current = true;
+          const curSrv = serversRef.current.find((s) => s.id === activeServerIdRef.current);
+          if (curSrv) {
+            void playServerOnActiveLayer(curSrv, {
+              seekToSec: currentTimeRef.current,
+              serverFileKey: resolvedRef.current?.server_file_key || '',
+              vnUrl: vnSubUrl,
+              enUrl: enSubUrl,
+              title: params?.title || '',
+            });
+            return;
+          }
+        }
+        if (activeServerIdRef.current) {
+          erroredServersRef.current.add(activeServerIdRef.current);
+          const nextServers = serversRef.current.map((s) =>
+            s.id === activeServerIdRef.current ? { ...s, errored: true, status: 'error' as const } : s
+          );
+          setServers(nextServers);
+          const failover = selectOptimalServer(nextServers, {
+            preferOffline: settingsRef.current.preferOfflineWhenOnline,
+            hasGgdDirect: Boolean(
+              resolvedRef.current?.ggdriver_1 ||
+                resolvedRef.current?.ggdriver_2 ||
+                resolvedRef.current?.ggdriver_3
+            ),
+          });
+          if (failover) {
+            showToast(`Chuyển sang ${failover.label}...`);
+            void playServerOnActiveLayer(failover, {
+              seekToSec: currentTimeRef.current,
+              serverFileKey: resolvedRef.current?.server_file_key || '',
+              vnUrl: vnSubUrl,
+              enUrl: enSubUrl,
+              title: params?.title || '',
+            });
+            return;
+          }
+        }
+        setIsBuffering(false);
+        setFirstFrameReady(true);
+      }
+    });
+
+    const pSub = playerA.addListener('playingChange', (ev) => {
+      if (activeLayerRef.current !== 'A') return;
+      setIsPlaying(ev.isPlaying);
+      if (ev.isPlaying && !hasAutoHiddenInitialHudRef.current && !userInteractedHudRef.current) {
+        hasAutoHiddenInitialHudRef.current = true;
+        scheduleHudAutoHide(450);
+      }
+    });
+
+    const tSub = playerA.addListener('timeUpdate', (ev) => {
+      if (playerA.duration > 0 && activeLayerRef.current === 'A') {
+        setDuration(playerA.duration);
+      }
+      handleLayerTimeUpdate('A', ev.currentTime, Math.max(0, ev.bufferedPosition || 0));
+    });
+
+    const eSub = playerA.addListener('playToEnd', () => {
+      if (activeLayerRef.current !== 'A') return;
+      if (sleepTimerValue === 'end_of_episode') {
+        setSleepTimerValue(null);
+        setSleepSecondsLeft(null);
+        showAppAlert('Hẹn giờ ngủ', 'Đã phát hết tập phim và tự động dừng.');
+        return;
+      }
+      if (settingsRef.current.autoPlayNext && currentNextEpisode) {
+        triggerSwitchToNextEpisode();
       }
     });
 
     return () => {
-      clearInterval(lockGuardTimer);
-      sub.remove();
+      sSub.remove();
+      pSub.remove();
+      tSub.remove();
+      eSub.remove();
     };
-  }, [visible, isLocked, isOfflineMode, pauseWebViewForLock]);
+  }, [
+    playerA,
+    params?.title,
+    vnSubUrl,
+    enSubUrl,
+    sleepTimerValue,
+    currentNextEpisode,
+    handleLayerTimeUpdate,
+    playServerOnActiveLayer,
+    scheduleHudAutoHide,
+    syncNativePipSubtitleTrack,
+    triggerSwitchToNextEpisode,
+    showToast,
+  ]);
 
-  // Ensure _hglk is ready on open and reset state cleanly on close
+  // Listeners for Player B
   useEffect(() => {
-    if (!visible) {
-      isInPipRef.current = false;
-      clearPipRestoreTimer();
-      setWebHudReady(false);
-      setOfflineReady(false);
+    const sSub = playerB.addListener('statusChange', (ev) => {
+      const st = ev.status;
+      if (activeLayerRef.current !== 'B') {
+        if (st === 'readyToPlay' && preloadStateRef.current === 'loading') {
+          try {
+            const pkg = preloadedNextRef.current;
+            playerB.muted = true;
+            if (pkg && pkg.skipIntroSec > 0) {
+              playerB.currentTime = pkg.skipIntroSec;
+            }
+            playerB.pause();
+            setPreloadState('ready');
+          } catch {}
+        } else if (st === 'error' && preloadStateRef.current === 'loading') {
+          setPreloadState('failed');
+        }
+        return;
+      }
+
+      if (st === 'loading') {
+        setIsBuffering(true);
+      } else if (st === 'readyToPlay') {
+        setIsBuffering(false);
+        setFirstFrameReady(true);
+        const dur = playerB.duration || 0;
+        if (dur > 0) setDuration(dur);
+        if (!initialSeekPendingRef.current.done && initialSeekPendingRef.current.sec > 0) {
+          initialSeekPendingRef.current.done = true;
+          try {
+            playerB.currentTime = initialSeekPendingRef.current.sec;
+          } catch {}
+        }
+        syncNativePipSubtitleTrack(playerB, isInPipRef.current);
+      } else if (st === 'error') {
+        if (activeMediaUrlRef.current.includes('/hls-pip/master.m3u8') && !pipProxyBrokenRef.current) {
+          pipProxyBrokenRef.current = true;
+          const curSrv = serversRef.current.find((s) => s.id === activeServerIdRef.current);
+          if (curSrv) {
+            void playServerOnActiveLayer(curSrv, {
+              seekToSec: currentTimeRef.current,
+              serverFileKey: resolvedRef.current?.server_file_key || '',
+              vnUrl: vnSubUrl,
+              enUrl: enSubUrl,
+              title: params?.title || '',
+            });
+            return;
+          }
+        }
+        if (activeServerIdRef.current) {
+          erroredServersRef.current.add(activeServerIdRef.current);
+          const nextServers = serversRef.current.map((s) =>
+            s.id === activeServerIdRef.current ? { ...s, errored: true, status: 'error' as const } : s
+          );
+          setServers(nextServers);
+          const failover = selectOptimalServer(nextServers, {
+            preferOffline: settingsRef.current.preferOfflineWhenOnline,
+            hasGgdDirect: Boolean(
+              resolvedRef.current?.ggdriver_1 ||
+                resolvedRef.current?.ggdriver_2 ||
+                resolvedRef.current?.ggdriver_3
+            ),
+          });
+          if (failover) {
+            showToast(`Chuyển sang ${failover.label}...`);
+            void playServerOnActiveLayer(failover, {
+              seekToSec: currentTimeRef.current,
+              serverFileKey: resolvedRef.current?.server_file_key || '',
+              vnUrl: vnSubUrl,
+              enUrl: enSubUrl,
+              title: params?.title || '',
+            });
+            return;
+          }
+        }
+        setIsBuffering(false);
+        setFirstFrameReady(true);
+      }
+    });
+
+    const pSub = playerB.addListener('playingChange', (ev) => {
+      if (activeLayerRef.current !== 'B') return;
+      setIsPlaying(ev.isPlaying);
+      if (ev.isPlaying && !hasAutoHiddenInitialHudRef.current && !userInteractedHudRef.current) {
+        hasAutoHiddenInitialHudRef.current = true;
+        scheduleHudAutoHide(450);
+      }
+    });
+
+    const tSub = playerB.addListener('timeUpdate', (ev) => {
+      if (playerB.duration > 0 && activeLayerRef.current === 'B') {
+        setDuration(playerB.duration);
+      }
+      handleLayerTimeUpdate('B', ev.currentTime, Math.max(0, ev.bufferedPosition || 0));
+    });
+
+    const eSub = playerB.addListener('playToEnd', () => {
+      if (activeLayerRef.current !== 'B') return;
+      if (sleepTimerValue === 'end_of_episode') {
+        setSleepTimerValue(null);
+        setSleepSecondsLeft(null);
+        showAppAlert('Hẹn giờ ngủ', 'Đã phát hết tập phim và tự động dừng.');
+        return;
+      }
+      if (settingsRef.current.autoPlayNext && currentNextEpisode) {
+        triggerSwitchToNextEpisode();
+      }
+    });
+
+    return () => {
+      sSub.remove();
+      pSub.remove();
+      tSub.remove();
+      eSub.remove();
+    };
+  }, [
+    playerB,
+    params?.title,
+    vnSubUrl,
+    enSubUrl,
+    sleepTimerValue,
+    currentNextEpisode,
+    handleLayerTimeUpdate,
+    playServerOnActiveLayer,
+    scheduleHudAutoHide,
+    syncNativePipSubtitleTrack,
+    triggerSwitchToNextEpisode,
+    showToast,
+  ]);
+
+  // Countdown tick for Next Episode Delay > 0s
+  useEffect(() => {
+    if (nextCountdownSec === null) return;
+    if (nextCountdownSec <= 0) {
+      triggerSwitchToNextEpisode();
+      return;
+    }
+    const t = setTimeout(() => {
+      setNextCountdownSec((c) => (c !== null ? Math.max(0, c - 1) : null));
+    }, 1000);
+    return () => clearTimeout(t);
+  }, [nextCountdownSec, triggerSwitchToNextEpisode]);
+
+  // Sleep timer countdown (numeric minutes)
+  useEffect(() => {
+    if (typeof sleepTimerValue !== 'number') {
+      setSleepSecondsLeft(null);
+      return;
+    }
+    if (sleepSecondsLeft === null) {
+      setSleepSecondsLeft(sleepTimerValue * 60);
+      return;
+    }
+    if (sleepSecondsLeft <= 0) {
+      try {
+        getActivePlayer().pause();
+      } catch {}
+      setSleepTimerValue(null);
+      setSleepSecondsLeft(null);
+      showAppAlert('Hẹn giờ ngủ', 'Đã hết thời gian hẹn giờ, phim đã được tạm dừng.');
+      return;
+    }
+    const iv = setInterval(() => {
+      setSleepSecondsLeft((prev) => (prev !== null ? Math.max(0, prev - 1) : null));
+    }, 1000);
+    return () => clearInterval(iv);
+  }, [sleepTimerValue, sleepSecondsLeft, getActivePlayer]);
+
+  // Pause & resume cleanly across Face ID lock and App backgrounding (keeping PiP alive)
+  useEffect(() => {
+    const wasLocked = prevLockedRef.current;
+    prevLockedRef.current = isLocked;
+    if (!visible) return;
+    const p = getActivePlayer();
+
+    if (isLocked) {
+      if (!wasLocked) {
+        wasPlayingBeforeLockRef.current = Boolean(p.playing);
+      }
+      if (!isInPipRef.current) {
+        try {
+          p.pause();
+        } catch {}
+      }
+    } else if (wasLocked && wasPlayingBeforeLockRef.current) {
+      wasPlayingBeforeLockRef.current = false;
+      try {
+        p.play();
+      } catch {}
+    }
+  }, [visible, isLocked, getActivePlayer]);
+
+  useEffect(() => {
+    if (!visible) return;
+    const sub = AppState.addEventListener('change', (nextState) => {
+      const p = getActivePlayer();
+      if (nextState === 'background' || nextState === 'inactive') {
+        if (preBackgroundPlayingRef.current === null) {
+          preBackgroundPlayingRef.current = Boolean(p.playing);
+        }
+        persistCurrentProgress(true);
+      } else if (nextState === 'active') {
+        const prevPlay = preBackgroundPlayingRef.current;
+        preBackgroundPlayingRef.current = null;
+        if (!isLockedRef.current && prevPlay && !isInPipRef.current && !p.playing) {
+          try {
+            p.play();
+          } catch {}
+        }
+      }
+    });
+    return () => sub.remove();
+  }, [visible, getActivePlayer, persistCurrentProgress]);
+
+  // Launch / episode-change effect
+  useEffect(() => {
+    if (!visible || !params) {
+      if (checkFilePollRef.current) {
+        clearInterval(checkFilePollRef.current);
+        checkFilePollRef.current = null;
+      }
+      try {
+        playerA.pause();
+        playerB.pause();
+      } catch {}
+      setServerModalOpen(false);
+      setEpisodeModalOpen(false);
+      setSubSettingsOpen(false);
+      setGeneralSettingsOpen(false);
       setOfflineSheetOpen(false);
       setCastPopupOpen(false);
-      setCastMoviePayload(null);
-      setActiveEpisodeCtx(null);
-      lastAutoQueuedSigRef.current = '';
+      setInfoPanel(null);
+      setSpeedMenuOpen(false);
+      setMoreMenuOpen(false);
+      setFirstFrameReady(false);
+      isInPipRef.current = false;
+      clearPipRestoreTimer();
       return;
     }
 
-    let cancelled = false;
-    const readyHglk = cachedDeviceHglk || deviceHglk;
-    if (readyHglk) {
-      if (!deviceHglk) setDeviceHglk(readyHglk);
-    } else {
-      (async () => {
-        try {
-          const hglkVal = await getOrCreateDeviceHglk();
-          if (!cancelled) setDeviceHglk(hglkVal);
-        } catch {
-          if (!cancelled) {
-            setDeviceHglk((prev) => prev || cachedDeviceHglk || generateHglkToken(24));
-          }
-        }
-      })();
+    if (skipNextReloadCodeRef.current === params.streamCode) {
+      skipNextReloadCodeRef.current = null;
+      return;
     }
 
-    return () => {
-      cancelled = true;
-      clearPipRestoreTimer();
-    };
-  }, [visible, deviceHglk, clearPipRestoreTimer]);
-
-  // Reset per-stream ready flags when opening or switching stream & flush pending offline resume
-  useEffect(() => {
-    if (!visible || !params) return;
-    setWebHudReady(false);
-    setOfflineReady(false);
-    webProgressRef.current = { position: 0, duration: 0, streamCode: activeStreamCode };
-    if (!isOfflineMode) {
+    if (!isOfflineOnlyMode) {
       void flushPendingOfflineProgressToServer();
     }
-  }, [visible, params, activeStreamCode, isOfflineMode]);
 
-  const handleClose = useCallback(() => {
-    if (
-      params &&
-      !params.offlineUri &&
-      !params.offlineItem &&
-      webProgressRef.current.position > 5
-    ) {
-      const targetStreamCode = webProgressRef.current.streamCode || activeStreamCode;
-      const { episodeNumber, seasonId } = resolveEpisodeMetaFromParams(params, targetStreamCode);
-      saveWatchProgressApi({
-        videos_id: params.videosId,
-        stream_code: targetStreamCode,
-        position_sec: webProgressRef.current.position,
-        duration_sec: webProgressRef.current.duration,
-        episode_number: episodeNumber,
-        season_id: seasonId,
-        title: params.title,
-      }).catch(() => {});
-      void syncOnlineProgressToOffline({
-        streamCode: targetStreamCode,
-        videosId: params.videosId,
-        episodeId: params.episodeId,
-        positionSec: webProgressRef.current.position,
-        durationSec: webProgressRef.current.duration,
-        flushDisk: true,
-      });
+    setMoviePosterMeta({
+      poster: params.posterUrl || '',
+      thumb: params.thumbnailUrl || '',
+    });
+    if (params.episodes && params.episodes.length > 0) {
+      setDetailEpisodes(params.episodes);
+    } else if (!isOfflineOnlyMode && params.videosId > 0) {
+      fetchMovieDetailsApi(params.videosId)
+        .then((res) => {
+          if (!res?.movie) return;
+          const allEps =
+            res.movie.episodes && res.movie.episodes.length > 0
+              ? res.movie.episodes
+              : res.movie.seasons?.[0]?.episodes || [];
+          setDetailEpisodes(allEps);
+          setMoviePosterMeta({
+            poster: res.movie.poster_url || '',
+            thumb: res.movie.thumbnail_url || '',
+          });
+          setInWishlist(Boolean(res.movie.in_wishlist));
+        })
+        .catch(() => {});
     }
-    setOfflineSheetOpen(false);
-    setCastPopupOpen(false);
-    setCastMoviePayload(null);
-    isInPipRef.current = false;
-    clearPipRestoreTimer();
-    onClose();
-  }, [params, activeStreamCode, clearPipRestoreTimer, onClose]);
 
-  const playerMeta = useMemo(
-    () => ({
-      videos_id: params?.videosId || 0,
-      episode_id: params?.episodeId || 0,
-      title: params?.episodeTitle
-        ? `${params?.title || ''} • ${params.episodeTitle}`
-        : params?.title || '',
-      is_tvseries: (params?.episodes && params.episodes.length > 0) || Boolean(params?.episodeId) ? 1 : 0,
-    }),
-    [params]
-  );
-
-  // Live Local Offline Registry for WebView Local-First playback
-  const offlineRegistry = useMemo(
-    () => buildOfflineRegistryForWebView(localServerPort, settings.preferOfflineWhenOnline),
-    [localServerPort, offlineItems, settings.preferOfflineWhenOnline]
-  );
-  const offlineRegistryRef = useRef(offlineRegistry);
-  offlineRegistryRef.current = offlineRegistry;
-
-  // Push registry updates + download status badge to running WebView whenever local files or preference change
-  useEffect(() => {
-    if (!visible || isOfflineMode || !webHudReady) return;
-    const prefJustTurnedOn =
-      !prevPreferOfflineRef.current && settings.preferOfflineWhenOnline;
-    prevPreferOfflineRef.current = settings.preferOfflineWhenOnline;
-
-    const currentCode = activeEpisodeCtx?.streamCode || activeStreamCode;
-    const matchedItem = offlineItems.find(
-      (i) =>
-        (currentCode && i.stream_code === currentCode) ||
-        (params?.videosId && i.videos_id === params.videosId && i.episode_id === (params.episodeId || 0))
-    );
-    const badgeState = {
-      downloaded: matchedItem?.status === 'completed',
-      downloading:
-        matchedItem?.status === 'downloading' ||
-        matchedItem?.status === 'preparing' ||
-        matchedItem?.status === 'queued',
-      progress: matchedItem?.progress || 0,
-    };
-
-    const forceSwitch = prefJustTurnedOn || matchedItem?.status === 'completed';
-    webViewRef.current?.injectJavaScript(`
-      try {
-        if (typeof window.__dvaIosUpdateOfflineRegistry === 'function') {
-          window.__dvaIosUpdateOfflineRegistry(${JSON.stringify(offlineRegistry)}, ${forceSwitch ? 'true' : 'false'});
-        }
-        if (typeof window.__dvaIosUpdateDownloadBadge === 'function') {
-          window.__dvaIosUpdateDownloadBadge(${JSON.stringify(badgeState)});
-        }
-      } catch (e) {}
-      true;
-    `);
+    void loadEpisodeByCode(params.streamCode, {
+      episodeTitleHint: params.episodeTitle,
+      offlineOverride: params.offlineItem || null,
+    });
   }, [
     visible,
-    isOfflineMode,
-    webHudReady,
-    offlineRegistry,
-    offlineItems,
-    activeEpisodeCtx?.streamCode,
-    activeStreamCode,
+    params?.streamCode,
     params?.videosId,
-    params?.episodeId,
-    settings.preferOfflineWhenOnline,
+    isOfflineOnlyMode,
+    playerA,
+    playerB,
+    clearPipRestoreTimer,
+    loadEpisodeByCode,
   ]);
 
-  // Auto-download current episode and/or next xx episodes when consented in Settings
+  // Auto-download current / next episodes when enabled in settings
   useEffect(() => {
-    if (!visible || isOfflineMode || !params?.videosId) return;
-    const epCode = activeEpisodeCtx?.streamCode || activeStreamCode;
-    if (!epCode) return;
-
+    if (!visible || isOfflineOnlyMode || !params?.videosId || !activeStreamCode) return;
     const wantCurrent = settings.autoDownloadCurrentOnWatch;
     const nextCount = Math.max(0, settings.autoDownloadNextCount || 0);
     if (!wantCurrent && nextCount === 0) return;
 
-    const epList =
-      detailEpisodes.length > 0 ? detailEpisodes : params.episodes || [];
-    const sig = `${params.videosId}|${epCode}|${wantCurrent ? 1 : 0}|${nextCount}|${epList.length}`;
+    const sig = `${params.videosId}|${activeStreamCode}|${wantCurrent ? 1 : 0}|${nextCount}|${effectiveEpisodes.length}`;
     if (lastAutoQueuedSigRef.current === sig) return;
-
-    const curItemInLib = offlineItems.find(
-      (i) =>
-        i.videos_id === params.videosId &&
-        (i.stream_code === epCode ||
-          (activeEpisodeCtx?.serverFileKey && i.server_file_key === activeEpisodeCtx.serverFileKey))
-    );
-    const currentIsDownloadedOrActive = Boolean(
-      curItemInLib &&
-        (curItemInLib.status === 'completed' ||
-          curItemInLib.status === 'downloading' ||
-          curItemInLib.status === 'preparing' ||
-          curItemInLib.status === 'queued')
-    );
-
-    if (!wantCurrent && !currentIsDownloadedOrActive) {
-      return;
-    }
-
     lastAutoQueuedSigRef.current = sig;
 
     const targets =
-      epList.length > 0
-        ? getCurrentAndNextEpisodes(epList, epCode, nextCount)
+      effectiveEpisodes.length > 0
+        ? getCurrentAndNextEpisodes(effectiveEpisodes, activeStreamCode, nextCount)
         : [
             {
               episodes_id: params.episodeId || 0,
               seasons_id: Number(params.seasonId || 0) || 0,
-              episodes_name: activeEpisodeCtx?.episodeTitle || params.episodeTitle || '',
-              stream_code: epCode,
+              episodes_name: activeEpTitle || params.episodeTitle || '',
+              stream_code: activeStreamCode,
               player_url: '',
               full_url: '',
               order: 1,
             },
           ];
 
-    const filteredTargets = wantCurrent
-      ? targets
-      : targets.filter((t) => t.stream_code !== epCode);
+    const filtered = wantCurrent ? targets : targets.filter((t) => t.stream_code !== activeStreamCode);
+    if (filtered.length === 0) return;
 
-    if (filteredTargets.length === 0) return;
-
-    const requests: OfflineEnqueueParams[] = filteredTargets.map((ep) => {
-      const isCur = ep.stream_code === epCode;
+    const requests: OfflineEnqueueParams[] = filtered.map((ep) => {
+      const isCur = ep.stream_code === activeStreamCode;
       return {
         videos_id: params.videosId,
         episode_id: ep.episodes_id || 0,
         stream_code: ep.stream_code,
         title: params.title,
-        episode_title: ep.episodes_name || (isCur ? activeEpisodeCtx?.episodeTitle : undefined),
-        server_movie_title: activeEpisodeCtx?.serverTitle || undefined,
-        server_file_key: isCur ? activeEpisodeCtx?.serverFileKey || undefined : undefined,
+        episode_title: ep.episodes_name || (isCur ? activeEpTitle : undefined),
+        server_movie_title: resolved?.server_movie_title || undefined,
+        server_file_key: isCur ? resolved?.server_file_key || undefined : undefined,
         poster_url: moviePosterMeta.poster || moviePosterMeta.thumb || '',
         thumbnail_url: moviePosterMeta.thumb || moviePosterMeta.poster || '',
         preferred_format: settings.offlineDownloadFormat,
         concurrency: settings.offlineDownloadConcurrency,
       };
     });
-
     void enqueueEpisodeBatch(requests);
   }, [
     visible,
-    isOfflineMode,
+    isOfflineOnlyMode,
     params,
-    activeEpisodeCtx,
     activeStreamCode,
-    detailEpisodes,
-    offlineItems,
+    activeEpTitle,
+    resolved?.server_movie_title,
+    resolved?.server_file_key,
+    effectiveEpisodes,
     moviePosterMeta,
     settings.autoDownloadCurrentOnWatch,
     settings.autoDownloadNextCount,
@@ -1654,109 +1843,8 @@ export function PlayerModal({
     settings.offlineDownloadConcurrency,
   ]);
 
-  const localResumeForWeb = useMemo(() => {
-    if (!visible || !params || isOfflineMode) return null;
-    const snap = getOfflineDownloadsSnapshot();
-    const matched = snap.find(
-      (i) =>
-        i.status === 'completed' &&
-        (i.resume_sec || 0) > 3 &&
-        ((activeStreamCode && i.stream_code === activeStreamCode) ||
-          (params.videosId &&
-            i.videos_id === params.videosId &&
-            (!params.episodeId || i.episode_id === params.episodeId)))
-    );
-    if (!matched || !matched.resume_sec) return null;
-    return {
-      streamCode: matched.stream_code || activeStreamCode,
-      resumeSec: matched.resume_sec,
-      pending: Boolean(matched.resume_sync_pending),
-    };
-  }, [visible, params, isOfflineMode, activeStreamCode]);
-
-  const cookieBootstrapJs = useMemo(() => {
-    const autoNextStr = settings.autoPlayNext ? '1' : '0';
-    const qualityStr = settings.preferredQuality || 'auto';
-    const safeHglk = deviceHglk || cachedDeviceHglk || '';
-    const hglkJs = safeHglk
-      ? `
-        document.cookie = "_hglk=${safeHglk}; path=/; domain=.dangvietanh.com; max-age=2592000; SameSite=Lax";
-        document.cookie = "_hglk=${safeHglk}; path=/; max-age=2592000; SameSite=Lax";
-        sessionStorage.setItem('id_cookie', ${JSON.stringify(safeHglk)});
-      `
-      : '';
-    const cookieLines = cookies
-      ? `
-        document.cookie = "_userid=${cookies._userid}; path=/; domain=.dangvietanh.com; max-age=2592000; SameSite=Lax";
-        document.cookie = "_userid=${cookies._userid}; path=/; max-age=2592000; SameSite=Lax";
-        document.cookie = "${cookies.email_key}=${cookies.email_val}; path=/; domain=.dangvietanh.com; max-age=2592000; SameSite=Lax";
-        document.cookie = "${cookies.pass_key}=${cookies.pass_val}; path=/; domain=.dangvietanh.com; max-age=2592000; SameSite=Lax";
-      `
-      : '';
-    return `
-      try {
-        document.documentElement.classList.add('dva-ios-app-mode');
-        document.cookie = "dva_ios_app=1; path=/; domain=.dangvietanh.com; max-age=2592000; SameSite=Lax";
-        document.cookie = "dva_ios_app=1; path=/; max-age=2592000; SameSite=Lax";
-        ${hglkJs}
-        ${cookieLines}
-        localStorage.setItem('dva_ios_app_local', '1');
-        localStorage.setItem('dva_play_app_local', '1');
-        localStorage.setItem('dva_ios_pip_enabled', ${JSON.stringify(settings.pipEnabled ? '1' : '0')});
-        localStorage.setItem('may_chu_toi_uu_E1s5Km5Hv1Vf4Us', '1');
-        localStorage.setItem('menu_3Gc4Ti8Bx1Mx8Wo_dangvietanh', ${JSON.stringify(settings.highContrastMode ? '1' : '0')});
-        localStorage.setItem('Tự_Động_Chuyển_Tập_0Up6Ex8Ci5Zg6Te', ${JSON.stringify(autoNextStr)});
-        localStorage.setItem('menu_3Gi5Co9Pr7Qi5Kf_dangvietanh', ${JSON.stringify(autoNextStr)});
-        localStorage.setItem('menu_7We9Qi0Pc0Jv6Mm_dangvietanh', ${JSON.stringify(settings.videoFillMode === 'cover' ? '1' : '0')});
-        localStorage.setItem('pd_trangthai', ${JSON.stringify(settings.subtitleEnabled ? '1' : '0')});
-        localStorage.setItem('st_toiuu', '0');
-        localStorage.setItem('st_toiuu_chat', '0');
-        localStorage.setItem('st_toiuu_xc', '0');
-        localStorage.setItem('st_toiuu_download', '0');
-        localStorage.setItem('dvaplay_resolution', ${JSON.stringify(qualityStr)});
-        sessionStorage.setItem('dva_app_current_movie_meta', ${JSON.stringify(JSON.stringify(playerMeta))});
-        window.__DVA_IOS_LOCAL_OFFLINE__ = ${JSON.stringify(offlineRegistryRef.current)};
-        window.__DVA_IOS_LOCAL_RESUME__ = ${JSON.stringify(localResumeForWeb)};
-        if (${settings.pipEnabled ? 'true' : 'false'}) {
-          setInterval(function () {
-            var vids = document.getElementsByTagName('video');
-            for (var i = 0; i < vids.length; i++) {
-              var v = vids[i];
-              try {
-                if (v.webkitPresentationMode === 'picture-in-picture') continue;
-              } catch (err) {}
-              if (v.disablePictureInPicture) v.disablePictureInPicture = false;
-              if (!v.hasAttribute('autopictureinpicture')) v.setAttribute('autopictureinpicture', '');
-              if (!v.hasAttribute('playsinline')) v.setAttribute('playsinline', '');
-              if (!v.hasAttribute('webkit-playsinline')) v.setAttribute('webkit-playsinline', '');
-            }
-          }, 1500);
-        }
-      } catch (e) {}
-      true;
-    `;
-  }, [cookies, deviceHglk, playerMeta, settings, localResumeForWeb]);
-
-  const webviewSourceUrl = useMemo(() => {
-    const code = activeStreamCode;
-    if (!code) {
-      return `${SITE_BASE_URL}/getlink/va/`;
-    }
-    const token = getApiAuthToken() || '';
-    const metaB64 = encodeBase64UrlUtf8(JSON.stringify(playerMeta));
-    const qs = new URLSearchParams({
-      code,
-      token,
-      hglk: deviceHglk || cachedDeviceHglk || '',
-      quality: settings.preferredQuality || 'auto',
-      autonext: settings.autoPlayNext ? '1' : '0',
-      meta: metaB64,
-    });
-    return `${API_BASE_URL}/webview_player.php?${qs.toString()}`;
-  }, [activeStreamCode, deviceHglk, playerMeta, settings.preferredQuality, settings.autoPlayNext]);
-
-  const showPlayerSkeleton = visible && (isOfflineMode ? !offlineReady : !webHudReady);
-
+  // Skeleton fade animation (minimum 260ms smooth reveal, max 5s fallback)
+  const showPlayerSkeleton = visible && !firstFrameReady;
   useEffect(() => {
     if (!visible) {
       skeletonOpacity.stopAnimation();
@@ -1765,41 +1853,35 @@ export function PlayerModal({
       setRenderSkeleton(true);
       return;
     }
-
     if (showPlayerSkeleton) {
       if (skeletonShownAtRef.current === 0) {
         skeletonShownAtRef.current = Date.now();
         skeletonOpacity.setValue(0);
-      } else {
-        skeletonOpacity.stopAnimation();
       }
       setRenderSkeleton(true);
       Animated.timing(skeletonOpacity, {
         toValue: 1,
-        duration: 240,
+        duration: 220,
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       }).start();
-      return;
+      const safetyTimer = setTimeout(() => setFirstFrameReady(true), 5200);
+      return () => clearTimeout(safetyTimer);
     }
 
     let cancelled = false;
-    const elapsed = skeletonShownAtRef.current > 0 ? Date.now() - skeletonShownAtRef.current : 280;
-    const waitMs = Math.max(0, 280 - elapsed);
+    const elapsed = skeletonShownAtRef.current > 0 ? Date.now() - skeletonShownAtRef.current : 260;
     const timer = setTimeout(() => {
       if (cancelled) return;
-      skeletonOpacity.stopAnimation();
       Animated.timing(skeletonOpacity, {
         toValue: 0,
-        duration: 320,
+        duration: 300,
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       }).start(({ finished }) => {
-        if (finished && !cancelled) {
-          setRenderSkeleton(false);
-        }
+        if (finished && !cancelled) setRenderSkeleton(false);
       });
-    }, waitMs);
+    }, Math.max(0, 260 - elapsed));
 
     return () => {
       cancelled = true;
@@ -1807,212 +1889,1208 @@ export function PlayerModal({
     };
   }, [visible, showPlayerSkeleton, skeletonOpacity]);
 
-  useEffect(() => {
-    if (!visible) return;
-    if (!isOfflineMode && !webHudReady) {
-      const t = setTimeout(() => setWebHudReady(true), 6000);
-      return () => clearTimeout(t);
+  // Close cleanup
+  const handleClose = useCallback(() => {
+    persistCurrentProgress(true);
+    clearHudTimer();
+    if (checkFilePollRef.current) {
+      clearInterval(checkFilePollRef.current);
+      checkFilePollRef.current = null;
     }
-    if (isOfflineMode && !offlineReady) {
-      const t = setTimeout(() => setOfflineReady(true), 4200);
-      return () => clearTimeout(t);
-    }
-  }, [visible, isOfflineMode, webHudReady, offlineReady]);
+    if (seekReturnTimerRef.current) clearTimeout(seekReturnTimerRef.current);
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    try {
+      playerA.pause();
+      playerB.pause();
+    } catch {}
+    setServerModalOpen(false);
+    setEpisodeModalOpen(false);
+    setSubSettingsOpen(false);
+    setGeneralSettingsOpen(false);
+    setOfflineSheetOpen(false);
+    setCastPopupOpen(false);
+    setInfoPanel(null);
+    onClose();
+  }, [persistCurrentProgress, clearHudTimer, playerA, playerB, onClose]);
 
-  // If opened from an already-completed online entry while Prefer Offline is enabled, ensure local offline item matches
-  const matchedOfflineFallback = useMemo(() => {
-    if (!isOfflineMode) return null;
-    if (params?.offlineItem) return params.offlineItem;
-    return findCompletedOfflineItem({
-      streamCode: activeStreamCode,
-      videosId: params?.videosId,
-      episodeId: params?.episodeId,
-    });
-  }, [isOfflineMode, params, activeStreamCode]);
+  const seekToWithWarning = useCallback(
+    (targetSec: number) => {
+      const dur = durationRef.current;
+      const clamped = dur > 0 ? Math.max(0, Math.min(dur, targetSec)) : Math.max(0, targetSec);
+      const prevSec = currentTimeRef.current;
+      if (
+        settingsRef.current.seekWarningEnabled &&
+        Math.abs(clamped - prevSec) > 60
+      ) {
+        setSeekReturnSec(prevSec);
+        if (seekReturnTimerRef.current) clearTimeout(seekReturnTimerRef.current);
+        seekReturnTimerRef.current = setTimeout(() => setSeekReturnSec(null), 9000);
+      }
+      try {
+        getActivePlayer().currentTime = clamped;
+      } catch {}
+    },
+    [getActivePlayer]
+  );
 
-  const effectiveOfflineParams = useMemo(() => {
-    if (!params) return null;
-    if (params.offlineItem || !matchedOfflineFallback) return params;
-    return {
-      ...params,
-      offlineItem: matchedOfflineFallback,
-      offlineUri: matchedOfflineFallback.local_uri,
-    };
-  }, [params, matchedOfflineFallback]);
+  // Progress bar PanResponder
+  const scrubberPanResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: () => true,
+        onPanResponderGrant: (e) => {
+          userInteractedHudRef.current = true;
+          clearHudTimer();
+          const bw = barWidthRef.current;
+          if (bw <= 0 || durationRef.current <= 0) return;
+          setDragRatio(Math.max(0, Math.min(1, e.nativeEvent.locationX / bw)));
+        },
+        onPanResponderMove: (e) => {
+          const bw = barWidthRef.current;
+          if (bw <= 0 || durationRef.current <= 0) return;
+          setDragRatio(Math.max(0, Math.min(1, e.nativeEvent.locationX / bw)));
+        },
+        onPanResponderRelease: (e) => {
+          const bw = barWidthRef.current;
+          const dur = durationRef.current;
+          if (bw > 0 && dur > 0) {
+            const r = Math.max(0, Math.min(1, e.nativeEvent.locationX / bw));
+            seekToWithWarning(r * dur);
+          }
+          setDragRatio(null);
+          showHudWithTimer(3600);
+        },
+        onPanResponderTerminate: () => {
+          setDragRatio(null);
+          showHudWithTimer(3600);
+        },
+      }),
+    [clearHudTimer, seekToWithWarning, showHudWithTimer]
+  );
 
-  if (!visible) {
+  if (!visible || !params) {
     return null;
   }
 
+  const skipIntroSec = resolved?.skip_intro_sec || 0;
+  const endCreditsSec = resolved?.end_credits_sec || 0;
+  const effectiveRatio =
+    dragRatio !== null
+      ? dragRatio
+      : duration > 0
+        ? Math.min(1, Math.max(0, currentTime / duration))
+        : 0;
+  const progressPct = effectiveRatio * 100;
+  const bufferPct = duration > 0 ? Math.min(100, Math.max(0, (bufferedPos / duration) * 100)) : 0;
+  const shownClockSec = dragRatio !== null ? dragRatio * duration : currentTime;
+
+  const activeSrvObj = servers.find((s) => s.id === activeServerId);
+  const serverBadgeLabel = activeSrvObj?.label || (isOfflineOnlyMode ? 'Phát từ máy' : 'Đang kết nối');
+  const durationBadge = duration > 0 ? formatDurationShort(duration) : '';
+  const topMetaLine = [durationBadge, qualityBadge, serverBadgeLabel].filter(Boolean).join(' · ');
+
+  const displayTitle =
+    resolved?.title || params.title || 'Đang phát phim';
+  const epDisplay = activeEpTitle || resolved?.episode_title || params.episodeTitle || '';
+  const fullHeaderTitle = epDisplay ? `${displayTitle} · ${epDisplay}` : displayTitle;
+
+  const isContrastActive =
+    settings.contrastLevel === 'Cao' || settings.contrastLevel === 'Rất cao';
+
+  const isDownloadedNow = Boolean(
+    matchedOfflineItem?.status === 'completed' || downloadingOfflineItem?.status === 'completed'
+  );
+  const isDownloadingNow = Boolean(
+    downloadingOfflineItem &&
+      (downloadingOfflineItem.status === 'downloading' ||
+        downloadingOfflineItem.status === 'preparing' ||
+        downloadingOfflineItem.status === 'queued')
+  );
+  const serverPreparing = servers.some(
+    (s) => (s.id === '11' || s.id === '36') && s.status === 'downloading'
+  );
+
+  const showSkipIntroButton =
+    skipIntroSec > 5 && currentTime >= 1 && currentTime < skipIntroSec - 2;
+
+  const introPct =
+    duration > 0 && skipIntroSec > 0 ? Math.min(98, (skipIntroSec / duration) * 100) : null;
+  const outroPct =
+    duration > 0 && endCreditsSec > 0 && duration > endCreditsSec
+      ? Math.max(2, ((duration - endCreditsSec) / duration) * 100)
+      : null;
+  const seamlessTriggerSec =
+    duration > 0 && settings.seamlessPreloadEnabled && currentNextEpisode
+      ? Math.max(5, duration - endCreditsSec - 120)
+      : null;
+  const seamlessPct =
+    seamlessTriggerSec !== null && duration > 0
+      ? Math.min(98, Math.max(2, (seamlessTriggerSec / duration) * 100))
+      : null;
+  const seamlessDotColor =
+    preloadState === 'ready'
+      ? '#30D158'
+      : preloadState === 'failed'
+        ? '#FF453A'
+        : '#FFD60A';
+
+  const prevPosPct =
+    seekReturnSec !== null && duration > 0
+      ? Math.min(98, Math.max(2, (seekReturnSec / duration) * 100))
+      : null;
+
+  const castPayload: CastMoviePayload = {
+    videosId: params.videosId,
+    streamCode: activeStreamCode,
+    title: displayTitle,
+    episode: epDisplay,
+    poster: moviePosterMeta.poster || params.posterUrl || '',
+    streamUrl: activeSrvObj?.streamUrl || '',
+    position: Math.floor(currentTime),
+    paused: !isPlaying,
+    subHigh: resolved?.sub_high || '',
+    subVn: vnSubUrl,
+    subEn: enSubUrl,
+  };
+
   return (
-    <View style={styles.playerLayerRoot}>
+    <View style={styles.playerRoot}>
       <View style={styles.stage}>
-        {isOfflineMode && effectiveOfflineParams ? (
-          <OfflineNativePlayer
-            params={effectiveOfflineParams}
-            localServerPort={localServerPort}
-            onClose={handleClose}
-            onReady={() => setOfflineReady(true)}
-            onSwitchOfflineItem={onSwitchOfflineItem}
-            onPipChange={(active) => {
-              isInPipRef.current = active;
-              if (active) {
-                clearPipRestoreTimer();
-              } else {
-                scheduleLandscapeRestoreAfterPip();
-              }
+        {/* Layer A */}
+        <Animated.View
+          pointerEvents={activeLayer === 'A' ? 'auto' : 'none'}
+          style={[
+            styles.layerFill,
+            {
+              zIndex: activeLayer === 'A' ? 2 : 1,
+              opacity: layerAOpacity,
+            },
+          ]}
+        >
+          <VideoView
+            ref={viewARef}
+            player={playerA}
+            style={StyleSheet.absoluteFill}
+            contentFit={settings.videoFillMode || 'contain'}
+            nativeControls={false}
+            allowsPictureInPicture={activeLayer === 'A' && settings.pipEnabled}
+            startsPictureInPictureAutomatically={activeLayer === 'A' && settings.pipEnabled}
+            {...({ contrastEnhance: isContrastActive } as any)}
+            onPictureInPictureStart={() => {
+              if (activeLayerRef.current !== 'A') return;
+              setIsInPip(true);
+              syncNativePipSubtitleTrack(playerA, true);
+              setTimeout(() => syncNativePipSubtitleTrack(playerA, true), 150);
+              clearPipRestoreTimer();
+            }}
+            onPictureInPictureStop={() => {
+              if (activeLayerRef.current !== 'A') return;
+              setIsInPip(false);
+              syncNativePipSubtitleTrack(playerA, false);
+              scheduleLandscapeRestoreAfterPip();
             }}
           />
-        ) : (
-          <View style={[styles.flex, { backgroundColor: '#000000' }]}>
-            {Boolean(deviceHglk) ? (
-              <WebView
-                key={`wv-${proxyConfig.revision}-${isProxyActive ? 'p' : 'd'}`}
-                ref={webViewRef}
-                source={{ uri: webviewSourceUrl }}
-                incognito={isProxyActive}
-                applicationNameForUserAgent="DVAPlayiOS/1.0"
-                injectedJavaScriptBeforeContentLoaded={cookieBootstrapJs}
-                allowsInlineMediaPlayback
-                allowsFullscreenVideo
-                allowsPictureInPictureMediaPlayback={settings.pipEnabled}
-                autoManageStatusBarEnabled={false}
-                mediaPlaybackRequiresUserAction={false}
-                contentInsetAdjustmentBehavior="never"
-                bounces={false}
-                sharedCookiesEnabled
-                thirdPartyCookiesEnabled
-                onMessage={(ev) => {
-                  try {
-                    const data = JSON.parse(ev.nativeEvent.data || '{}');
-                    if (data.type === 'DVA_APP_PLAYER_READY') {
-                      setWebHudReady(true);
-                      if (isLockedRef.current) {
-                        pauseWebViewForLock();
-                      }
-                    } else if (data.type === 'DVA_APP_PLAYER_BACK') {
-                      handleClose();
-                    } else if (data.type === 'DVA_IOS_OPEN_CAST') {
-                      if (params) {
-                        setCastMoviePayload({
-                          videosId: params.videosId,
-                          streamCode: String(data.streamCode || activeEpisodeCtx?.streamCode || activeStreamCode),
-                          title: String(data.title || params.title || ''),
-                          episode: String(data.episodeTitle || activeEpisodeCtx?.episodeTitle || params.episodeTitle || ''),
-                          poster: String(data.poster || moviePosterMeta.poster || params.posterUrl || ''),
-                          streamUrl: String(data.streamUrl || ''),
-                          position: Number(data.position) || 0,
-                          paused: Boolean(data.paused),
-                          subHigh: String(data.subHigh || ''),
-                          subVn: String(data.subVn || ''),
-                          subEn: String(data.subEn || ''),
-                        });
-                      }
-                      setCastPopupOpen(true);
-                    } else if (data.type === 'DVA_IOS_OPEN_OFFLINE_SHEET') {
-                      setActiveEpisodeCtx({
-                        streamCode: String(data.streamCode || activeStreamCode),
-                        serverTitle: String(data.serverTitle || ''),
-                        serverTapPhim: String(data.serverTapPhim || ''),
-                        serverFileKey: String(data.serverFileKey || ''),
-                        nextStreamCode: String(data.nextStreamCode || ''),
-                        title: String(data.title || params?.title || ''),
-                        episodeTitle: String(data.episodeTitle || params?.episodeTitle || ''),
-                      });
-                      setOfflineSheetOpen(true);
-                    } else if (data.type === 'DVA_IOS_EPISODE_CONTEXT') {
-                      setActiveEpisodeCtx({
-                        streamCode: String(data.streamCode || activeStreamCode),
-                        serverTitle: String(data.serverTitle || ''),
-                        serverTapPhim: String(data.serverTapPhim || ''),
-                        serverFileKey: String(data.serverFileKey || ''),
-                        nextStreamCode: String(data.nextStreamCode || ''),
-                        title: String(data.title || params?.title || ''),
-                        episodeTitle: String(data.episodeTitle || params?.episodeTitle || ''),
-                      });
-                    } else if (data.type === 'DVA_IOS_TOGGLE_PIP') {
-                      isInPipRef.current = Boolean(data.active);
-                      clearPipRestoreTimer();
-                      Haptics.selectionAsync();
-                    } else if (data.type === 'DVA_IOS_PIP_STATE') {
-                      const active = Boolean(data.active);
-                      isInPipRef.current = active;
-                      clearPipRestoreTimer();
-                      if (!active) {
-                        scheduleLandscapeRestoreAfterPip();
-                      }
-                    } else if (data.type === 'DVA_IOS_PLAYER_PROGRESS') {
-                      const posVal = Number(data.position) || 0;
-                      const durVal = Number(data.duration) || 0;
-                      const scVal = String(
-                        data.streamCode || activeEpisodeCtx?.streamCode || activeStreamCode
-                      );
-                      webProgressRef.current = {
-                        position: posVal,
-                        duration: durVal,
-                        streamCode: scVal,
-                      };
-                      void syncOnlineProgressToOffline({
-                        streamCode: scVal,
-                        videosId: params?.videosId,
-                        episodeId: params?.episodeId,
-                        positionSec: posVal,
-                        durationSec: durVal,
-                      });
-                    }
-                  } catch {}
-                }}
-                style={[styles.flex, { backgroundColor: '#000000' }]}
-              />
-            ) : null}
+        </Animated.View>
 
-            {params ? (
-              <OfflineDownloadSheet
-                visible={offlineSheetOpen}
-                onClose={() => setOfflineSheetOpen(false)}
-                videosId={params.videosId}
-                title={params.title}
-                posterUrl={moviePosterMeta.poster || params.posterUrl || ''}
-                thumbnailUrl={moviePosterMeta.thumb || params.thumbnailUrl || ''}
-                serverMovieTitle={activeEpisodeCtx?.serverTitle}
-                currentStreamCode={activeEpisodeCtx?.streamCode || activeStreamCode}
-                currentEpisodeTitle={activeEpisodeCtx?.episodeTitle || params.episodeTitle}
-                currentEpisodeId={params.episodeId}
-                currentServerFileKey={activeEpisodeCtx?.serverFileKey}
-                episodes={
-                  detailEpisodes.length > 0 ? detailEpisodes : params.episodes || []
-                }
-              />
-            ) : null}
+        {/* Layer B */}
+        <Animated.View
+          pointerEvents={activeLayer === 'B' ? 'auto' : 'none'}
+          style={[
+            styles.layerFill,
+            {
+              zIndex: activeLayer === 'B' ? 2 : 1,
+              opacity: layerBOpacity,
+            },
+          ]}
+        >
+          <VideoView
+            ref={viewBRef}
+            player={playerB}
+            style={StyleSheet.absoluteFill}
+            contentFit={settings.videoFillMode || 'contain'}
+            nativeControls={false}
+            allowsPictureInPicture={activeLayer === 'B' && settings.pipEnabled}
+            startsPictureInPictureAutomatically={activeLayer === 'B' && settings.pipEnabled}
+            {...({ contrastEnhance: isContrastActive } as any)}
+            onPictureInPictureStart={() => {
+              if (activeLayerRef.current !== 'B') return;
+              setIsInPip(true);
+              syncNativePipSubtitleTrack(playerB, true);
+              setTimeout(() => syncNativePipSubtitleTrack(playerB, true), 150);
+              clearPipRestoreTimer();
+            }}
+            onPictureInPictureStop={() => {
+              if (activeLayerRef.current !== 'B') return;
+              setIsInPip(false);
+              syncNativePipSubtitleTrack(playerB, false);
+              scheduleLandscapeRestoreAfterPip();
+            }}
+          />
+        </Animated.View>
 
-            <CastModal
-              visible={castPopupOpen}
-              inlinePopup
-              movieToCast={castMoviePayload}
-              onCastStarted={() => {
-                webViewRef.current?.injectJavaScript(`
-                  try {
-                    if (window.jwplayer && typeof window.jwplayer === 'function') {
-                      var jw = window.jwplayer();
-                      if (jw && typeof jw.pause === 'function') jw.pause(true);
-                    }
-                  } catch (e) {}
-                  true;
-                `);
-              }}
-              onClose={() => setCastPopupOpen(false)}
-            />
+        {/* Low contrast softening scrim when contrastLevel === 'Thấp' */}
+        {settings.contrastLevel === 'Thấp' ? (
+          <View pointerEvents="none" style={styles.lowContrastScrim} />
+        ) : null}
+
+        {/* Interactive video touch surface (tap toggle HUD, double-tap seek, press & hold fast forward) */}
+        <Pressable
+          style={[StyleSheet.absoluteFill, { zIndex: 5 }]}
+          onPressIn={() => {
+            holdActivatedRef.current = false;
+            if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
+            holdTimerRef.current = setTimeout(() => {
+              holdActivatedRef.current = true;
+              const p = getActivePlayer();
+              savedRateBeforeHoldRef.current = p.playbackRate || playbackRate;
+              const boostSpeed = settingsRef.current.holdSeekSpeed || 2;
+              p.playbackRate = boostSpeed;
+              setHoldBoostActive(true);
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            }, 380);
+          }}
+          onPressOut={() => {
+            if (holdTimerRef.current) {
+              clearTimeout(holdTimerRef.current);
+              holdTimerRef.current = null;
+            }
+            if (holdActivatedRef.current) {
+              holdActivatedRef.current = false;
+              setHoldBoostActive(false);
+              try {
+                getActivePlayer().playbackRate = savedRateBeforeHoldRef.current || playbackRate;
+              } catch {}
+            }
+          }}
+          onPress={(e) => {
+            if (holdActivatedRef.current) return;
+            userInteractedHudRef.current = true;
+            if (speedMenuOpen || moreMenuOpen) {
+              setSpeedMenuOpen(false);
+              setMoreMenuOpen(false);
+              return;
+            }
+            const x = e.nativeEvent.locationX;
+            const side: 'left' | 'right' | 'center' =
+              x < winWidth * 0.28 ? 'left' : x > winWidth * 0.72 ? 'right' : 'center';
+            const now = Date.now();
+            if (
+              side !== 'center' &&
+              lastTapStageRef.current.side === side &&
+              now - lastTapStageRef.current.time < 280
+            ) {
+              lastTapStageRef.current = { time: 0, side: 'center' };
+              const delta = side === 'left' ? -10 : 10;
+              seekToWithWarning(currentTimeRef.current + delta);
+              Haptics.selectionAsync();
+              showToast(delta < 0 ? 'Tua lùi 10 giây' : 'Tua tới 10 giây');
+              return;
+            }
+            lastTapStageRef.current = { time: now, side };
+
+            if (hudVisibleRef.current) {
+              clearHudTimer();
+              setHudVisible(false);
+            } else {
+              showHudWithTimer(3600);
+            }
+          }}
+        />
+
+        {/* Native Dual Subtitle & AI Voice Engine matching subtitleUI.php */}
+        <NativeSubtitleOverlay
+          vnCues={vnCues}
+          enCues={enCues}
+          currentTime={currentTime}
+          isPlaying={isPlaying}
+          isInPip={isInPip}
+          subHighRaw={resolved?.sub_high}
+          settings={settings}
+          episodeSignature={`${params.videosId}|${activeStreamCode}`}
+        />
+
+        {/* Top-center status pills (hold speed / toast / auto-next countdown) */}
+        {holdBoostActive ? (
+          <View pointerEvents="none" style={styles.topCenterBannerWrap}>
+            <GlassSurface variant="liquid" radius={40} intensity={85} style={styles.toastPill}>
+              <Ionicons name="play-forward" size={15} color="#FFF" />
+              <Text style={styles.toastTxt}>
+                Đang giữ tua nhanh {settings.holdSeekSpeed}x
+              </Text>
+            </GlassSurface>
           </View>
-        )}
+        ) : toastMsg ? (
+          <View pointerEvents="none" style={styles.topCenterBannerWrap}>
+            <GlassSurface variant="liquid" radius={40} intensity={85} style={styles.toastPill}>
+              <Ionicons name="sparkles" size={14} color={COLORS.accent} />
+              <Text style={styles.toastTxt}>{toastMsg}</Text>
+            </GlassSurface>
+          </View>
+        ) : null}
 
+        {/* Floating Next-Episode Countdown Pill */}
+        {nextCountdownSec !== null && currentNextEpisode ? (
+          <View style={styles.countdownOverlay}>
+            <GlassSurface variant="liquid" radius={40} intensity={85} style={styles.countdownCard}>
+              <Text style={styles.countdownTitle}>
+                Chuyển sang {currentNextEpisode.ep.episodes_name} sau {nextCountdownSec}s
+              </Text>
+              <View style={styles.countdownBtns}>
+                <TouchableOpacity
+                  style={styles.countdownCancelBtn}
+                  onPress={() => setNextCountdownSec(null)}
+                >
+                  <Text style={styles.countdownBtnTxt}>Hủy</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.countdownNowBtn}
+                  onPress={triggerSwitchToNextEpisode}
+                >
+                  <Text style={styles.countdownBtnTxt}>Xem ngay</Text>
+                </TouchableOpacity>
+              </View>
+            </GlassSurface>
+          </View>
+        ) : null}
+
+        {/* Image 1 Liquid Glass HUD Layer */}
+        {hudVisible ? (
+          <View
+            pointerEvents="box-none"
+            style={[
+              styles.hudOverlay,
+              {
+                paddingLeft: Math.max(18, insets.left + 10),
+                paddingRight: Math.max(18, insets.right + 10),
+                paddingTop: Math.max(12, insets.top + 4),
+                paddingBottom: Math.max(14, insets.bottom > 0 ? insets.bottom : 14),
+              },
+            ]}
+          >
+            {/* Top Bar */}
+            <View style={styles.topBarRow} pointerEvents="box-none">
+              <View style={styles.topLeftGroup}>
+                <TouchableOpacity activeOpacity={0.8} onPress={handleClose}>
+                  <GlassSurface variant="liquid" radius={22} intensity={85} style={styles.backBtn}>
+                    <Ionicons name="chevron-back" size={23} color="#FFF" />
+                  </GlassSurface>
+                </TouchableOpacity>
+                <View style={styles.titleMetaWrap}>
+                  <Text style={styles.hudTitle} numberOfLines={1}>
+                    {fullHeaderTitle}
+                  </Text>
+                  <Text style={styles.hudMeta} numberOfLines={1}>
+                    {topMetaLine}
+                  </Text>
+                </View>
+              </View>
+
+              {/* Top-right 6-button Liquid Glass capsule matching Image 1 */}
+              <GlassSurface variant="liquid" radius={40} intensity={85} style={styles.topRightCapsule}>
+                <TouchableOpacity
+                  style={styles.topCapsuleBtn}
+                  onPress={() => {
+                    Haptics.selectionAsync();
+                    clearHudTimer();
+                    setServerModalOpen(true);
+                  }}
+                >
+                  <Ionicons name="server-outline" size={20} color="#FFF" />
+                  {serverPreparing ? <View style={styles.prepDot} /> : null}
+                </TouchableOpacity>
+
+                {!isOfflineOnlyMode ? (
+                  <TouchableOpacity
+                    style={[
+                      styles.topCapsuleBtn,
+                      isDownloadedNow && styles.topBtnGreen,
+                    ]}
+                    onPress={() => {
+                      Haptics.selectionAsync();
+                      clearHudTimer();
+                      setOfflineSheetOpen(true);
+                    }}
+                  >
+                    {isDownloadingNow ? (
+                      <ActivityIndicator size="small" color="#30D158" />
+                    ) : (
+                      <Ionicons
+                        name="download-outline"
+                        size={20}
+                        color={isDownloadedNow ? '#30D158' : '#FFF'}
+                      />
+                    )}
+                  </TouchableOpacity>
+                ) : null}
+
+                <TouchableOpacity
+                  style={styles.topCapsuleBtn}
+                  onPress={() => {
+                    Haptics.selectionAsync();
+                    clearHudTimer();
+                    setSubSettingsOpen(true);
+                  }}
+                >
+                  <Ionicons name="chatbox-ellipses-outline" size={20} color="#FFF" />
+                </TouchableOpacity>
+
+                {settings.pipEnabled ? (
+                  <TouchableOpacity
+                    style={styles.topCapsuleBtn}
+                    onPress={async () => {
+                      Haptics.selectionAsync();
+                      try {
+                        if (
+                          typeof isPictureInPictureSupported === 'function' &&
+                          !isPictureInPictureSupported()
+                        ) {
+                          showToast('Thiết bị chưa hỗ trợ thu nhỏ khung hình');
+                          return;
+                        }
+                        const viewRef =
+                          activeLayerRef.current === 'A' ? viewARef.current : viewBRef.current;
+                        setIsInPip(true);
+                        syncNativePipSubtitleTrack(getActivePlayer(), true);
+                        await viewRef?.startPictureInPicture();
+                      } catch {
+                        setIsInPip(false);
+                        syncNativePipSubtitleTrack(getActivePlayer(), false);
+                        showToast('Không thể mở thu nhỏ khung hình lúc này');
+                      }
+                    }}
+                  >
+                    <Ionicons name="albums-outline" size={20} color="#FFF" />
+                  </TouchableOpacity>
+                ) : null}
+
+                <TouchableOpacity
+                  style={styles.topCapsuleBtn}
+                  onPress={() => {
+                    Haptics.selectionAsync();
+                    clearHudTimer();
+                    setCastPopupOpen(true);
+                  }}
+                >
+                  <Ionicons name="tv-outline" size={20} color="#FFF" />
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.topCapsuleBtn}
+                  onPress={() => {
+                    Haptics.selectionAsync();
+                    clearHudTimer();
+                    setGeneralSettingsOpen(true);
+                  }}
+                >
+                  <Ionicons name="settings-outline" size={20} color="#FFF" />
+                </TouchableOpacity>
+              </GlassSurface>
+            </View>
+
+            {/* Right-Edge Vertical Liquid Glass Capsule matching Image 1 */}
+            <GlassSurface
+              variant="liquid"
+              radius={40}
+              intensity={85}
+              style={[styles.rightSideCapsule, { right: Math.max(18, insets.right + 10) }]}
+            >
+              <TouchableOpacity
+                style={[styles.sideBtn, isContrastActive && styles.sideBtnActiveRed]}
+                onPress={() => {
+                  Haptics.selectionAsync();
+                  const next = isContrastActive ? 'Mặc định' : 'Cao';
+                  void updateSetting('contrastLevel', next);
+                  showToast(isContrastActive ? 'Tương phản: Mặc định' : 'Đã bật Tăng độ tương phản');
+                  showHudWithTimer();
+                }}
+              >
+                <Ionicons name="contrast" size={20} color="#FFF" />
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.sideBtn, settings.autoPlayNext && styles.sideBtnActiveRed]}
+                onPress={() => {
+                  Haptics.selectionAsync();
+                  const next = !settings.autoPlayNext;
+                  void updateSetting('autoPlayNext', next);
+                  showToast(next ? 'Đã bật Tự động chuyển tập' : 'Đã tắt Tự động chuyển tập');
+                  showHudWithTimer();
+                }}
+              >
+                <Ionicons name="play-skip-forward" size={19} color="#FFF" />
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.sideBtn,
+                  settings.videoFillMode === 'cover' && styles.sideBtnActiveRed,
+                ]}
+                onPress={() => {
+                  Haptics.selectionAsync();
+                  const nextMode = settings.videoFillMode === 'cover' ? 'contain' : 'cover';
+                  void updateSetting('videoFillMode', nextMode);
+                  showToast(nextMode === 'cover' ? 'Tràn viền màn hình' : 'Tỷ lệ màn hình gốc');
+                  showHudWithTimer();
+                }}
+              >
+                <Ionicons name="scan-outline" size={19} color="#FFF" />
+              </TouchableOpacity>
+            </GlassSurface>
+
+            {/* Center Playback Controls matching Image 1 */}
+            <View style={styles.centerControlsRow} pointerEvents="box-none">
+              <TouchableOpacity
+                activeOpacity={0.75}
+                style={styles.centerSeekTouch}
+                onPress={() => {
+                  userInteractedHudRef.current = true;
+                  Haptics.selectionAsync();
+                  seekToWithWarning(currentTimeRef.current - 10);
+                  showHudWithTimer();
+                }}
+              >
+                <View style={styles.seekRingWrap}>
+                  <Ionicons
+                    name="refresh-outline"
+                    size={42}
+                    color="#FFF"
+                    style={{ transform: [{ scaleX: -1 }] }}
+                  />
+                  <Text style={styles.seekRingTxt}>10</Text>
+                </View>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                activeOpacity={0.8}
+                onPress={() => {
+                  userInteractedHudRef.current = true;
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  const p = getActivePlayer();
+                  if (p.playing) p.pause();
+                  else p.play();
+                  showHudWithTimer();
+                }}
+              >
+                <GlassSurface
+                  variant="liquid"
+                  radius={26}
+                  intensity={70}
+                  style={styles.centerPlayBox}
+                >
+                  {isBuffering ? (
+                    <ActivityIndicator size="large" color="#FFF" />
+                  ) : (
+                    <Ionicons
+                      name={isPlaying ? 'pause' : 'play'}
+                      size={40}
+                      color="#FFF"
+                      style={!isPlaying ? { marginLeft: 3 } : undefined}
+                    />
+                  )}
+                </GlassSurface>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                activeOpacity={0.75}
+                style={styles.centerSeekTouch}
+                onPress={() => {
+                  userInteractedHudRef.current = true;
+                  Haptics.selectionAsync();
+                  seekToWithWarning(currentTimeRef.current + 10);
+                  showHudWithTimer();
+                }}
+              >
+                <View style={styles.seekRingWrap}>
+                  <Ionicons name="refresh-outline" size={42} color="#FFF" />
+                  <Text style={styles.seekRingTxt}>10</Text>
+                </View>
+              </TouchableOpacity>
+            </View>
+
+            {/* Bottom Control Section matching Image 1 */}
+            <View style={styles.bottomBlock} pointerEvents="box-none">
+              {/* Quick Contextual Floating Action Chips above timeline */}
+              <View style={styles.floatingChipsRow} pointerEvents="box-none">
+                {showSkipIntroButton ? (
+                  <TouchableOpacity
+                    activeOpacity={0.85}
+                    onPress={() => {
+                      Haptics.selectionAsync();
+                      seekToWithWarning(skipIntroSec);
+                      showToast('Đã bỏ qua giới thiệu');
+                    }}
+                  >
+                    <GlassSurface variant="liquid" radius={40} intensity={85} style={styles.quickChip}>
+                      <Ionicons name="play-skip-forward" size={14} color="#FFF" />
+                      <Text style={styles.quickChipTxt}>Bỏ qua giới thiệu</Text>
+                    </GlassSurface>
+                  </TouchableOpacity>
+                ) : null}
+
+                {seekReturnSec !== null ? (
+                  <TouchableOpacity
+                    activeOpacity={0.85}
+                    onPress={() => {
+                      const backSec = seekReturnSec;
+                      setSeekReturnSec(null);
+                      if (backSec !== null) {
+                        seekToWithWarning(backSec);
+                      }
+                    }}
+                  >
+                    <GlassSurface variant="liquid" radius={40} intensity={85} style={styles.quickChip}>
+                      <Ionicons name="return-up-back" size={14} color="#00FFD9" />
+                      <Text style={styles.quickChipTxt}>
+                        Quay lại vị trí cũ ({formatClock(seekReturnSec)})
+                      </Text>
+                    </GlassSurface>
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+
+              {/* Time display row */}
+              <View style={styles.timeRow}>
+                <Text style={styles.timeReadout}>
+                  {formatClock(shownClockSec)} / {formatClock(duration)}
+                </Text>
+                {sleepTimerValue !== null ? (
+                  <Text style={styles.sleepBadge}>
+                    Hẹn tắt:{' '}
+                    {sleepTimerValue === 'end_of_episode'
+                      ? 'Hết tập'
+                      : sleepSecondsLeft !== null
+                        ? `${Math.ceil(sleepSecondsLeft / 60)}p`
+                        : `${sleepTimerValue}p`}
+                  </Text>
+                ) : null}
+              </View>
+
+              {/* Timeline Scrubber with Intro / Seamless / Outro / PrevPos Note Markers */}
+              <View
+                style={styles.scrubberHit}
+                onLayout={(e) => setBarWidth(e.nativeEvent.layout.width || 400)}
+                {...scrubberPanResponder.panHandlers}
+              >
+                {dragRatio !== null ? (() => {
+                  const scrubSec = dragRatio * duration;
+                  const threshold = Math.max(8, duration * 0.015);
+                  let scrubNote = '';
+                  if (prevPosPct !== null && seekReturnSec !== null && Math.abs(scrubSec - seekReturnSec) <= threshold) {
+                    scrubNote = 'Vị trí đã xem trước đó';
+                  } else if (introPct !== null && Math.abs(scrubSec - skipIntroSec) <= threshold) {
+                    scrubNote = 'Mở đầu bộ phim';
+                  } else if (outroPct !== null && Math.abs(scrubSec - (duration - endCreditsSec)) <= threshold) {
+                    scrubNote = 'Kết thúc bộ phim';
+                  } else if (seamlessTriggerSec !== null && Math.abs(scrubSec - seamlessTriggerSec) <= threshold) {
+                    scrubNote = 'Xem liền mạch';
+                  }
+                  return (
+                    <View
+                      pointerEvents="none"
+                      style={[styles.scrubTooltipWrap, { left: `${progressPct}%` }]}
+                    >
+                      <GlassSurface variant="liquid" radius={16} intensity={85} style={styles.scrubTooltip}>
+                        <Text style={styles.scrubTooltipTxt}>
+                          {scrubNote ? `${formatClock(scrubSec)} · ${scrubNote}` : formatClock(scrubSec)}
+                        </Text>
+                      </GlassSurface>
+                    </View>
+                  );
+                })() : null}
+
+                <View style={styles.scrubberTrack}>
+                  <View style={[styles.scrubberBuffer, { width: `${bufferPct}%` }]} />
+                  <View style={[styles.scrubberFill, { width: `${progressPct}%` }]} />
+                </View>
+
+                {introPct !== null ? (
+                  <View
+                    pointerEvents="none"
+                    style={[styles.cueMarkerPill, { left: `${introPct}%` }]}
+                  />
+                ) : null}
+                {outroPct !== null ? (
+                  <View
+                    pointerEvents="none"
+                    style={[styles.cueMarkerPill, { left: `${outroPct}%` }]}
+                  />
+                ) : null}
+                {seamlessPct !== null ? (
+                  <View
+                    pointerEvents="none"
+                    style={[
+                      styles.seamlessDotMarker,
+                      {
+                        left: `${seamlessPct}%`,
+                        backgroundColor: seamlessDotColor,
+                        shadowColor: seamlessDotColor,
+                      },
+                    ]}
+                  />
+                ) : null}
+                {prevPosPct !== null ? (
+                  <View
+                    pointerEvents="none"
+                    style={[
+                      styles.cueMarkerPill,
+                      { left: `${prevPosPct}%`, backgroundColor: '#00FFD9' },
+                    ]}
+                  />
+                ) : null}
+
+                <View style={[styles.scrubberThumb, { left: `${progressPct}%` }]} />
+              </View>
+
+              {/* Bottom Action Pills Row matching Image 1 */}
+              <View style={styles.bottomActionsRow}>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  style={{ flex: 1 }}
+                  contentContainerStyle={styles.bottomLeftScroll}
+                >
+                  {currentNextEpisode ? (
+                    <TouchableOpacity
+                      activeOpacity={0.82}
+                      onPress={() => {
+                        userInteractedHudRef.current = true;
+                        Haptics.selectionAsync();
+                        triggerSwitchToNextEpisode();
+                      }}
+                    >
+                      <GlassSurface variant="liquid" radius={40} intensity={85} style={styles.nextEpPill}>
+                        {moviePosterMeta.thumb || moviePosterMeta.poster ? (
+                          <Image
+                            source={{ uri: moviePosterMeta.thumb || moviePosterMeta.poster }}
+                            style={styles.nextEpThumb}
+                          />
+                        ) : (
+                          <View style={[styles.nextEpThumb, { backgroundColor: COLORS.accent }]} />
+                        )}
+                        <Ionicons name="chevron-forward" size={16} color="#FFF" />
+                      </GlassSurface>
+                    </TouchableOpacity>
+                  ) : null}
+
+                  <TouchableOpacity
+                    activeOpacity={0.82}
+                    onPress={async () => {
+                      userInteractedHudRef.current = true;
+                      Haptics.selectionAsync();
+                      const prev = inWishlist;
+                      setInWishlist(!prev);
+                      if (params.videosId > 0) {
+                        try {
+                          const r = await toggleWishlistApi(params.videosId);
+                          setInWishlist(Boolean(r.in_wishlist));
+                        } catch {}
+                      }
+                      showToast(!prev ? 'Đã thêm vào danh sách của tôi' : 'Đã xóa khỏi danh sách');
+                      showHudWithTimer();
+                    }}
+                  >
+                    <GlassSurface variant="liquid" radius={22} intensity={85} style={styles.circleActionBtn}>
+                      <Ionicons
+                        name={inWishlist ? 'bookmark' : 'bookmark-outline'}
+                        size={19}
+                        color={inWishlist ? COLORS.accent : '#FFF'}
+                      />
+                    </GlassSurface>
+                  </TouchableOpacity>
+
+                  {effectiveEpisodes.length > 0 ? (
+                    <TouchableOpacity
+                      activeOpacity={0.82}
+                      onPress={() => {
+                        Haptics.selectionAsync();
+                        clearHudTimer();
+                        setEpisodeModalOpen(true);
+                      }}
+                    >
+                      <GlassSurface variant="liquid" radius={22} intensity={85} style={styles.circleActionBtn}>
+                        <Ionicons name="list" size={20} color="#FFF" />
+                      </GlassSurface>
+                    </TouchableOpacity>
+                  ) : null}
+
+                  <TouchableOpacity
+                    activeOpacity={0.82}
+                    onPress={() => {
+                      Haptics.selectionAsync();
+                      setReaction((r) => (r === 'like' ? null : 'like'));
+                      showHudWithTimer();
+                    }}
+                  >
+                    <GlassSurface variant="liquid" radius={22} intensity={85} style={styles.circleActionBtn}>
+                      <Ionicons
+                        name={reaction === 'like' ? 'thumbs-up' : 'thumbs-up-outline'}
+                        size={19}
+                        color={reaction === 'like' ? '#30D158' : '#FFF'}
+                      />
+                    </GlassSurface>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    activeOpacity={0.82}
+                    onPress={() => {
+                      Haptics.selectionAsync();
+                      setReaction((r) => (r === 'dislike' ? null : 'dislike'));
+                      showHudWithTimer();
+                    }}
+                  >
+                    <GlassSurface variant="liquid" radius={22} intensity={85} style={styles.circleActionBtn}>
+                      <Ionicons
+                        name={reaction === 'dislike' ? 'thumbs-down' : 'thumbs-down-outline'}
+                        size={19}
+                        color={reaction === 'dislike' ? '#FF453A' : '#FFF'}
+                      />
+                    </GlassSurface>
+                  </TouchableOpacity>
+                </ScrollView>
+
+                <View style={styles.bottomRightCluster}>
+                  <TouchableOpacity
+                    activeOpacity={0.82}
+                    onPress={() => {
+                      Haptics.selectionAsync();
+                      setMoreMenuOpen(false);
+                      setSpeedMenuOpen((v) => !v);
+                      showHudWithTimer(6000);
+                    }}
+                  >
+                    <GlassSurface variant="liquid" radius={40} intensity={85} style={styles.rightPillBtn}>
+                      <Ionicons name="play" size={14} color="#FFF" />
+                      <Text style={styles.rightPillTxt}>{playbackRate.toFixed(playbackRate % 1 === 0 ? 1 : 2).replace(/\.00$/, '.0')}x</Text>
+                    </GlassSurface>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    activeOpacity={0.82}
+                    onPress={() => {
+                      Haptics.selectionAsync();
+                      setSpeedMenuOpen(false);
+                      setMoreMenuOpen((v) => !v);
+                      showHudWithTimer(6000);
+                    }}
+                  >
+                    <GlassSurface variant="liquid" radius={40} intensity={85} style={styles.rightPillBtn}>
+                      <Text style={styles.rightPillTxt}>Tùy chọn khác</Text>
+                      <Ionicons name="chevron-down" size={15} color="#FFF" />
+                    </GlassSurface>
+                  </TouchableOpacity>
+                </View>
+
+                {/* Speed Popover */}
+                {speedMenuOpen ? (
+                  <GlassSurface variant="liquid" radius={30} intensity={85} style={styles.speedPopover}>
+                    {SPEED_OPTIONS.map((rate) => {
+                      const active = Math.abs(playbackRate - rate) < 0.01;
+                      return (
+                        <TouchableOpacity
+                          key={rate}
+                          style={[styles.popoverItem, active && styles.popoverItemActive]}
+                          onPress={() => {
+                            Haptics.selectionAsync();
+                            setPlaybackRate(rate);
+                            try {
+                              getActivePlayer().playbackRate = rate;
+                            } catch {}
+                            setSpeedMenuOpen(false);
+                            showHudWithTimer();
+                          }}
+                        >
+                          <Text style={styles.popoverItemTxt}>
+                            {rate.toFixed(rate % 1 === 0 ? 1 : 2).replace(/\.00$/, '.0')}x
+                          </Text>
+                          {active ? <Ionicons name="checkmark" size={16} color="#FFF" /> : null}
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </GlassSurface>
+                ) : null}
+
+                {/* More Options Popover */}
+                {moreMenuOpen ? (
+                  <GlassSurface variant="liquid" radius={30} intensity={85} style={styles.morePopover}>
+                    {!isOfflineOnlyMode ? (
+                      <TouchableOpacity
+                        style={styles.popoverItem}
+                        onPress={() => {
+                          setMoreMenuOpen(false);
+                          setOfflineSheetOpen(true);
+                        }}
+                      >
+                        <Ionicons name="download-outline" size={17} color="#FFF" />
+                        <Text style={styles.popoverItemTxt}>Tải phim ngoại tuyến</Text>
+                      </TouchableOpacity>
+                    ) : null}
+
+                    <TouchableOpacity
+                      style={styles.popoverItem}
+                      onPress={() => {
+                        setMoreMenuOpen(false);
+                        setInfoPanel('info');
+                      }}
+                    >
+                      <Ionicons name="information-circle-outline" size={17} color="#FFF" />
+                      <Text style={styles.popoverItemTxt}>Thông tin phim & Thành viên</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={styles.popoverItem}
+                      onPress={() => {
+                        setMoreMenuOpen(false);
+                        setCastPopupOpen(true);
+                      }}
+                    >
+                      <Ionicons name="tv-outline" size={17} color="#FFF" />
+                      <Text style={styles.popoverItemTxt}>Chiếu lên TV</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={styles.popoverItem}
+                      onPress={() => {
+                        setMoreMenuOpen(false);
+                        setServerModalOpen(true);
+                      }}
+                    >
+                      <Ionicons name="server-outline" size={17} color="#FFF" />
+                      <Text style={styles.popoverItemTxt}>Máy chủ phát phim</Text>
+                    </TouchableOpacity>
+                  </GlassSurface>
+                ) : null}
+              </View>
+            </View>
+          </View>
+        ) : null}
+
+        {/* Native iOS Modals (ALL 100% Liquid Glass radius 40, NO border) */}
+        <PlayerServerPanelModal
+          visible={serverModalOpen}
+          onClose={() => {
+            setServerModalOpen(false);
+            showHudWithTimer();
+          }}
+          servers={servers}
+          activeServerId={activeServerId}
+          autoOptimal={settings.autoOptimalServer}
+          onToggleAutoOptimal={(next) => {
+            void updateSetting('autoOptimalServer', next);
+            if (!next && activeServerId) {
+              manualLockedServerRef.current = activeServerId;
+            } else {
+              manualLockedServerRef.current = null;
+            }
+          }}
+          onSelectServer={(id) => {
+            const target = servers.find((s) => s.id === id);
+            if (!target) return;
+            manualLockedServerRef.current = id;
+            const sfk = resolved?.server_file_key || '';
+            if ((id === '11' || id === '36') && sfk && !target.streamUrl) {
+              void triggerServerPrepare(sfk);
+              showToast(`Đang chuẩn bị ${target.label}...`);
+              setServerModalOpen(false);
+              return;
+            }
+            if (target.streamUrl) {
+              setServerModalOpen(false);
+              void playServerOnActiveLayer(target, {
+                seekToSec: currentTimeRef.current,
+                serverFileKey: sfk,
+                vnUrl: vnSubUrl,
+                enUrl: enSubUrl,
+                title: displayTitle,
+              });
+              showToast(`Đã chọn ${target.label}`);
+            }
+          }}
+          onRefreshPings={async () => {
+            setPingRefreshing(true);
+            try {
+              const p = await measureAllServerPings(Boolean(matchedOfflineItem));
+              setServers((prev) =>
+                prev.map((s) => {
+                  if (s.id === '99') return { ...s, pingMs: p.ping99, pingFailed: false };
+                  if (s.id === '11') return { ...s, pingMs: p.ping11, pingFailed: p.ping11 === null };
+                  if (s.id === '36') return { ...s, pingMs: p.ping36, pingFailed: p.ping36 === null };
+                  if (s.id === '40') return { ...s, pingMs: p.ping40, pingFailed: false };
+                  if (s.id === '3') return { ...s, pingMs: p.ping3, pingFailed: false };
+                  return s;
+                })
+              );
+            } finally {
+              setPingRefreshing(false);
+            }
+          }}
+          pingRefreshing={pingRefreshing}
+          posterUrl={moviePosterMeta.poster || params.posterUrl}
+        />
+
+        <PlayerEpisodeListModal
+          visible={episodeModalOpen}
+          onClose={() => {
+            setEpisodeModalOpen(false);
+            showHudWithTimer();
+          }}
+          userId={user?.user_id || 0}
+          movieTitle={displayTitle}
+          serverMovieTitle={resolved?.server_movie_title}
+          serverTapPhim={resolved?.server_tap_phim}
+          currentStreamCode={activeStreamCode}
+          posterUrl={moviePosterMeta.poster || params.posterUrl}
+          fallbackSeasons={resolved?.seasons}
+          fallbackEpisodes={effectiveEpisodes}
+          offlineItems={offlineItems}
+          onSelectEpisode={(sc, epName, epIndex, seasonId) => {
+            persistCurrentProgress(true);
+            const matchedEp = effectiveEpisodes.find((e) => e.stream_code === sc) || {
+              episodes_id: 0,
+              seasons_id: Number(seasonId || 0) || 0,
+              episodes_name: epName,
+              stream_code: sc,
+              player_url: '',
+              full_url: '',
+              order: epIndex + 1,
+            };
+            const offMatch = offlineItems.find(
+              (o) => o.status === 'completed' && o.stream_code === sc
+            );
+            if (isOfflineOnlyMode && offMatch && onSwitchOfflineItem) {
+              onSwitchOfflineItem(offMatch);
+            } else if (onSwitchEpisode) {
+              onSwitchEpisode(matchedEp, epIndex);
+            } else {
+              void loadEpisodeByCode(sc, { episodeTitleHint: epName });
+            }
+          }}
+        />
+
+        <PlayerSubtitleSettingsModal
+          visible={subSettingsOpen}
+          onClose={() => {
+            setSubSettingsOpen(false);
+            showHudWithTimer();
+          }}
+          subHighRaw={resolved?.sub_high}
+        />
+
+        <PlayerGeneralSettingsModal
+          visible={generalSettingsOpen}
+          onClose={() => {
+            setGeneralSettingsOpen(false);
+            showHudWithTimer();
+          }}
+          preloadState={currentNextEpisode ? preloadState : 'no_data'}
+          sleepTimerValue={sleepTimerValue}
+          sleepSecondsLeft={sleepSecondsLeft}
+          onSelectSleepTimer={(val) => {
+            setSleepTimerValue(val);
+            if (typeof val === 'number') {
+              setSleepSecondsLeft(val * 60);
+              showToast(`Hẹn tắt sau ${val} phút`);
+            } else if (val === 'end_of_episode') {
+              setSleepSecondsLeft(null);
+              showToast('Hẹn tắt khi hết tập phim');
+            } else {
+              setSleepSecondsLeft(null);
+              showToast('Đã tắt hẹn giờ ngủ');
+            }
+          }}
+          onReloadPlayer={() => {
+            persistCurrentProgress(true);
+            void loadEpisodeByCode(activeStreamCode, {
+              episodeTitleHint: epDisplay,
+              offlineOverride: matchedOfflineItem,
+            });
+          }}
+          onOpenCast={() => setCastPopupOpen(true)}
+        />
+
+        <OfflineDownloadSheet
+          visible={offlineSheetOpen}
+          onClose={() => {
+            setOfflineSheetOpen(false);
+            showHudWithTimer();
+          }}
+          videosId={params.videosId}
+          title={displayTitle}
+          posterUrl={moviePosterMeta.poster || params.posterUrl || ''}
+          thumbnailUrl={moviePosterMeta.thumb || params.thumbnailUrl || ''}
+          serverMovieTitle={resolved?.server_movie_title}
+          currentStreamCode={activeStreamCode}
+          currentEpisodeTitle={epDisplay}
+          currentEpisodeId={params.episodeId}
+          currentServerFileKey={resolved?.server_file_key}
+          episodes={effectiveEpisodes}
+        />
+
+        <CastModal
+          visible={castPopupOpen}
+          inlinePopup
+          movieToCast={castPayload}
+          onCastStarted={() => {
+            try {
+              getActivePlayer().pause();
+            } catch {}
+          }}
+          onClose={() => {
+            setCastPopupOpen(false);
+            showHudWithTimer();
+          }}
+        />
+
+        <PlayerOverlayPanels
+          activePanel={infoPanel}
+          onClose={() => {
+            setInfoPanel(null);
+            showHudWithTimer();
+          }}
+          onSwitchPanel={setInfoPanel}
+          title={displayTitle}
+          episodeTitle={epDisplay}
+          currentStreamCode={activeStreamCode}
+          resolved={resolved}
+          activeQuality={null}
+          onSelectQuality={() => {}}
+          onSelectSourceServer={() => {}}
+          episodes={effectiveEpisodes}
+          seasons={resolved?.seasons || []}
+          onSelectEpisode={() => {}}
+          activeSubIndex={0}
+          onSelectSubtitleIndex={() => {}}
+          playbackRate={playbackRate}
+          onSelectRate={(rate) => {
+            setPlaybackRate(rate);
+            try {
+              getActivePlayer().playbackRate = rate;
+            } catch {}
+          }}
+          settings={settings}
+          onUpdateSetting={(key, val) => updateSetting(key, val)}
+          sleepMinutesLeft={
+            typeof sleepTimerValue === 'number' ? sleepTimerValue : null
+          }
+          onSelectSleepTimer={(m) => setSleepTimerValue(m)}
+          inWishlist={inWishlist}
+          onToggleWishlist={() => {}}
+          offlineItem={matchedOfflineItem}
+          onDownloadOffline={() => setOfflineSheetOpen(true)}
+          onOpenWebPlayer={() => {}}
+          onOpenCast={() => setCastPopupOpen(true)}
+          user={user}
+        />
+
+        {/* Smooth loading skeleton transition */}
         {renderSkeleton || showPlayerSkeleton ? (
           <Animated.View
             pointerEvents={showPlayerSkeleton ? 'auto' : 'none'}
             style={[styles.skeletonOverlay, { opacity: skeletonOpacity }]}
           >
             <PlayerLandscapeSkeleton
-              leftInset={Math.max(20, insets.left + 10)}
-              rightInset={Math.max(20, insets.right + 10)}
+              leftInset={Math.max(18, insets.left + 10)}
+              rightInset={Math.max(18, insets.right + 10)}
               active={visible && (renderSkeleton || showPlayerSkeleton)}
               onBack={handleClose}
             />
@@ -2024,7 +3102,7 @@ export function PlayerModal({
 }
 
 const styles = StyleSheet.create({
-  playerLayerRoot: {
+  playerRoot: {
     position: 'absolute',
     top: 0,
     right: 0,
@@ -2037,172 +3115,288 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#000000',
   },
+  layerFill: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    backgroundColor: '#000000',
+  },
+  lowContrastScrim: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.14)',
+    zIndex: 3,
+  },
   skeletonOverlay: {
     position: 'absolute',
     top: 0,
     right: 0,
     bottom: 0,
     left: 0,
-    zIndex: 50,
+    zIndex: 60,
     backgroundColor: 'transparent',
   },
-  flex: {
-    flex: 1,
-  },
-  subOverlayWrap: {
+  topCenterBannerWrap: {
     position: 'absolute',
-    left: 48,
-    right: 48,
+    top: 64,
+    left: 0,
+    right: 0,
     alignItems: 'center',
-    zIndex: 6,
+    zIndex: 35,
   },
-  subOverlayTxt: {
-    color: '#FFFFFF',
+  toastPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    paddingHorizontal: 18,
+    paddingVertical: 9,
+  },
+  toastTxt: {
+    color: '#FFF',
+    fontSize: 12.5,
     fontWeight: '700',
-    textAlign: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderRadius: 10,
-    overflow: 'hidden',
-    textShadowColor: 'rgba(0,0,0,0.9)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 4,
   },
-  glassIconBtn: {
-    width: 50,
-    height: 50,
+  countdownOverlay: {
+    position: 'absolute',
+    right: 24,
+    bottom: 108,
+    zIndex: 32,
+  },
+  countdownCard: {
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+    gap: 10,
+    maxWidth: 270,
+  },
+  countdownTitle: {
+    color: '#FFF',
+    fontSize: 13.5,
+    fontWeight: '700',
+  },
+  countdownBtns: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  countdownCancelBtn: {
+    flex: 1,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: 'rgba(255, 255, 255, 0.16)',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  hudLayer: {
+  countdownNowBtn: {
+    flex: 1.3,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: COLORS.accent,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  countdownBtnTxt: {
+    color: '#FFF',
+    fontSize: 12.5,
+    fontWeight: '700',
+  },
+  hudOverlay: {
     position: 'absolute',
     top: 0,
     right: 0,
     bottom: 0,
     left: 0,
-    backgroundColor: 'rgba(0,0,0,0.32)',
+    zIndex: 18,
+    backgroundColor: 'rgba(0, 0, 0, 0.24)',
     justifyContent: 'space-between',
   },
-  topHud: {
+  topBarRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 12,
   },
-  topLeft: {
+  topLeftGroup: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
-    flexShrink: 1,
+    minWidth: 0,
+  },
+  backBtn: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  titleMetaWrap: {
+    flex: 1,
+    minWidth: 0,
   },
   hudTitle: {
-    color: '#FFF',
-    fontSize: 17,
-    fontWeight: '800',
-    textShadowColor: 'rgba(0,0,0,0.8)',
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '700',
+    textShadowColor: 'rgba(0, 0, 0, 0.75)',
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 4,
   },
-  hudSub: {
-    color: COLORS.textSecondary,
+  hudMeta: {
+    color: 'rgba(255, 255, 255, 0.72)',
     fontSize: 12,
-    marginTop: 1,
+    fontWeight: '600',
+    marginTop: 2,
+    textShadowColor: 'rgba(0, 0, 0, 0.75)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
   },
   topRightCapsule: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    gap: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+    gap: 4,
   },
-  capsuleIconBtn: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
+  topCapsuleBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     alignItems: 'center',
     justifyContent: 'center',
+    position: 'relative',
   },
-  sideToggles: {
+  topBtnGreen: {
+    backgroundColor: 'rgba(48, 209, 88, 0.24)',
+  },
+  prepDot: {
     position: 'absolute',
-    top: '30%',
-    paddingVertical: 8,
-    paddingHorizontal: 7,
-    gap: 8,
-    alignItems: 'center',
-    zIndex: 10,
+    top: 6,
+    right: 6,
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    backgroundColor: '#FFD60A',
   },
-  sideIconBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+  rightSideCapsule: {
+    position: 'absolute',
+    top: '29%',
+    paddingVertical: 6,
+    paddingHorizontal: 5,
+    gap: 6,
+    alignItems: 'center',
+    zIndex: 20,
+  },
+  sideBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  sideIconBtnActive: {
-    backgroundColor: 'rgba(229, 9, 20, 0.85)',
+  sideBtnActiveRed: {
+    backgroundColor: 'rgba(229, 9, 20, 0.92)',
   },
-  centerControls: {
+  centerControlsRow: {
     position: 'absolute',
     left: 0,
     right: 0,
     top: '50%',
-    transform: [{ translateY: -43 }],
+    transform: [{ translateY: -39 }],
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 44,
-    zIndex: 8,
+    zIndex: 16,
   },
-  seekBtn: {
+  centerSeekTouch: {
+    width: 56,
+    height: 56,
     alignItems: 'center',
     justifyContent: 'center',
-    width: 68,
-    height: 68,
   },
-  seekLabel: {
+  seekRingWrap: {
+    width: 48,
+    height: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  seekRingTxt: {
+    position: 'absolute',
     color: '#FFF',
-    fontSize: 11.5,
-    fontWeight: '700',
-    marginTop: 1,
+    fontSize: 11,
+    fontWeight: '800',
+    marginTop: 2,
   },
-  mainPlayBtn: {
-    width: 86,
-    height: 86,
+  centerPlayBox: {
+    width: 78,
+    height: 78,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  bottomSection: {
+  bottomBlock: {
     gap: 6,
   },
-  timeHeaderRow: {
+  floatingChipsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    minHeight: 0,
+  },
+  quickChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+  },
+  quickChipTxt: {
+    color: '#FFF',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  timeRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
   },
-  timeTxt: {
-    color: 'rgba(255,255,255,0.88)',
-    fontSize: 12.5,
+  timeReadout: {
+    color: 'rgba(255, 255, 255, 0.92)',
+    fontSize: 13.5,
     fontWeight: '700',
     fontVariant: ['tabular-nums'],
+    textShadowColor: 'rgba(0, 0, 0, 0.75)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
   },
   sleepBadge: {
     color: COLORS.accentGold,
-    fontSize: 11.5,
+    fontSize: 12,
     fontWeight: '700',
   },
   scrubberHit: {
     height: 24,
     justifyContent: 'center',
+    position: 'relative',
   },
-  scrubberBg: {
+  scrubberTrack: {
     height: 5,
-    borderRadius: 3,
-    backgroundColor: 'rgba(255,255,255,0.24)',
+    borderRadius: 2.5,
+    backgroundColor: 'rgba(255, 255, 255, 0.24)',
     overflow: 'hidden',
+  },
+  scrubberBuffer: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
   },
   scrubberFill: {
     height: '100%',
-    backgroundColor: COLORS.accent,
+    backgroundColor: '#E50914',
   },
   scrubberThumb: {
     position: 'absolute',
@@ -2210,62 +3404,131 @@ const styles = StyleSheet.create({
     height: 14,
     borderRadius: 7,
     marginLeft: -7,
-    backgroundColor: '#FFF',
-    borderWidth: 2,
-    borderColor: COLORS.accent,
+    backgroundColor: '#E50914',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.45,
+    shadowRadius: 3,
   },
-  actionBarRow: {
+  scrubTooltipWrap: {
+    position: 'absolute',
+    bottom: 26,
+    marginLeft: -32,
+  },
+  scrubTooltip: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  scrubTooltipTxt: {
+    color: '#FFF',
+    fontSize: 11.5,
+    fontWeight: '800',
+    fontVariant: ['tabular-nums'],
+  },
+  cueMarkerPill: {
+    position: 'absolute',
+    width: 4,
+    height: 12,
+    borderRadius: 2,
+    marginLeft: -2,
+    backgroundColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.8,
+    shadowRadius: 3,
+  },
+  seamlessDotMarker: {
+    position: 'absolute',
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginLeft: -4,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.9,
+    shadowRadius: 6,
+  },
+  bottomActionsRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+    position: 'relative',
   },
-  actionsLeftScroll: {
+  bottomLeftScroll: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 8,
     paddingRight: 8,
   },
-  actionsRightFixed: {
+  nextEpPill: {
+    height: 42,
+    paddingLeft: 8,
+    paddingRight: 10,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    flexShrink: 0,
+    gap: 6,
   },
-  actionPill: {
-    height: 46,
-    paddingHorizontal: 16,
-    flexDirection: 'row',
+  nextEpThumb: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+  },
+  circleActionBtn: {
+    width: 42,
+    height: 42,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
   },
-  actionIconPill: {
-    minWidth: 48,
-    paddingHorizontal: 13,
-  },
-  actionPillTxt: {
-    color: '#FFF',
-    fontSize: 13.5,
-    fontWeight: '700',
-  },
-  toastWrap: {
-    position: 'absolute',
-    top: 66,
-    left: 0,
-    right: 0,
-    alignItems: 'center',
-    zIndex: 35,
-  },
-  toastCard: {
+  bottomRightCluster: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 7,
-    paddingHorizontal: 18,
-    paddingVertical: 10,
+    gap: 8,
+    flexShrink: 0,
   },
-  toastTxt: {
+  rightPillBtn: {
+    height: 42,
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  rightPillTxt: {
     color: '#FFF',
-    fontSize: 12.5,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  speedPopover: {
+    position: 'absolute',
+    right: 128,
+    bottom: 50,
+    padding: 8,
+    gap: 4,
+    minWidth: 112,
+    zIndex: 35,
+  },
+  morePopover: {
+    position: 'absolute',
+    right: 0,
+    bottom: 50,
+    padding: 8,
+    gap: 4,
+    minWidth: 225,
+    zIndex: 35,
+  },
+  popoverItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 16,
+  },
+  popoverItemActive: {
+    backgroundColor: 'rgba(229, 9, 20, 0.78)',
+  },
+  popoverItemTxt: {
+    color: '#FFF',
+    fontSize: 13,
     fontWeight: '700',
   },
 });

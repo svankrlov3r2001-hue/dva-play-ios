@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Animated,
   Easing,
   Image,
@@ -20,6 +19,7 @@ import * as Haptics from 'expo-haptics';
 import * as LocalAuthentication from 'expo-local-authentication';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AmbientAppBackground } from '../components/AmbientAppBackground';
+import { showAppAlert } from '../components/AppAlertModal';
 import { GlassSurface } from '../components/GlassSurface';
 import { COLORS } from '../constants/config';
 import { useAuth } from '../context/AuthContext';
@@ -210,7 +210,7 @@ export function QuickLoginQrModal({ visible, onClose }: QuickLoginQrModalProps) 
         if (!visibleRef.current) return;
 
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        Alert.alert(
+        showAppAlert(
           'Thành công',
           `Đã kích hoạt đăng nhập nhanh cho thiết bị ${res.formatted_key || formatDeviceKey(targetKey)} thành công!`
         );
@@ -220,7 +220,7 @@ export function QuickLoginQrModal({ visible, onClose }: QuickLoginQrModalProps) 
         const msg = err?.message || 'Không thể hoàn tất kích hoạt đăng nhập nhanh.';
         setStatusFeedback({ ok: false, text: msg });
         if (err?.code === 'expired' || err?.status === 410) {
-          Alert.alert('Mã đã hết hạn', msg, [
+          showAppAlert('Mã đã hết hạn', msg, [
             { text: 'Quét lại', onPress: () => resetModalState() },
           ]);
         }
@@ -234,7 +234,7 @@ export function QuickLoginQrModal({ visible, onClose }: QuickLoginQrModalProps) 
   const handleSelectOrScanKey = async (rawInput: string, deviceHint?: string) => {
     const key = extractQuickLoginKey(rawInput);
     if (!key) {
-      Alert.alert(
+      showAppAlert(
         'Mã QR không hợp lệ',
         'Không tìm thấy mã đăng nhập nhanh hợp lệ trong mã QR hoặc chuỗi vừa nhập.'
       );
@@ -266,7 +266,7 @@ export function QuickLoginQrModal({ visible, onClose }: QuickLoginQrModalProps) 
         }
       }, 260);
     } catch (err: any) {
-      Alert.alert(
+      showAppAlert(
         'Không tìm thấy thiết bị',
         err?.message || 'Mã thiết bị không tồn tại hoặc đã hết hạn.'
       );
@@ -289,7 +289,7 @@ export function QuickLoginQrModal({ visible, onClose }: QuickLoginQrModalProps) 
       const res = await approveQuickLoginQrApi(activeKey, 'password', pw);
       if (!visibleRef.current) return;
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      Alert.alert(
+      showAppAlert(
         'Thành công',
         `Đã kích hoạt đăng nhập nhanh cho thiết bị ${res.formatted_key || formattedKey} thành công!`
       );
@@ -299,7 +299,7 @@ export function QuickLoginQrModal({ visible, onClose }: QuickLoginQrModalProps) 
       const msg = err?.message || 'Xác nhận mật khẩu không thành công.';
       setStatusFeedback({ ok: false, text: msg });
       if (err?.code === 'expired' || err?.status === 410) {
-        Alert.alert('Mã đã hết hạn', msg, [
+        showAppAlert('Mã đã hết hạn', msg, [
           { text: 'Quét lại', onPress: () => resetModalState() },
         ]);
       }

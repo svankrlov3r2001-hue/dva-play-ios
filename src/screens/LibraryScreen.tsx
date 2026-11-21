@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   FlatList,
   Image,
   RefreshControl,
@@ -14,6 +13,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { showAppAlert } from '../components/AppAlertModal';
 import { GlassSurface } from '../components/GlassSurface';
 import { LazyImage } from '../components/LazyImage';
 import { MovieCard } from '../components/MovieCard';
@@ -111,7 +111,7 @@ export function LibraryScreen({
 
   const handleRemoveWatched = (item: MovieItem) => {
     Haptics.selectionAsync();
-    Alert.alert(
+    showAppAlert(
       'Xóa khỏi Đang xem?',
       `Bạn muốn xóa "${item.title_primary || item.title}" khỏi danh sách Đang xem?`,
       [
@@ -131,7 +131,7 @@ export function LibraryScreen({
   };
 
   const handleDeleteOffline = (item: OfflineDownloadItem) => {
-    Alert.alert('Xóa phim ngoại tuyến?', `Xóa "${item.title}${item.episode_title ? ` - ${item.episode_title}` : ''}" khỏi bộ nhớ máy?`, [
+    showAppAlert('Xóa phim ngoại tuyến?', `Xóa "${item.title}${item.episode_title ? ` - ${item.episode_title}` : ''}" khỏi bộ nhớ máy?`, [
       { text: 'Hủy', style: 'cancel' },
       {
         text: 'Xóa',
@@ -295,7 +295,7 @@ export function LibraryScreen({
                   style={styles.actionCircle}
                   onPress={() =>
                     exportOfflineToFiles(item.local_uri).catch((err) => {
-                      Alert.alert('Thông báo', err?.message || 'Không thể chia sẻ tệp.');
+                      showAppAlert('Thông báo', err?.message || 'Không thể chia sẻ tệp.');
                     })
                   }
                 >

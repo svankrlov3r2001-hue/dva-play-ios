@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Animated,
   Easing,
   Image,
@@ -16,6 +15,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AmbientAppBackground } from '../components/AmbientAppBackground';
+import { showAppAlert } from '../components/AppAlertModal';
 import { GlassSurface } from '../components/GlassSurface';
 import { MovieCard } from '../components/MovieCard';
 import { OfflineDownloadSheet } from '../components/OfflineDownloadSheet';
@@ -120,7 +120,7 @@ export function MovieDetailScreen({
         });
       }
     } catch (err: any) {
-      Alert.alert('Lỗi', err?.message || 'Không thể tải chi tiết phim.');
+      showAppAlert('Lỗi', err?.message || 'Không thể tải chi tiết phim.');
     } finally {
       setLoading(false);
     }

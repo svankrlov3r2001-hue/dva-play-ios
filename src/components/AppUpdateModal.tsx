@@ -76,7 +76,7 @@ export function AppUpdateModal({ visible, manifest, onDismiss }: AppUpdateModalP
         />
         <GlassSurface
           variant="liquid"
-          radius={36}
+          radius={40}
           intensity={85}
           style={[styles.cardWrap, { width: cardWidth }]}
         >
@@ -176,7 +176,7 @@ const styles = StyleSheet.create({
     padding: 18,
   },
   cardWrap: {
-    borderRadius: 36,
+    borderRadius: 40,
   },
   cardInner: {
     paddingHorizontal: 24,
