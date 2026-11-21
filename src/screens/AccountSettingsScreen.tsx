@@ -10,7 +10,6 @@ import {
   Switch,
   Text,
   TextInput,
-  TouchableOpacity,
   View,
 } from 'react-native';
 import { Feather, Ionicons } from '@expo/vector-icons';
@@ -21,12 +20,14 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AmbientAppBackground } from '../components/AmbientAppBackground';
 import { showAppAlert } from '../components/AppAlertModal';
 import { AppUpdateModal } from '../components/AppUpdateModal';
+import { BouncyButton } from '../components/BouncyButton';
 import { GlassSurface } from '../components/GlassSurface';
 import {
   APP_RELEASE_DATE,
   APP_VERSION,
   APP_VERSION_CODE,
   COLORS,
+  GLASS_SHADOW,
   PORTAL_URL,
   RADII,
 } from '../constants/config';
@@ -565,7 +566,7 @@ export function AccountSettingsScreen({
 
       {/* iOS Navigation Bar Header */}
       <View style={[styles.navBar, { paddingTop: insets.top + 8 }]}>
-        <TouchableOpacity
+        <BouncyButton
           activeOpacity={0.78}
           style={styles.navBackBtn}
           onPress={() => {
@@ -574,7 +575,7 @@ export function AccountSettingsScreen({
           }}
         >
           <Ionicons name="chevron-back" size={20} color="#FFFFFF" />
-        </TouchableOpacity>
+        </BouncyButton>
         <Text style={styles.navTitle}>Cài đặt</Text>
         <View style={styles.navRightSpacer} />
       </View>
@@ -590,7 +591,7 @@ export function AccountSettingsScreen({
         showsVerticalScrollIndicator={false}
       >
         {/* Apple Account Profile Card */}
-        <GlassSurface intensity={56} radius={22} style={styles.profileCard}>
+        <GlassSurface intensity={30} radius={22} style={styles.profileCard}>
           <View style={styles.profileRow}>
             <View style={styles.avatarRing}>
               <Image
@@ -622,7 +623,7 @@ export function AccountSettingsScreen({
         {/* Section 1: Playback & Experience */}
         <Text style={styles.sectionHeader}>TRẢI NGHIỆM XEM PHIM</Text>
         <View style={styles.insetGroup}>
-          <BlurView intensity={40} tint="dark" style={StyleSheet.absoluteFill} />
+          <BlurView intensity={28} tint="systemUltraThinMaterialDark" style={StyleSheet.absoluteFill} />
           <View style={styles.insetGroupFill} />
 
           <View style={styles.groupedColumnRow}>
@@ -639,7 +640,7 @@ export function AccountSettingsScreen({
               {QUALITY_OPTIONS.map((q) => {
                 const active = settings.preferredQuality === q;
                 return (
-                  <TouchableOpacity
+                  <BouncyButton
                     key={q}
                     activeOpacity={0.8}
                     style={[styles.segmentOption, active && styles.segmentOptionActive]}
@@ -651,7 +652,7 @@ export function AccountSettingsScreen({
                     <Text style={[styles.segmentOptionTxt, active && styles.segmentOptionTxtActive]}>
                       {q === 'auto' ? 'Tự động' : q}
                     </Text>
-                  </TouchableOpacity>
+                  </BouncyButton>
                 );
               })}
             </View>
@@ -701,7 +702,7 @@ export function AccountSettingsScreen({
         {/* Section 2: Offline Storage & Retention (Item 8) */}
         <Text style={styles.sectionHeader}>LƯU TRỮ &amp; NGOẠI TUYẾN</Text>
         <View style={styles.insetGroup}>
-          <BlurView intensity={40} tint="dark" style={StyleSheet.absoluteFill} />
+          <BlurView intensity={28} tint="systemUltraThinMaterialDark" style={StyleSheet.absoluteFill} />
           <View style={styles.insetGroupFill} />
 
           {/* Storage Usage Bar */}
@@ -716,13 +717,13 @@ export function AccountSettingsScreen({
                   {offlineItems.length} phim • Đã dùng {formatBytes(totalBytes)} / {storageLimitGb} GB
                 </Text>
               </View>
-              <TouchableOpacity
+              <BouncyButton
                 style={[styles.cleanPillBtn, offlineItems.length === 0 && { opacity: 0.45 }]}
                 onPress={handleClearOffline}
                 disabled={offlineItems.length === 0}
               >
                 <Text style={styles.cleanPillTxt}>Dọn sạch</Text>
-              </TouchableOpacity>
+              </BouncyButton>
             </View>
             <View style={styles.storageTrack}>
               <LinearGradient
@@ -756,7 +757,7 @@ export function AccountSettingsScreen({
               {STORAGE_LIMIT_GB_OPTIONS.map((gb) => {
                 const active = storageLimitGb === gb;
                 return (
-                  <TouchableOpacity
+                  <BouncyButton
                     key={gb}
                     activeOpacity={0.78}
                     style={[styles.chipPill, active && styles.chipPillActive]}
@@ -768,7 +769,7 @@ export function AccountSettingsScreen({
                     <Text style={[styles.chipPillTxt, active && styles.chipPillTxtActive]}>
                       {gb} GB
                     </Text>
-                  </TouchableOpacity>
+                  </BouncyButton>
                 );
               })}
             </ScrollView>
@@ -810,7 +811,7 @@ export function AccountSettingsScreen({
                 {AUTO_DELETE_DAY_OPTIONS.map((opt) => {
                   const active = (settings.offlineAutoDeleteDays || 7) === opt.days;
                   return (
-                    <TouchableOpacity
+                    <BouncyButton
                       key={opt.days}
                       activeOpacity={0.78}
                       style={[styles.chipPill, active && styles.chipPillActive]}
@@ -822,7 +823,7 @@ export function AccountSettingsScreen({
                       <Text style={[styles.chipPillTxt, active && styles.chipPillTxtActive]}>
                         {opt.label}
                       </Text>
-                    </TouchableOpacity>
+                    </BouncyButton>
                   );
                 })}
               </ScrollView>
@@ -855,7 +856,7 @@ export function AccountSettingsScreen({
               {THREAD_COUNT_OPTIONS.map((n) => {
                 const active = (settings.offlineDownloadConcurrency || 3) === n;
                 return (
-                  <TouchableOpacity
+                  <BouncyButton
                     key={n}
                     activeOpacity={0.78}
                     style={[styles.segmentOption, active && styles.segmentOptionActive]}
@@ -867,7 +868,7 @@ export function AccountSettingsScreen({
                     <Text style={[styles.segmentOptionTxt, active && styles.segmentOptionTxtActive]}>
                       {n}
                     </Text>
-                  </TouchableOpacity>
+                  </BouncyButton>
                 );
               })}
             </View>
@@ -897,7 +898,7 @@ export function AccountSettingsScreen({
               </Text>
             </View>
             <View style={styles.offlineStepperRow}>
-              <TouchableOpacity
+              <BouncyButton
                 style={styles.offlineStepBtn}
                 onPress={() => {
                   Haptics.selectionAsync();
@@ -908,9 +909,9 @@ export function AccountSettingsScreen({
                 }}
               >
                 <Ionicons name="remove" size={15} color="#FFFFFF" />
-              </TouchableOpacity>
+              </BouncyButton>
               <Text style={styles.offlineStepVal}>{settings.autoDownloadNextCount || 0}</Text>
-              <TouchableOpacity
+              <BouncyButton
                 style={styles.offlineStepBtn}
                 onPress={() => {
                   Haptics.selectionAsync();
@@ -921,7 +922,7 @@ export function AccountSettingsScreen({
                 }}
               >
                 <Ionicons name="add" size={15} color="#FFFFFF" />
-              </TouchableOpacity>
+              </BouncyButton>
             </View>
           </View>
 
@@ -939,7 +940,7 @@ export function AccountSettingsScreen({
         {/* Section 3: Security, Proxy & TV Cast */}
         <Text style={styles.sectionHeader}>BẢO MẬT &amp; KẾT NỐI</Text>
         <View style={styles.insetGroup}>
-          <BlurView intensity={40} tint="dark" style={StyleSheet.absoluteFill} />
+          <BlurView intensity={28} tint="systemUltraThinMaterialDark" style={StyleSheet.absoluteFill} />
           <View style={styles.insetGroupFill} />
 
           <IosSwitchRow
@@ -968,7 +969,8 @@ export function AccountSettingsScreen({
           />
 
           <View style={styles.insetDivider} />
-          <TouchableOpacity
+          <BouncyButton
+            bounciness="gentle"
             activeOpacity={0.78}
             style={styles.navRow}
             onPress={() => {
@@ -984,7 +986,7 @@ export function AccountSettingsScreen({
               <Text style={styles.settingDesc}>Quét mã QR để điều khiển trên màn hình TV</Text>
             </View>
             <Feather name="chevron-right" size={17} color="rgba(255,255,255,0.38)" />
-          </TouchableOpacity>
+          </BouncyButton>
 
           <View style={styles.insetDivider} />
           <View style={styles.groupedColumnRow}>
@@ -1015,7 +1017,7 @@ export function AccountSettingsScreen({
             ) : null}
 
             <View style={styles.proxyModeRow}>
-              <TouchableOpacity
+              <BouncyButton
                 style={[
                   styles.segmentOption,
                   proxyCfg.mode === 'preset' && styles.segmentOptionActive,
@@ -1034,8 +1036,8 @@ export function AccountSettingsScreen({
                 >
                   Máy chủ sẵn có
                 </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
+              </BouncyButton>
+              <BouncyButton
                 style={[
                   styles.segmentOption,
                   proxyCfg.mode === 'custom' && styles.segmentOptionActive,
@@ -1064,9 +1066,9 @@ export function AccountSettingsScreen({
                 >
                   Proxy tự cấu hình
                 </Text>
-              </TouchableOpacity>
+              </BouncyButton>
 
-              <TouchableOpacity
+              <BouncyButton
                 style={styles.reloadProxyIconBtn}
                 onPress={() => handleReloadPresets(true)}
                 disabled={reloadingPresets || applyingProxy}
@@ -1077,7 +1079,7 @@ export function AccountSettingsScreen({
                 ) : (
                   <Ionicons name="refresh" size={16} color="#FFFFFF" />
                 )}
-              </TouchableOpacity>
+              </BouncyButton>
             </View>
 
             {proxyCfg.mode === 'preset' ? (
@@ -1093,8 +1095,9 @@ export function AccountSettingsScreen({
                     const selected = proxyCfg.presetId === preset.id;
                     const probe = presetProbeMap[preset.id];
                     return (
-                      <TouchableOpacity
+                      <BouncyButton
                         key={preset.id}
+                        bounciness="gentle"
                         activeOpacity={0.85}
                         style={[styles.presetCard, selected && styles.presetCardActive]}
                         onPress={() => {
@@ -1185,7 +1188,7 @@ export function AccountSettingsScreen({
                             color={selected ? COLORS.accent : COLORS.muted}
                           />
                         </View>
-                      </TouchableOpacity>
+                      </BouncyButton>
                     );
                   })
                 )}
@@ -1256,7 +1259,7 @@ export function AccountSettingsScreen({
                         autoCapitalize="none"
                         autoCorrect={false}
                       />
-                      <TouchableOpacity
+                      <BouncyButton
                         onPress={() => setShowProxyPass((v) => !v)}
                         hitSlop={8}
                         style={{ paddingLeft: 6 }}
@@ -1266,7 +1269,7 @@ export function AccountSettingsScreen({
                           size={17}
                           color={COLORS.muted}
                         />
-                      </TouchableOpacity>
+                      </BouncyButton>
                     </View>
                   </View>
                 </View>
@@ -1274,7 +1277,8 @@ export function AccountSettingsScreen({
             )}
 
             <View style={styles.proxyFooterRow}>
-              <TouchableOpacity
+              <BouncyButton
+                bounciness="gentle"
                 style={styles.testProxyBtn}
                 onPress={handleTestProxyConnection}
                 disabled={testingProxy}
@@ -1290,7 +1294,7 @@ export function AccountSettingsScreen({
                     <Text style={styles.testProxyBtnTxt}>Kiểm tra kết nối</Text>
                   </>
                 )}
-              </TouchableOpacity>
+              </BouncyButton>
 
               {proxyStatusMsg ? (
                 <View
@@ -1322,7 +1326,7 @@ export function AccountSettingsScreen({
         {/* Section 4: App & Updates */}
         <Text style={styles.sectionHeader}>ỨNG DỤNG &amp; CẬP NHẬT</Text>
         <View style={styles.insetGroup}>
-          <BlurView intensity={40} tint="dark" style={StyleSheet.absoluteFill} />
+          <BlurView intensity={28} tint="systemUltraThinMaterialDark" style={StyleSheet.absoluteFill} />
           <View style={styles.insetGroupFill} />
 
           <View style={styles.navRow}>
@@ -1335,7 +1339,7 @@ export function AccountSettingsScreen({
                 Phiên bản v{APP_VERSION} • Phát hành {APP_RELEASE_DATE}
               </Text>
             </View>
-            <TouchableOpacity
+            <BouncyButton
               style={styles.updateCheckBtn}
               onPress={handleCheckUpdate}
               disabled={checkingUpdate}
@@ -1345,11 +1349,12 @@ export function AccountSettingsScreen({
               ) : (
                 <Text style={styles.updateCheckTxt}>Kiểm tra</Text>
               )}
-            </TouchableOpacity>
+            </BouncyButton>
           </View>
 
           <View style={styles.insetDivider} />
-          <TouchableOpacity
+          <BouncyButton
+            bounciness="gentle"
             activeOpacity={0.78}
             style={styles.navRow}
             onPress={async () => {
@@ -1376,7 +1381,7 @@ export function AccountSettingsScreen({
               size={17}
               color="rgba(255,255,255,0.42)"
             />
-          </TouchableOpacity>
+          </BouncyButton>
 
           {changelogOpen ? (
             <View style={styles.changelogWrap}>
@@ -1408,10 +1413,10 @@ export function AccountSettingsScreen({
         </View>
 
         {/* Sign Out Action Card */}
-        <TouchableOpacity activeOpacity={0.82} style={styles.logoutCard} onPress={handleLogout}>
+        <BouncyButton bounciness="gentle" activeOpacity={0.82} style={styles.logoutCard} onPress={handleLogout}>
           <Ionicons name="log-out-outline" size={19} color="#FF6B6B" />
           <Text style={styles.logoutTxt}>Đăng xuất tài khoản</Text>
-        </TouchableOpacity>
+        </BouncyButton>
       </ScrollView>
 
       <AppUpdateModal
@@ -1570,9 +1575,10 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     overflow: 'hidden',
     borderWidth: 0.75,
-    borderColor: 'rgba(255,255,255,0.1)',
+    borderColor: 'rgba(255,255,255,0.12)',
     marginBottom: 18,
     position: 'relative',
+    boxShadow: GLASS_SHADOW,
   },
   insetGroupFill: {
     position: 'absolute',
@@ -1580,7 +1586,7 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     left: 0,
-    backgroundColor: 'rgba(18, 22, 34, 0.78)',
+    backgroundColor: 'rgba(18, 22, 34, 0.44)',
   },
   insetDivider: {
     height: StyleSheet.hairlineWidth,

@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Animated, Easing, Image, StyleSheet, Text, View } from 'react-native';
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
+import { GLASS_SHADOW } from '../constants/config';
 
 export interface WaterDropToastPayload {
   id: number;
@@ -153,7 +154,7 @@ export function WaterDropToastBanner({
           },
         ]}
       >
-        <BlurView intensity={75} tint="dark" style={StyleSheet.absoluteFill} />
+        <BlurView intensity={32} tint="systemUltraThinMaterialDark" style={StyleSheet.absoluteFill} />
         <View style={styles.glassFill} />
         <LinearGradient
           pointerEvents="none"
@@ -206,10 +207,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.22)',
     gap: 12,
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 12 },
-    shadowOpacity: 0.55,
-    shadowRadius: 24,
+    boxShadow: GLASS_SHADOW,
+    elevation: 16,
   },
   glassFill: {
     position: 'absolute',
@@ -217,7 +216,7 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     left: 0,
-    backgroundColor: 'rgba(18, 22, 32, 0.7)',
+    backgroundColor: 'rgba(16, 20, 30, 0.48)',
   },
   topSheen: {
     position: 'absolute',

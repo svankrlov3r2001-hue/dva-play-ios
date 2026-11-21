@@ -7,7 +7,6 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TouchableOpacity,
   useWindowDimensions,
   View,
 } from 'react-native';
@@ -16,10 +15,11 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { COLORS, RADII } from '../constants/config';
+import { COLORS } from '../constants/config';
 import { fetchPopupInfoApi, toggleWishlistApi } from '../services/api';
 import { MovieItem, PopupInfo } from '../types/models';
 import { AmbientAppBackground } from './AmbientAppBackground';
+import { BouncyButton } from './BouncyButton';
 import { GlassSurface } from './GlassSurface';
 import { SkeletonCrossfade } from './SkeletonCrossfade';
 import { PreviewSheetSkeleton } from './SkeletonLoaders';
@@ -237,7 +237,7 @@ export function PreviewSheetModal({
           ]}
         >
           <GlassSurface
-            intensity={68}
+            intensity={34}
             radius={34}
             style={[
               styles.sheet,
@@ -283,12 +283,12 @@ export function PreviewSheetModal({
                 pointerEvents="none"
               />
 
-              <TouchableOpacity style={styles.closeBtn} onPress={onClose}>
+              <BouncyButton style={styles.closeBtn} onPress={onClose}>
                 <Ionicons name="close" size={20} color="#FFF" />
-              </TouchableOpacity>
+              </BouncyButton>
 
               {trailerActive ? (
-                <TouchableOpacity
+                <BouncyButton
                   style={styles.muteBtn}
                   onPress={() => {
                     Haptics.selectionAsync();
@@ -300,7 +300,7 @@ export function PreviewSheetModal({
                     size={18}
                     color="#FFF"
                   />
-                </TouchableOpacity>
+                </BouncyButton>
               ) : null}
             </View>
 
@@ -375,7 +375,8 @@ export function PreviewSheetModal({
                   </Text>
 
                   <View style={styles.actionRow}>
-                    <TouchableOpacity
+                    <BouncyButton
+                      bounciness="gentle"
                       activeOpacity={0.88}
                       style={styles.playBtn}
                       onPress={() => {
@@ -396,9 +397,9 @@ export function PreviewSheetModal({
                       <Text style={styles.playBtnText}>
                         {info.viewed_information || 'Xem ngay'}
                       </Text>
-                    </TouchableOpacity>
+                    </BouncyButton>
 
-                    <TouchableOpacity
+                    <BouncyButton
                       style={styles.iconActionBtn}
                       onPress={handleToggleWishlist}
                     >
@@ -407,9 +408,9 @@ export function PreviewSheetModal({
                         size={20}
                         color={inWishlist ? COLORS.accent : '#FFF'}
                       />
-                    </TouchableOpacity>
+                    </BouncyButton>
 
-                    <TouchableOpacity
+                    <BouncyButton
                       style={styles.detailBtn}
                       onPress={() => {
                         Haptics.selectionAsync();
@@ -419,7 +420,7 @@ export function PreviewSheetModal({
                     >
                       <Ionicons name="information-circle-outline" size={20} color="#FFF" />
                       <Text style={styles.detailBtnText}>Chi tiết</Text>
-                    </TouchableOpacity>
+                    </BouncyButton>
                   </View>
                 </ScrollView>
               ) : null}
@@ -449,7 +450,7 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   sheet: {
-    backgroundColor: 'rgba(13, 10, 16, 0.88)',
+    backgroundColor: 'rgba(13, 10, 16, 0.72)',
     borderBottomLeftRadius: 0,
     borderBottomRightRadius: 0,
   },

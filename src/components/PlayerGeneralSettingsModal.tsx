@@ -7,7 +7,6 @@ import {
   Switch,
   Text,
   TextInput,
-  TouchableOpacity,
   useWindowDimensions,
   View,
 } from 'react-native';
@@ -17,7 +16,8 @@ import * as Haptics from 'expo-haptics';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { showAppAlert } from './AppAlertModal';
-import { COLORS } from '../constants/config';
+import { BouncyButton } from './BouncyButton';
+import { COLORS, GLASS_SHADOW } from '../constants/config';
 import { useSettings } from '../context/SettingsContext';
 import { ContrastLevelOption, HoldSeekSpeedOption } from '../types/models';
 
@@ -415,7 +415,8 @@ export function PlayerGeneralSettingsModal({
               return (
                 <React.Fragment key={opt.value}>
                   {idx > 0 ? <View style={styles.rowDividerPlain} /> : null}
-                  <TouchableOpacity
+                  <BouncyButton
+                    bounciness="gentle"
                     activeOpacity={0.78}
                     style={styles.subOptionRow}
                     onPress={() => {
@@ -430,7 +431,7 @@ export function PlayerGeneralSettingsModal({
                     {selected ? (
                       <Ionicons name="checkmark" size={20} color={COLORS.accent} />
                     ) : null}
-                  </TouchableOpacity>
+                  </BouncyButton>
                 </React.Fragment>
               );
             })}
@@ -449,7 +450,7 @@ export function PlayerGeneralSettingsModal({
             {HOLD_SPEED_OPTIONS.map((sp) => {
               const sel = settings.holdSeekSpeed === sp;
               return (
-                <TouchableOpacity
+                <BouncyButton
                   key={sp}
                   style={[styles.choiceChip, sel && styles.choiceChipActive]}
                   onPress={() => {
@@ -458,7 +459,7 @@ export function PlayerGeneralSettingsModal({
                   }}
                 >
                   <Text style={styles.choiceChipTxt}>{sp}x</Text>
-                </TouchableOpacity>
+                </BouncyButton>
               );
             })}
           </View>
@@ -493,7 +494,7 @@ export function PlayerGeneralSettingsModal({
             {SLEEP_OPTIONS.map((opt) => {
               const sel = sleepTimerValue === opt.value;
               return (
-                <TouchableOpacity
+                <BouncyButton
                   key={opt.label}
                   style={[styles.choiceChip, sel && styles.choiceChipActive]}
                   onPress={() => {
@@ -502,7 +503,7 @@ export function PlayerGeneralSettingsModal({
                   }}
                 >
                   <Text style={styles.choiceChipTxt}>{opt.label}</Text>
-                </TouchableOpacity>
+                </BouncyButton>
               );
             })}
           </View>
@@ -521,7 +522,7 @@ export function PlayerGeneralSettingsModal({
             {NEXT_DELAY_OPTIONS.map((sec) => {
               const sel = settings.nextEpisodeDelaySec === sec;
               return (
-                <TouchableOpacity
+                <BouncyButton
                   key={sec}
                   style={[styles.choiceChip, sel && styles.choiceChipActive]}
                   onPress={() => {
@@ -530,7 +531,7 @@ export function PlayerGeneralSettingsModal({
                   }}
                 >
                   <Text style={styles.choiceChipTxt}>{sec}s</Text>
-                </TouchableOpacity>
+                </BouncyButton>
               );
             })}
           </View>
@@ -566,7 +567,8 @@ export function PlayerGeneralSettingsModal({
                 <React.Fragment key={row.id}>
                   {idx > 0 ? <View style={styles.rowDividerInset} /> : null}
                   {row.kind === 'nav' ? (
-                    <TouchableOpacity
+                    <BouncyButton
+                      bounciness="gentle"
                       activeOpacity={0.76}
                       style={styles.groupedRow}
                       onPress={row.onPress}
@@ -584,7 +586,7 @@ export function PlayerGeneralSettingsModal({
                         <Text style={styles.rowValueText}>{row.valueText}</Text>
                       ) : null}
                       <Feather name="chevron-right" size={16} color="rgba(255,255,255,0.38)" />
-                    </TouchableOpacity>
+                    </BouncyButton>
                   ) : (
                     <View style={styles.groupedRow}>
                       <View style={[styles.iosBadge, { backgroundColor: row.badgeColor }]}>
@@ -631,7 +633,7 @@ export function PlayerGeneralSettingsModal({
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
 
         <View style={[styles.sheetCard, { width: cardWidth, height: cardHeight }]}>
-          <BlurView intensity={78} tint="dark" style={StyleSheet.absoluteFill} />
+          <BlurView intensity={34} tint="systemUltraThinMaterialDark" style={StyleSheet.absoluteFill} />
           <View style={styles.sheetDarkTint} />
           <LinearGradient
             pointerEvents="none"
@@ -644,7 +646,7 @@ export function PlayerGeneralSettingsModal({
           <View style={styles.inner}>
             <View style={styles.header}>
               {subView !== 'main' ? (
-                <TouchableOpacity
+                <BouncyButton
                   style={styles.iconCircleBtn}
                   onPress={() => {
                     Haptics.selectionAsync();
@@ -652,16 +654,16 @@ export function PlayerGeneralSettingsModal({
                   }}
                 >
                   <Ionicons name="chevron-back" size={19} color="#FFFFFF" />
-                </TouchableOpacity>
+                </BouncyButton>
               ) : (
-                <TouchableOpacity style={styles.iconCircleBtn} onPress={handleRebootConfirm}>
+                <BouncyButton style={styles.iconCircleBtn} onPress={handleRebootConfirm}>
                   <Feather name="rotate-cw" size={16} color="#FFFFFF" />
-                </TouchableOpacity>
+                </BouncyButton>
               )}
 
               <Text style={styles.headerTitle}>{renderSubViewTitle()}</Text>
 
-              <TouchableOpacity
+              <BouncyButton
                 style={styles.iconCircleBtn}
                 onPress={() => {
                   Haptics.selectionAsync();
@@ -669,7 +671,7 @@ export function PlayerGeneralSettingsModal({
                 }}
               >
                 <Ionicons name="close" size={19} color="#FFFFFF" />
-              </TouchableOpacity>
+              </BouncyButton>
             </View>
 
             {renderContent()}
@@ -693,10 +695,8 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.16)',
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 18 },
-    shadowOpacity: 0.55,
-    shadowRadius: 32,
+    boxShadow: GLASS_SHADOW,
+    elevation: 18,
   },
   sheetDarkTint: {
     position: 'absolute',
@@ -704,7 +704,7 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     left: 0,
-    backgroundColor: 'rgba(13, 16, 24, 0.8)',
+    backgroundColor: 'rgba(14, 17, 25, 0.56)',
   },
   sheetTopSheen: {
     position: 'absolute',

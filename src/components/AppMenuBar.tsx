@@ -6,7 +6,6 @@ import {
   PanResponder,
   StyleSheet,
   Text,
-  TouchableOpacity,
   useWindowDimensions,
   View,
 } from 'react-native';
@@ -14,6 +13,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
+import { BouncyButton } from './BouncyButton';
+import { GLASS_SHADOW } from '../constants/config';
 
 export type AppTabKey = 'home' | 'explore' | 'search' | 'library';
 
@@ -204,7 +205,7 @@ export function AppMenuBar({ activeTab, bottomInset, onSelectTab }: AppMenuBarPr
         {...panResponder.panHandlers}
       >
         <View style={styles.glassClip} pointerEvents="none">
-          <BlurView intensity={78} tint="dark" style={StyleSheet.absoluteFill} />
+          <BlurView intensity={32} tint="systemUltraThinMaterialDark" style={StyleSheet.absoluteFill} />
           <View style={styles.glassTint} />
           <LinearGradient
             colors={[
@@ -244,9 +245,10 @@ export function AppMenuBar({ activeTab, bottomInset, onSelectTab }: AppMenuBarPr
             const highlighted = isHovered || (!isDragging && isActive);
 
             return (
-              <TouchableOpacity
+              <BouncyButton
                 key={item.key}
                 activeOpacity={0.85}
+                pressScale={0.86}
                 style={[styles.menuItem, { width: itemWidth }]}
                 onPress={() => {
                   Haptics.selectionAsync();
@@ -276,7 +278,7 @@ export function AppMenuBar({ activeTab, bottomInset, onSelectTab }: AppMenuBarPr
                 >
                   {item.label}
                 </Text>
-              </TouchableOpacity>
+              </BouncyButton>
             );
           })}
         </View>
@@ -297,10 +299,7 @@ const styles = StyleSheet.create({
     height: 64,
     borderRadius: 32,
     justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOpacity: 0.54,
-    shadowRadius: 22,
-    shadowOffset: { width: 0, height: 12 },
+    boxShadow: GLASS_SHADOW,
     elevation: 18,
   },
   glassClip: {
@@ -320,7 +319,7 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     left: 0,
-    backgroundColor: 'rgba(18, 20, 26, 0.52)',
+    backgroundColor: 'rgba(16, 18, 24, 0.36)',
   },
   rimBorder: {
     position: 'absolute',

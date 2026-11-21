@@ -6,11 +6,11 @@ import {
   StyleSheet,
   Switch,
   Text,
-  TouchableOpacity,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
+import { BouncyButton } from './BouncyButton';
 import { GlassSurface } from './GlassSurface';
 import { COLORS, RADII } from '../constants/config';
 import {
@@ -116,7 +116,8 @@ function OptionRow({
   onPress: () => void;
 }) {
   return (
-    <TouchableOpacity
+    <BouncyButton
+      bounciness="gentle"
       activeOpacity={0.78}
       style={[styles.optionRow, selected && styles.optionRowSelected]}
       onPress={() => {
@@ -139,7 +140,7 @@ function OptionRow({
       ) : (
         <Ionicons name="chevron-forward" size={18} color={COLORS.muted} />
       )}
-    </TouchableOpacity>
+    </BouncyButton>
   );
 }
 
@@ -242,12 +243,12 @@ export function PlayerOverlayPanels({
   return (
     <View style={styles.overlayWrap} pointerEvents="box-none">
       <Pressable style={styles.backdrop} onPress={onClose} />
-      <GlassSurface variant="liquid" intensity={85} radius={40} style={[styles.panelCard, isWide && styles.panelCardWide]}>
+      <GlassSurface variant="liquid" intensity={34} radius={40} style={[styles.panelCard, isWide && styles.panelCardWide]}>
         <View style={styles.panelHeader}>
           <Text style={styles.panelTitle}>{PANEL_TITLES[activePanel]}</Text>
-          <TouchableOpacity style={styles.closeIconBtn} onPress={onClose}>
+          <BouncyButton style={styles.closeIconBtn} onPress={onClose}>
             <Ionicons name="close" size={22} color="#FFF" />
-          </TouchableOpacity>
+          </BouncyButton>
         </View>
 
         <ScrollView style={styles.panelBody} contentContainerStyle={{ gap: 8, paddingBottom: 8 }} showsVerticalScrollIndicator={false}>
@@ -310,7 +311,7 @@ export function PlayerOverlayPanels({
                   {seasonList.map((s) => {
                     const active = activeSeason?.seasons_id === s.seasons_id;
                     return (
-                      <TouchableOpacity
+                      <BouncyButton
                         key={s.seasons_id}
                         style={[styles.chip, active && styles.chipActive]}
                         onPress={() => setSelectedSeasonId(s.seasons_id)}
@@ -318,7 +319,7 @@ export function PlayerOverlayPanels({
                         <Text style={[styles.chipTxt, active && styles.chipTxtActive]}>
                           {s.seasons_name}
                         </Text>
-                      </TouchableOpacity>
+                      </BouncyButton>
                     );
                   })}
                 </ScrollView>
@@ -328,7 +329,7 @@ export function PlayerOverlayPanels({
                   const globalIdx = episodes.findIndex((x) => x.episodes_id === ep.episodes_id);
                   const isCurrent = ep.stream_code === currentStreamCode;
                   return (
-                    <TouchableOpacity
+                    <BouncyButton
                       key={ep.episodes_id}
                       style={[styles.epTile, isCurrent && styles.epTileActive]}
                       onPress={() => {
@@ -341,7 +342,7 @@ export function PlayerOverlayPanels({
                         {ep.episodes_name}
                       </Text>
                       {isCurrent ? <View style={styles.playingDot} /> : null}
-                    </TouchableOpacity>
+                    </BouncyButton>
                   );
                 })}
               </View>
@@ -379,35 +380,35 @@ export function PlayerOverlayPanels({
               <Text style={styles.sectionHeading}>Cỡ chữ</Text>
               <View style={styles.chipRow}>
                 {FONT_SIZE_OPTIONS.map((opt) => (
-                  <TouchableOpacity
+                  <BouncyButton
                     key={opt.value}
                     style={[styles.chip, settings.subtitleFontSize === opt.value && styles.chipActive]}
                     onPress={() => onUpdateSetting('subtitleFontSize', opt.value)}
                   >
                     <Text style={styles.chipTxt}>{opt.label}</Text>
-                  </TouchableOpacity>
+                  </BouncyButton>
                 ))}
               </View>
 
               <Text style={styles.sectionHeading}>Vị trí & Nền phụ đề</Text>
               <View style={styles.chipRow}>
                 {SUB_POS_OPTIONS.map((opt) => (
-                  <TouchableOpacity
+                  <BouncyButton
                     key={opt.value}
                     style={[styles.chip, settings.subtitleBottomOffset === opt.value && styles.chipActive]}
                     onPress={() => onUpdateSetting('subtitleBottomOffset', opt.value)}
                   >
                     <Text style={styles.chipTxt}>{opt.label}</Text>
-                  </TouchableOpacity>
+                  </BouncyButton>
                 ))}
                 {SUB_BG_OPTIONS.map((opt) => (
-                  <TouchableOpacity
+                  <BouncyButton
                     key={`bg-${opt.value}`}
                     style={[styles.chip, settings.subtitleBgOpacity === opt.value && styles.chipActive]}
                     onPress={() => onUpdateSetting('subtitleBgOpacity', opt.value)}
                   >
                     <Text style={styles.chipTxt}>{opt.label}</Text>
-                  </TouchableOpacity>
+                  </BouncyButton>
                 ))}
               </View>
 
@@ -469,13 +470,13 @@ export function PlayerOverlayPanels({
                 {SLEEP_OPTIONS.map((opt) => {
                   const isSel = opt.value === null ? sleepMinutesLeft === null : sleepMinutesLeft !== null && Math.abs(sleepMinutesLeft - opt.value) <= 1;
                   return (
-                    <TouchableOpacity
+                    <BouncyButton
                       key={String(opt.value)}
                       style={[styles.chip, isSel && styles.chipActive]}
                       onPress={() => onSelectSleepTimer(opt.value)}
                     >
                       <Text style={styles.chipTxt}>{opt.label}</Text>
-                    </TouchableOpacity>
+                    </BouncyButton>
                   );
                 })}
               </View>
@@ -502,18 +503,18 @@ export function PlayerOverlayPanels({
           {activePanel === 'info' ? (
             <>
               <View style={styles.chipRow}>
-                <TouchableOpacity
+                <BouncyButton
                   style={[styles.chip, infoTab === 'movie' && styles.chipActive]}
                   onPress={() => setInfoTab('movie')}
                 >
                   <Text style={styles.chipTxt}>Thông tin phim</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
+                </BouncyButton>
+                <BouncyButton
                   style={[styles.chip, infoTab === 'member' && styles.chipActive]}
                   onPress={() => setInfoTab('member')}
                 >
                   <Text style={styles.chipTxt}>Hồ sơ thành viên</Text>
-                </TouchableOpacity>
+                </BouncyButton>
               </View>
 
               {infoTab === 'movie' ? (

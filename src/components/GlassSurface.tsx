@@ -1,7 +1,7 @@
 import React from 'react';
 import { Platform, StyleProp, StyleSheet, View, ViewStyle } from 'react-native';
-import { BlurView } from 'expo-blur';
-import { COLORS, RADII } from '../constants/config';
+import { BlurView, BlurTint } from 'expo-blur';
+import { COLORS, GLASS_SHADOW, RADII } from '../constants/config';
 
 interface GlassSurfaceProps {
   children: React.ReactNode;
@@ -9,7 +9,7 @@ interface GlassSurfaceProps {
   contentStyle?: StyleProp<ViewStyle>;
   intensity?: number;
   radius?: number;
-  tint?: 'dark' | 'light' | 'default' | 'systemMaterialDark' | 'systemUltraThinMaterialDark';
+  tint?: BlurTint;
   variant?: 'default' | 'liquid';
   noShadow?: boolean;
 }
@@ -18,15 +18,26 @@ export function GlassSurface({
   children,
   style,
   contentStyle,
-  intensity = 48,
+  intensity = 28,
   radius = RADII.lg,
-  tint = 'dark',
+  tint = 'systemUltraThinMaterialDark',
   variant = 'default',
   noShadow = false,
 }: GlassSurfaceProps) {
+  const iosIntensity = Math.max(12, Math.min(intensity, 36));
+  const androidIntensity = Math.max(16, Math.min(intensity, 46));
+  const resolvedIntensity = Platform.OS === 'ios' ? iosIntensity : androidIntensity;
+
   if (variant === 'liquid') {
     return (
-      <View style={[styles.liquidOuter, noShadow && styles.noShadow, { borderRadius: radius }, style]}>
+      <View
+        style={[
+          styles.liquidOuter,
+          !noShadow && styles.glassShadow,
+          { borderRadius: radius },
+          style,
+        ]}
+      >
         <View
           pointerEvents="none"
           style={[
@@ -35,14 +46,19 @@ export function GlassSurface({
           ]}
         >
           <BlurView
-            intensity={Platform.OS === 'ios' ? intensity : 78}
+            intensity={resolvedIntensity}
             tint="systemUltraThinMaterialDark"
             style={StyleSheet.absoluteFill}
           />
           <View
             style={[
               StyleSheet.absoluteFill,
-              { backgroundColor: 'rgba(20, 20, 20, 0.2)' },
+              {
+                borderRadius: radius,
+                backgroundColor: 'rgba(16, 18, 24, 0.16)',
+                borderWidth: StyleSheet.hairlineWidth,
+                borderColor: 'rgba(255, 255, 255, 0.16)',
+              },
             ]}
           />
         </View>
@@ -52,24 +68,38 @@ export function GlassSurface({
   }
 
   return (
-    <View style={[styles.outer, noShadow && styles.noShadow, { borderRadius: radius }, style]}>
-      <BlurView
-        intensity={Platform.OS === 'ios' ? intensity : 70}
-        tint={tint}
-        style={[StyleSheet.absoluteFill, { borderRadius: radius }]}
-      />
+    <View
+      style={[
+        styles.outer,
+        !noShadow && styles.glassShadow,
+        { borderRadius: radius },
+        style,
+      ]}
+    >
       <View
         pointerEvents="none"
         style={[
           StyleSheet.absoluteFill,
-          {
-            borderRadius: radius,
-            backgroundColor: COLORS.glass,
-            borderWidth: StyleSheet.hairlineWidth,
-            borderColor: COLORS.glassBorder,
-          },
+          { borderRadius: radius, overflow: 'hidden' },
         ]}
-      />
+      >
+        <BlurView
+          intensity={resolvedIntensity}
+          tint={tint}
+          style={StyleSheet.absoluteFill}
+        />
+        <View
+          style={[
+            StyleSheet.absoluteFill,
+            {
+              borderRadius: radius,
+              backgroundColor: COLORS.glass,
+              borderWidth: StyleSheet.hairlineWidth,
+              borderColor: COLORS.glassBorder,
+            },
+          ]}
+        />
+      </View>
       {contentStyle ? <View style={contentStyle}>{children}</View> : children}
     </View>
   );
@@ -78,25 +108,12 @@ export function GlassSurface({
 const styles = StyleSheet.create({
   outer: {
     overflow: 'hidden',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.42,
-    shadowRadius: 18,
-    elevation: 8,
   },
   liquidOuter: {
     overflow: 'visible',
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 20 },
-    shadowOpacity: 0.5,
-    shadowRadius: 25,
-    elevation: 20,
   },
-  noShadow: {
-    shadowColor: 'transparent',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0,
-    shadowRadius: 0,
-    elevation: 0,
+  glassShadow: {
+    boxShadow: GLASS_SHADOW,
+    elevation: 16,
   },
 });

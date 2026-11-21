@@ -5,12 +5,12 @@ import {
   Pressable,
   StyleSheet,
   Text,
-  TouchableOpacity,
   useWindowDimensions,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
+import { BouncyButton } from './BouncyButton';
 import { GlassSurface } from './GlassSurface';
 import { APP_VERSION, COLORS } from '../constants/config';
 import { triggerDirectP12InstallNow } from '../services/otaService';
@@ -77,7 +77,7 @@ export function AppUpdateModal({ visible, manifest, onDismiss }: AppUpdateModalP
         <GlassSurface
           variant="liquid"
           radius={40}
-          intensity={85}
+          intensity={34}
           style={[styles.cardWrap, { width: cardWidth }]}
         >
           <View style={styles.cardInner}>
@@ -132,7 +132,7 @@ export function AppUpdateModal({ visible, manifest, onDismiss }: AppUpdateModalP
             ) : null}
 
             <View style={styles.actionsRow}>
-              <TouchableOpacity
+              <BouncyButton
                 activeOpacity={0.8}
                 disabled={installing}
                 style={styles.laterBtn}
@@ -142,9 +142,9 @@ export function AppUpdateModal({ visible, manifest, onDismiss }: AppUpdateModalP
                 }}
               >
                 <Text style={styles.laterBtnTxt}>Để sau</Text>
-              </TouchableOpacity>
+              </BouncyButton>
 
-              <TouchableOpacity
+              <BouncyButton
                 activeOpacity={0.85}
                 disabled={installing}
                 style={styles.updateBtn}
@@ -158,7 +158,7 @@ export function AppUpdateModal({ visible, manifest, onDismiss }: AppUpdateModalP
                 <Text style={styles.updateBtnTxt}>
                   {installing ? 'Đang chuẩn bị...' : 'Cập nhật ngay'}
                 </Text>
-              </TouchableOpacity>
+              </BouncyButton>
             </View>
           </View>
         </GlassSurface>

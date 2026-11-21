@@ -4,12 +4,12 @@ import {
   Pressable,
   StyleSheet,
   Text,
-  TouchableOpacity,
   useWindowDimensions,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
+import { BouncyButton } from './BouncyButton';
 import { GlassSurface } from './GlassSurface';
 import { COLORS } from '../constants/config';
 
@@ -202,7 +202,7 @@ export function AppAlertHost(): React.ReactElement | null {
         <GlassSurface
           variant="liquid"
           radius={40}
-          intensity={85}
+          intensity={34}
           style={[styles.cardWrap, { width: cardWidth }]}
         >
           <View style={styles.cardInner}>
@@ -231,7 +231,7 @@ export function AppAlertHost(): React.ReactElement | null {
                   (current.buttons.length === 1 || idx === current.buttons.length - 1);
 
                 return (
-                  <TouchableOpacity
+                  <BouncyButton
                     key={`${current.id}-${idx}`}
                     activeOpacity={0.82}
                     onPress={() => handlePressButton(btn)}
@@ -252,7 +252,7 @@ export function AppAlertHost(): React.ReactElement | null {
                     >
                       {btn.text || 'OK'}
                     </Text>
-                  </TouchableOpacity>
+                  </BouncyButton>
                 );
               })}
             </View>

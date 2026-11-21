@@ -8,7 +8,6 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TouchableOpacity,
   useWindowDimensions,
   View,
 } from 'react-native';
@@ -16,6 +15,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { BouncyButton } from '../components/BouncyButton';
 import { GlassSurface } from '../components/GlassSurface';
 import { MovieCard } from '../components/MovieCard';
 import { SkeletonCrossfade } from '../components/SkeletonCrossfade';
@@ -223,13 +223,13 @@ export function ExploreScreen({ onOpenPreview }: ExploreScreenProps) {
       <View style={styles.headerBar}>
         <Text style={styles.headerTitle}>Khám phá kho phim</Text>
 
-        <TouchableOpacity
+        <BouncyButton
           activeOpacity={0.82}
           onPress={openFilterSheet}
           style={styles.filterBtnWrap}
         >
           <GlassSurface
-            intensity={64}
+            intensity={28}
             radius={21}
             style={[styles.filterCircleBtn, activeFilterCount > 0 && styles.filterCircleBtnActive]}
           >
@@ -240,7 +240,7 @@ export function ExploreScreen({ onOpenPreview }: ExploreScreenProps) {
               <Text style={styles.filterBadgeText}>{activeFilterCount}</Text>
             </View>
           ) : null}
-        </TouchableOpacity>
+        </BouncyButton>
       </View>
 
       {activeSummaryTags.length > 0 ? (
@@ -255,10 +255,10 @@ export function ExploreScreen({ onOpenPreview }: ExploreScreenProps) {
               <Text style={styles.activeTagText}>{lbl}</Text>
             </View>
           ))}
-          <TouchableOpacity onPress={clearAllActiveFilters} style={styles.clearFilterPill}>
+          <BouncyButton onPress={clearAllActiveFilters} style={styles.clearFilterPill}>
             <Ionicons name="close" size={13} color="#FCA5A5" />
             <Text style={styles.clearFilterText}>Xóa lọc</Text>
-          </TouchableOpacity>
+          </BouncyButton>
         </ScrollView>
       ) : null}
 
@@ -311,7 +311,7 @@ export function ExploreScreen({ onOpenPreview }: ExploreScreenProps) {
             ]}
           >
             <GlassSurface
-              intensity={78}
+              intensity={34}
               radius={32}
               style={[
                 styles.sheetCard,
@@ -324,12 +324,12 @@ export function ExploreScreen({ onOpenPreview }: ExploreScreenProps) {
               <View style={styles.handleBar} />
               <View style={styles.sheetHeader}>
                 <Text style={styles.sheetTitle}>Bộ lọc &amp; Sắp xếp</Text>
-                <TouchableOpacity
+                <BouncyButton
                   style={styles.sheetCloseBtn}
                   onPress={() => setFilterSheetOpen(false)}
                 >
                   <Ionicons name="close" size={19} color="#FFF" />
-                </TouchableOpacity>
+                </BouncyButton>
               </View>
 
               <ScrollView
@@ -342,7 +342,7 @@ export function ExploreScreen({ onOpenPreview }: ExploreScreenProps) {
                   {TYPE_OPTIONS.map((opt) => {
                     const active = draftType === opt.key;
                     return (
-                      <TouchableOpacity
+                      <BouncyButton
                         key={opt.key}
                         style={[styles.sheetChip, active && styles.sheetChipActive]}
                         onPress={() => {
@@ -353,7 +353,7 @@ export function ExploreScreen({ onOpenPreview }: ExploreScreenProps) {
                         <Text style={[styles.sheetChipText, active && styles.sheetChipTextActive]}>
                           {opt.label}
                         </Text>
-                      </TouchableOpacity>
+                      </BouncyButton>
                     );
                   })}
                 </View>
@@ -363,7 +363,7 @@ export function ExploreScreen({ onOpenPreview }: ExploreScreenProps) {
                   {SORT_OPTIONS.map((s) => {
                     const active = draftSort === s.key;
                     return (
-                      <TouchableOpacity
+                      <BouncyButton
                         key={s.key}
                         style={[styles.sheetChip, active && styles.sheetChipActive]}
                         onPress={() => {
@@ -374,14 +374,14 @@ export function ExploreScreen({ onOpenPreview }: ExploreScreenProps) {
                         <Text style={[styles.sheetChipText, active && styles.sheetChipTextActive]}>
                           {s.label}
                         </Text>
-                      </TouchableOpacity>
+                      </BouncyButton>
                     );
                   })}
                 </View>
 
                 <Text style={styles.groupHeading}>Thể loại</Text>
                 <View style={styles.chipWrap}>
-                  <TouchableOpacity
+                  <BouncyButton
                     style={[styles.sheetChip, draftGenre === '' && styles.sheetChipActive]}
                     onPress={() => {
                       Haptics.selectionAsync();
@@ -393,12 +393,12 @@ export function ExploreScreen({ onOpenPreview }: ExploreScreenProps) {
                     >
                       Mọi thể loại
                     </Text>
-                  </TouchableOpacity>
+                  </BouncyButton>
                   {genres.map((g) => {
                     const gid = String(g.id);
                     const active = draftGenre === gid;
                     return (
-                      <TouchableOpacity
+                      <BouncyButton
                         key={gid}
                         style={[styles.sheetChip, active && styles.sheetChipActive]}
                         onPress={() => {
@@ -409,14 +409,14 @@ export function ExploreScreen({ onOpenPreview }: ExploreScreenProps) {
                         <Text style={[styles.sheetChipText, active && styles.sheetChipTextActive]}>
                           {g.name}
                         </Text>
-                      </TouchableOpacity>
+                      </BouncyButton>
                     );
                   })}
                 </View>
 
                 <Text style={styles.groupHeading}>Quốc gia</Text>
                 <View style={styles.chipWrap}>
-                  <TouchableOpacity
+                  <BouncyButton
                     style={[styles.sheetChip, draftCountry === '' && styles.sheetChipActive]}
                     onPress={() => {
                       Haptics.selectionAsync();
@@ -431,12 +431,12 @@ export function ExploreScreen({ onOpenPreview }: ExploreScreenProps) {
                     >
                       Mọi quốc gia
                     </Text>
-                  </TouchableOpacity>
+                  </BouncyButton>
                   {countries.map((c) => {
                     const cid = String(c.id);
                     const active = draftCountry === cid;
                     return (
-                      <TouchableOpacity
+                      <BouncyButton
                         key={cid}
                         style={[styles.sheetChip, active && styles.sheetChipActive]}
                         onPress={() => {
@@ -447,21 +447,22 @@ export function ExploreScreen({ onOpenPreview }: ExploreScreenProps) {
                         <Text style={[styles.sheetChipText, active && styles.sheetChipTextActive]}>
                           {c.name}
                         </Text>
-                      </TouchableOpacity>
+                      </BouncyButton>
                     );
                   })}
                 </View>
               </ScrollView>
 
               <View style={styles.sheetFooter}>
-                <TouchableOpacity
+                <BouncyButton
                   activeOpacity={0.82}
                   style={styles.resetBtn}
                   onPress={resetDraftFilters}
                 >
                   <Text style={styles.resetBtnText}>Đặt lại</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
+                </BouncyButton>
+                <BouncyButton
+                  bounciness="gentle"
                   activeOpacity={0.88}
                   style={styles.applyWrap}
                   onPress={applyDraftFilters}
@@ -474,7 +475,7 @@ export function ExploreScreen({ onOpenPreview }: ExploreScreenProps) {
                   >
                     <Text style={styles.applyText}>Áp dụng bộ lọc</Text>
                   </LinearGradient>
-                </TouchableOpacity>
+                </BouncyButton>
               </View>
             </GlassSurface>
           </Animated.View>

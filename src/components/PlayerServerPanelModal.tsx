@@ -8,7 +8,6 @@ import {
   StyleSheet,
   Switch,
   Text,
-  TouchableOpacity,
   useWindowDimensions,
   View,
 } from 'react-native';
@@ -17,7 +16,8 @@ import { BlurView } from 'expo-blur';
 import * as Haptics from 'expo-haptics';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { COLORS } from '../constants/config';
+import { BouncyButton } from './BouncyButton';
+import { COLORS, GLASS_SHADOW } from '../constants/config';
 import {
   BackupServerId,
   formatVietnameseEta,
@@ -79,7 +79,7 @@ export function PlayerServerPanelModal({
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
 
         <View style={[styles.sheetContainer, { width: cardWidth }]}>
-          <BlurView intensity={78} tint="dark" style={StyleSheet.absoluteFill} />
+          <BlurView intensity={34} tint="systemUltraThinMaterialDark" style={StyleSheet.absoluteFill} />
           <View style={styles.sheetDarkTint} />
           <LinearGradient
             pointerEvents="none"
@@ -119,7 +119,7 @@ export function PlayerServerPanelModal({
                   />
                 </View>
 
-                <TouchableOpacity
+                <BouncyButton
                   activeOpacity={0.78}
                   style={styles.circleBtn}
                   onPress={() => {
@@ -132,9 +132,9 @@ export function PlayerServerPanelModal({
                   ) : (
                     <Feather name="refresh-cw" size={16} color="#FFFFFF" />
                   )}
-                </TouchableOpacity>
+                </BouncyButton>
 
-                <TouchableOpacity
+                <BouncyButton
                   activeOpacity={0.78}
                   style={styles.circleBtn}
                   onPress={() => {
@@ -143,7 +143,7 @@ export function PlayerServerPanelModal({
                   }}
                 >
                   <Ionicons name="close" size={19} color="#FFFFFF" />
-                </TouchableOpacity>
+                </BouncyButton>
               </View>
             </View>
 
@@ -218,8 +218,9 @@ export function PlayerServerPanelModal({
                 }
 
                 return (
-                  <TouchableOpacity
+                  <BouncyButton
                     key={srv.id}
+                    bounciness="gentle"
                     activeOpacity={disabled ? 1 : 0.8}
                     disabled={disabled}
                     style={[
@@ -316,7 +317,7 @@ export function PlayerServerPanelModal({
                         </View>
                       ) : null}
                     </View>
-                  </TouchableOpacity>
+                  </BouncyButton>
                 );
               })}
             </ScrollView>
@@ -340,10 +341,8 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.16)',
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 18 },
-    shadowOpacity: 0.55,
-    shadowRadius: 32,
+    boxShadow: GLASS_SHADOW,
+    elevation: 18,
   },
   sheetDarkTint: {
     position: 'absolute',
@@ -351,7 +350,7 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     left: 0,
-    backgroundColor: 'rgba(13, 16, 24, 0.78)',
+    backgroundColor: 'rgba(14, 17, 25, 0.54)',
   },
   sheetTopSheen: {
     position: 'absolute',

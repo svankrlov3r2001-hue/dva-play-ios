@@ -11,6 +11,7 @@ import {
 import { Feather } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
+import { BouncyButton } from './BouncyButton';
 import { COLORS } from '../constants/config';
 
 export interface IosRulerSliderProps {
@@ -159,14 +160,14 @@ export function IosRulerSlider({
         <Text style={styles.labelText}>{label}</Text>
         <View style={styles.rightMetaRow}>
           {showReset ? (
-            <TouchableOpacity
+            <BouncyButton
               onPress={onReset}
               activeOpacity={0.75}
               style={styles.resetPill}
             >
               <Feather name="rotate-ccw" size={11} color="rgba(255,255,255,0.78)" />
               <Text style={styles.resetText}>{resetLabel}</Text>
-            </TouchableOpacity>
+            </BouncyButton>
           ) : null}
           <View style={[styles.valueBadge, { borderColor: `${accentColor}66`, backgroundColor: `${accentColor}26` }]}>
             <Text style={styles.valueText}>{valueText}</Text>

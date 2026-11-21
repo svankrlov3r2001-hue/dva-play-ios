@@ -6,8 +6,8 @@ export const EXPO_UPDATES_URL = 'https://dangvietanh.com/dva_ios/api/updates.php
 
 export const APP_NAME = 'Đặng Việt Anh';
 export const APP_BUNDLE_ID = 'com.dangvietanh.dvaplay';
-export const APP_VERSION = '1.0.25';
-export const APP_VERSION_CODE = 26;
+export const APP_VERSION = '1.0.26';
+export const APP_VERSION_CODE = 27;
 export const APP_RUNTIME_VERSION = '1.0.0';
 export const APP_RELEASE_DATE = '22/11/2026';
 
@@ -15,12 +15,14 @@ export const APP_RELEASE_DATE = '22/11/2026';
 export const SPLASH_MIN_DURATION_MS = 3000;
 export const SPLASH_AUTO_RETRY_MS = 4000;
 
+export const GLASS_SHADOW = '0px 20px 50px 0px rgba(0, 0, 0, 0.5)';
+
 export const COLORS = {
   bg: '#07090F',
   bgElevated: '#0E121D',
-  glass: 'rgba(20, 20, 20, 0.56)',
+  glass: 'rgba(18, 20, 28, 0.34)',
   glassLight: 'rgba(255, 255, 255, 0.08)',
-  glassBorder: 'rgba(255, 255, 255, 0.14)',
+  glassBorder: 'rgba(255, 255, 255, 0.16)',
   accent: '#E50914',
   accentPink: '#D50055',
   accentGold: '#FBBF24',

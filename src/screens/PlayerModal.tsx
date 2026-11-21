@@ -9,7 +9,6 @@ import {
   Pressable,
   StyleSheet,
   Text,
-  TouchableOpacity,
   useWindowDimensions,
   View,
 } from 'react-native';
@@ -26,6 +25,7 @@ import * as Haptics from 'expo-haptics';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { showAppAlert } from '../components/AppAlertModal';
+import { BouncyButton } from '../components/BouncyButton';
 import { GlassSurface } from '../components/GlassSurface';
 import { NativeSubtitleOverlay } from '../components/NativeSubtitleOverlay';
 import { OfflineDownloadSheet } from '../components/OfflineDownloadSheet';
@@ -44,7 +44,7 @@ import {
   WaterDropToastPayload,
 } from '../components/WaterDropToastBanner';
 import { CastModal, CastMoviePayload } from './CastModal';
-import { COLORS } from '../constants/config';
+import { COLORS, GLASS_SHADOW } from '../constants/config';
 import { useAuth } from '../context/AuthContext';
 import { useSettings } from '../context/SettingsContext';
 import {
@@ -2458,23 +2458,23 @@ export function PlayerModal({
         {/* Floating Next-Episode Countdown Pill */}
         {nextCountdownSec !== null && currentNextEpisode ? (
           <View style={styles.countdownOverlay}>
-            <GlassSurface variant="liquid" radius={40} intensity={85} style={styles.countdownCard}>
+            <GlassSurface variant="liquid" radius={40} intensity={34} style={styles.countdownCard}>
               <Text style={styles.countdownTitle}>
                 Chuyển sang {currentNextEpisode.ep.episodes_name} sau {nextCountdownSec}s
               </Text>
               <View style={styles.countdownBtns}>
-                <TouchableOpacity
+                <BouncyButton
                   style={styles.countdownCancelBtn}
                   onPress={() => setNextCountdownSec(null)}
                 >
                   <Text style={styles.countdownBtnTxt}>Hủy</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
+                </BouncyButton>
+                <BouncyButton
                   style={styles.countdownNowBtn}
                   onPress={triggerSwitchToNextEpisode}
                 >
                   <Text style={styles.countdownBtnTxt}>Xem ngay</Text>
-                </TouchableOpacity>
+                </BouncyButton>
               </View>
             </GlassSurface>
           </View>
@@ -2497,11 +2497,11 @@ export function PlayerModal({
             {/* Top Bar */}
             <View style={styles.topBarRow} pointerEvents="box-none">
               <View style={styles.topLeftGroup}>
-                <TouchableOpacity activeOpacity={0.8} onPress={handleClose}>
-                  <GlassSurface variant="liquid" noShadow radius={22} intensity={85} style={styles.backBtn}>
+                <BouncyButton activeOpacity={0.8} pressScale={0.86} onPress={handleClose}>
+                  <GlassSurface variant="liquid" radius={22} intensity={28} style={styles.backBtn}>
                     <Ionicons name="chevron-back" size={23} color="#FFF" />
                   </GlassSurface>
-                </TouchableOpacity>
+                </BouncyButton>
                 <View style={styles.titleMetaWrap}>
                   <Text style={styles.hudTitle} numberOfLines={1}>
                     {fullHeaderTitle}
@@ -2513,8 +2513,9 @@ export function PlayerModal({
               </View>
 
               {/* Top-right 6-button Liquid Glass capsule */}
-              <GlassSurface variant="liquid" noShadow radius={40} intensity={85} style={styles.topRightCapsule}>
-                <TouchableOpacity
+              <GlassSurface variant="liquid" radius={40} intensity={28} style={styles.topRightCapsule}>
+                <BouncyButton
+                  pressScale={0.86}
                   style={styles.topCapsuleBtn}
                   onPress={() => {
                     Haptics.selectionAsync();
@@ -2524,10 +2525,11 @@ export function PlayerModal({
                 >
                   <Feather name="server" size={21} color="#FFF" />
                   {serverPreparing ? <View style={styles.prepDot} /> : null}
-                </TouchableOpacity>
+                </BouncyButton>
 
                 {!isOfflineOnlyMode ? (
-                  <TouchableOpacity
+                  <BouncyButton
+                    pressScale={0.86}
                     style={[
                       styles.topCapsuleBtn,
                       isDownloadedNow && styles.topBtnGreen,
@@ -2547,10 +2549,11 @@ export function PlayerModal({
                         color={isDownloadedNow ? '#30D158' : '#FFF'}
                       />
                     )}
-                  </TouchableOpacity>
+                  </BouncyButton>
                 ) : null}
 
-                <TouchableOpacity
+                <BouncyButton
+                  pressScale={0.86}
                   style={styles.topCapsuleBtn}
                   onPress={() => {
                     Haptics.selectionAsync();
@@ -2559,10 +2562,11 @@ export function PlayerModal({
                   }}
                 >
                   <JwSubtitleIcon size={22} color="#FFF" />
-                </TouchableOpacity>
+                </BouncyButton>
 
                 {settings.pipEnabled ? (
-                  <TouchableOpacity
+                  <BouncyButton
+                    pressScale={0.86}
                     style={styles.topCapsuleBtn}
                     onPress={async () => {
                       Haptics.selectionAsync();
@@ -2587,10 +2591,11 @@ export function PlayerModal({
                     }}
                   >
                     <JwPipIcon color="#FFF" />
-                  </TouchableOpacity>
+                  </BouncyButton>
                 ) : null}
 
-                <TouchableOpacity
+                <BouncyButton
+                  pressScale={0.86}
                   style={styles.topCapsuleBtn}
                   onPress={() => {
                     Haptics.selectionAsync();
@@ -2599,9 +2604,10 @@ export function PlayerModal({
                   }}
                 >
                   <Feather name="cast" size={21} color="#FFF" />
-                </TouchableOpacity>
+                </BouncyButton>
 
-                <TouchableOpacity
+                <BouncyButton
+                  pressScale={0.86}
                   style={styles.topCapsuleBtn}
                   onPress={() => {
                     Haptics.selectionAsync();
@@ -2610,19 +2616,19 @@ export function PlayerModal({
                   }}
                 >
                   <Feather name="settings" size={21} color="#FFF" />
-                </TouchableOpacity>
+                </BouncyButton>
               </GlassSurface>
             </View>
 
             {/* Right-Edge Vertical Liquid Glass Capsule */}
             <GlassSurface
               variant="liquid"
-              noShadow
               radius={40}
-              intensity={85}
+              intensity={28}
               style={[styles.rightSideCapsule, { right: 14 }]}
             >
-              <TouchableOpacity
+              <BouncyButton
+                pressScale={0.86}
                 style={[styles.sideBtn, isContrastActive && styles.sideBtnActiveRed]}
                 onPress={() => {
                   Haptics.selectionAsync();
@@ -2633,9 +2639,10 @@ export function PlayerModal({
                 }}
               >
                 <Ionicons name="contrast" size={20} color="#FFF" />
-              </TouchableOpacity>
+              </BouncyButton>
 
-              <TouchableOpacity
+              <BouncyButton
+                pressScale={0.86}
                 style={[styles.sideBtn, settings.autoPlayNext && styles.sideBtnActiveRed]}
                 onPress={() => {
                   Haptics.selectionAsync();
@@ -2646,9 +2653,10 @@ export function PlayerModal({
                 }}
               >
                 <Ionicons name="play-skip-forward" size={19} color="#FFF" />
-              </TouchableOpacity>
+              </BouncyButton>
 
-              <TouchableOpacity
+              <BouncyButton
+                pressScale={0.86}
                 style={[
                   styles.sideBtn,
                   settings.videoFillMode === 'cover' && styles.sideBtnActiveRed,
@@ -2662,13 +2670,14 @@ export function PlayerModal({
                 }}
               >
                 <Ionicons name="scan-outline" size={19} color="#FFF" />
-              </TouchableOpacity>
+              </BouncyButton>
             </GlassSurface>
 
             {/* Center Playback Controls matching Image 1 */}
             <View style={styles.centerControlsRow} pointerEvents="box-none">
-              <TouchableOpacity
+              <BouncyButton
                 activeOpacity={0.75}
+                pressScale={0.84}
                 style={styles.centerSeekTouch}
                 onPress={() => {
                   userInteractedHudRef.current = true;
@@ -2686,10 +2695,11 @@ export function PlayerModal({
                   />
                   <Text style={styles.seekRingTxt}>10</Text>
                 </View>
-              </TouchableOpacity>
+              </BouncyButton>
 
-              <TouchableOpacity
+              <BouncyButton
                 activeOpacity={0.8}
+                pressScale={0.86}
                 onPress={() => {
                   userInteractedHudRef.current = true;
                   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -2701,9 +2711,8 @@ export function PlayerModal({
               >
                 <GlassSurface
                   variant="liquid"
-                  noShadow
                   radius={26}
-                  intensity={70}
+                  intensity={26}
                   style={styles.centerPlayBox}
                 >
                   {isBuffering ? (
@@ -2717,10 +2726,11 @@ export function PlayerModal({
                     />
                   )}
                 </GlassSurface>
-              </TouchableOpacity>
+              </BouncyButton>
 
-              <TouchableOpacity
+              <BouncyButton
                 activeOpacity={0.75}
+                pressScale={0.84}
                 style={styles.centerSeekTouch}
                 onPress={() => {
                   userInteractedHudRef.current = true;
@@ -2733,7 +2743,7 @@ export function PlayerModal({
                   <Ionicons name="refresh-outline" size={42} color="#FFF" />
                   <Text style={styles.seekRingTxt}>10</Text>
                 </View>
-              </TouchableOpacity>
+              </BouncyButton>
             </View>
 
             {/* Bottom Control Section matching Image 1 */}
@@ -2741,24 +2751,26 @@ export function PlayerModal({
               {/* Quick Contextual Floating Action Chips above timeline */}
               <View style={styles.floatingChipsRow} pointerEvents="box-none">
                 {showSkipIntroButton ? (
-                  <TouchableOpacity
+                  <BouncyButton
                     activeOpacity={0.85}
+                    pressScale={0.88}
                     onPress={() => {
                       Haptics.selectionAsync();
                       seekToWithWarning(skipIntroSec);
                       showToast('Đã bỏ qua giới thiệu');
                     }}
                   >
-                    <GlassSurface variant="liquid" noShadow radius={40} intensity={85} style={styles.quickChip}>
+                    <GlassSurface variant="liquid" radius={40} intensity={28} style={styles.quickChip}>
                       <Ionicons name="play-skip-forward" size={14} color="#FFF" />
                       <Text style={styles.quickChipTxt}>Bỏ qua giới thiệu</Text>
                     </GlassSurface>
-                  </TouchableOpacity>
+                  </BouncyButton>
                 ) : null}
 
                 {seekReturnSec !== null ? (
-                  <TouchableOpacity
+                  <BouncyButton
                     activeOpacity={0.85}
+                    pressScale={0.88}
                     onPress={() => {
                       const backSec = seekReturnSec;
                       setSeekReturnSec(null);
@@ -2767,13 +2779,13 @@ export function PlayerModal({
                       }
                     }}
                   >
-                    <GlassSurface variant="liquid" noShadow radius={40} intensity={85} style={styles.quickChip}>
+                    <GlassSurface variant="liquid" radius={40} intensity={28} style={styles.quickChip}>
                       <Ionicons name="return-up-back" size={14} color="#00FFD9" />
                       <Text style={styles.quickChipTxt}>
                         Quay lại vị trí cũ ({formatClock(seekReturnSec)})
                       </Text>
                     </GlassSurface>
-                  </TouchableOpacity>
+                  </BouncyButton>
                 ) : null}
               </View>
 
@@ -2818,7 +2830,7 @@ export function PlayerModal({
                       pointerEvents="none"
                       style={[styles.scrubTooltipWrap, { left: `${progressPct}%` }]}
                     >
-                      <GlassSurface variant="liquid" radius={16} intensity={85} style={styles.scrubTooltip}>
+                      <GlassSurface variant="liquid" radius={16} intensity={28} style={styles.scrubTooltip}>
                         <Text style={styles.scrubTooltipTxt}>
                           {scrubNote ? `${formatClock(scrubSec)} · ${scrubNote}` : formatClock(scrubSec)}
                         </Text>
@@ -2874,15 +2886,16 @@ export function PlayerModal({
               <View style={styles.bottomActionsRow}>
                 <View style={styles.bottomLeftRow}>
                   {currentNextEpisode ? (
-                    <TouchableOpacity
+                    <BouncyButton
                       activeOpacity={0.82}
+                      pressScale={0.86}
                       onPress={() => {
                         userInteractedHudRef.current = true;
                         Haptics.selectionAsync();
                         triggerSwitchToNextEpisode();
                       }}
                     >
-                      <GlassSurface variant="liquid" noShadow radius={40} intensity={85} style={styles.nextEpPill}>
+                      <GlassSurface variant="liquid" radius={40} intensity={28} style={styles.nextEpPill}>
                         {moviePosterMeta.thumb || moviePosterMeta.poster ? (
                           <Image
                             source={{ uri: moviePosterMeta.thumb || moviePosterMeta.poster }}
@@ -2893,11 +2906,12 @@ export function PlayerModal({
                         )}
                         <Ionicons name="chevron-forward" size={16} color="#FFF" />
                       </GlassSurface>
-                    </TouchableOpacity>
+                    </BouncyButton>
                   ) : null}
 
-                  <TouchableOpacity
+                  <BouncyButton
                     activeOpacity={0.82}
+                    pressScale={0.86}
                     onPress={async () => {
                       userInteractedHudRef.current = true;
                       Haptics.selectionAsync();
@@ -2913,68 +2927,72 @@ export function PlayerModal({
                       showHudWithTimer();
                     }}
                   >
-                    <GlassSurface variant="liquid" noShadow radius={22} intensity={85} style={styles.circleActionBtn}>
+                    <GlassSurface variant="liquid" radius={22} intensity={28} style={styles.circleActionBtn}>
                       <Ionicons
                         name={inWishlist ? 'bookmark' : 'bookmark-outline'}
                         size={19}
                         color={inWishlist ? COLORS.accent : '#FFF'}
                       />
                     </GlassSurface>
-                  </TouchableOpacity>
+                  </BouncyButton>
 
                   {effectiveEpisodes.length > 0 ? (
-                    <TouchableOpacity
+                    <BouncyButton
                       activeOpacity={0.82}
+                      pressScale={0.86}
                       onPress={() => {
                         Haptics.selectionAsync();
                         clearHudTimer();
                         setEpisodeModalOpen(true);
                       }}
                     >
-                      <GlassSurface variant="liquid" noShadow radius={22} intensity={85} style={styles.circleActionBtn}>
+                      <GlassSurface variant="liquid" radius={22} intensity={28} style={styles.circleActionBtn}>
                         <Ionicons name="list" size={20} color="#FFF" />
                       </GlassSurface>
-                    </TouchableOpacity>
+                    </BouncyButton>
                   ) : null}
 
-                  <TouchableOpacity
+                  <BouncyButton
                     activeOpacity={0.82}
+                    pressScale={0.86}
                     onPress={() => {
                       Haptics.selectionAsync();
                       setReaction((r) => (r === 'like' ? null : 'like'));
                       showHudWithTimer();
                     }}
                   >
-                    <GlassSurface variant="liquid" noShadow radius={22} intensity={85} style={styles.circleActionBtn}>
+                    <GlassSurface variant="liquid" radius={22} intensity={28} style={styles.circleActionBtn}>
                       <Ionicons
                         name={reaction === 'like' ? 'thumbs-up' : 'thumbs-up-outline'}
                         size={19}
                         color={reaction === 'like' ? '#30D158' : '#FFF'}
                       />
                     </GlassSurface>
-                  </TouchableOpacity>
+                  </BouncyButton>
 
-                  <TouchableOpacity
+                  <BouncyButton
                     activeOpacity={0.82}
+                    pressScale={0.86}
                     onPress={() => {
                       Haptics.selectionAsync();
                       setReaction((r) => (r === 'dislike' ? null : 'dislike'));
                       showHudWithTimer();
                     }}
                   >
-                    <GlassSurface variant="liquid" noShadow radius={22} intensity={85} style={styles.circleActionBtn}>
+                    <GlassSurface variant="liquid" radius={22} intensity={28} style={styles.circleActionBtn}>
                       <Ionicons
                         name={reaction === 'dislike' ? 'thumbs-down' : 'thumbs-down-outline'}
                         size={19}
                         color={reaction === 'dislike' ? '#FF453A' : '#FFF'}
                       />
                     </GlassSurface>
-                  </TouchableOpacity>
+                  </BouncyButton>
                 </View>
 
                 <View style={styles.bottomRightCluster}>
-                  <TouchableOpacity
+                  <BouncyButton
                     activeOpacity={0.82}
+                    pressScale={0.86}
                     onPress={() => {
                       Haptics.selectionAsync();
                       setMoreMenuOpen(false);
@@ -2982,14 +3000,15 @@ export function PlayerModal({
                       showHudWithTimer(6000);
                     }}
                   >
-                    <GlassSurface variant="liquid" noShadow radius={40} intensity={85} style={styles.rightPillBtn}>
+                    <GlassSurface variant="liquid" radius={40} intensity={28} style={styles.rightPillBtn}>
                       <Ionicons name="play" size={14} color="#FFF" />
                       <Text style={styles.rightPillTxt}>{playbackRate.toFixed(playbackRate % 1 === 0 ? 1 : 2).replace(/\.00$/, '.0')}x</Text>
                     </GlassSurface>
-                  </TouchableOpacity>
+                  </BouncyButton>
 
-                  <TouchableOpacity
+                  <BouncyButton
                     activeOpacity={0.82}
+                    pressScale={0.86}
                     onPress={() => {
                       Haptics.selectionAsync();
                       setSpeedMenuOpen(false);
@@ -2997,21 +3016,22 @@ export function PlayerModal({
                       showHudWithTimer(6000);
                     }}
                   >
-                    <GlassSurface variant="liquid" noShadow radius={40} intensity={85} style={styles.rightPillBtn}>
+                    <GlassSurface variant="liquid" radius={40} intensity={28} style={styles.rightPillBtn}>
                       <Text style={styles.rightPillTxt}>Tùy chọn khác</Text>
                       <Ionicons name="chevron-down" size={15} color="#FFF" />
                     </GlassSurface>
-                  </TouchableOpacity>
+                  </BouncyButton>
                 </View>
 
                 {/* Speed Popover */}
                 {speedMenuOpen ? (
-                  <GlassSurface variant="liquid" radius={30} intensity={85} style={styles.speedPopover}>
+                  <GlassSurface variant="liquid" radius={30} intensity={34} style={styles.speedPopover}>
                     {SPEED_OPTIONS.map((rate) => {
                       const active = Math.abs(playbackRate - rate) < 0.01;
                       return (
-                        <TouchableOpacity
+                        <BouncyButton
                           key={rate}
+                          bounciness="gentle"
                           style={[styles.popoverItem, active && styles.popoverItemActive]}
                           onPress={() => {
                             Haptics.selectionAsync();
@@ -3027,7 +3047,7 @@ export function PlayerModal({
                             {rate.toFixed(rate % 1 === 0 ? 1 : 2).replace(/\.00$/, '.0')}x
                           </Text>
                           {active ? <Ionicons name="checkmark" size={16} color="#FFF" /> : null}
-                        </TouchableOpacity>
+                        </BouncyButton>
                       );
                     })}
                   </GlassSurface>
@@ -3036,11 +3056,12 @@ export function PlayerModal({
                 {/* More Options Popover — iOS Contextual Glass Sheet matching Image 2 */}
                 {moreMenuOpen ? (
                   <View style={styles.morePopover}>
-                    <BlurView intensity={76} tint="dark" style={StyleSheet.absoluteFill} />
+                    <BlurView intensity={34} tint="systemUltraThinMaterialDark" style={StyleSheet.absoluteFill} />
                     <View style={styles.morePopoverFill} />
 
                     {!isOfflineOnlyMode ? (
-                      <TouchableOpacity
+                      <BouncyButton
+                        bounciness="gentle"
                         activeOpacity={0.75}
                         style={styles.morePopoverRow}
                         onPress={() => {
@@ -3052,10 +3073,11 @@ export function PlayerModal({
                           <Feather name="download" size={18} color="#FFFFFF" />
                         </View>
                         <Text style={styles.morePopoverText}>Tải phim ngoại tuyến</Text>
-                      </TouchableOpacity>
+                      </BouncyButton>
                     ) : null}
 
-                    <TouchableOpacity
+                    <BouncyButton
+                      bounciness="gentle"
                       activeOpacity={0.75}
                       style={styles.morePopoverRow}
                       onPress={() => {
@@ -3067,9 +3089,10 @@ export function PlayerModal({
                         <Feather name="info" size={18} color="#FFFFFF" />
                       </View>
                       <Text style={styles.morePopoverText}>Thông tin phim & Thành viên</Text>
-                    </TouchableOpacity>
+                    </BouncyButton>
 
-                    <TouchableOpacity
+                    <BouncyButton
+                      bounciness="gentle"
                       activeOpacity={0.75}
                       style={styles.morePopoverRow}
                       onPress={() => {
@@ -3081,9 +3104,10 @@ export function PlayerModal({
                         <Feather name="tv" size={18} color="#FFFFFF" />
                       </View>
                       <Text style={styles.morePopoverText}>Chiếu lên TV</Text>
-                    </TouchableOpacity>
+                    </BouncyButton>
 
-                    <TouchableOpacity
+                    <BouncyButton
+                      bounciness="gentle"
                       activeOpacity={0.75}
                       style={styles.morePopoverRow}
                       onPress={() => {
@@ -3095,7 +3119,7 @@ export function PlayerModal({
                         <Feather name="server" size={18} color="#FFFFFF" />
                       </View>
                       <Text style={styles.morePopoverText}>Máy chủ phát phim</Text>
-                    </TouchableOpacity>
+                    </BouncyButton>
                   </View>
                 ) : null}
               </View>
@@ -3790,10 +3814,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.18)',
     zIndex: 35,
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 14 },
-    shadowOpacity: 0.55,
-    shadowRadius: 26,
+    boxShadow: GLASS_SHADOW,
+    elevation: 18,
   },
   morePopoverFill: {
     position: 'absolute',
@@ -3801,7 +3823,7 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     left: 0,
-    backgroundColor: 'rgba(20, 23, 30, 0.78)',
+    backgroundColor: 'rgba(18, 21, 28, 0.54)',
   },
   morePopoverRow: {
     flexDirection: 'row',

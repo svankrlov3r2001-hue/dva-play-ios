@@ -9,7 +9,6 @@ import {
   StyleSheet,
   Text,
   TextInput,
-  TouchableOpacity,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -17,6 +16,8 @@ import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { BouncyButton } from '../components/BouncyButton';
+import { GLASS_SHADOW } from '../constants/config';
 import { useAuth } from '../context/AuthContext';
 
 export function LoginScreen() {
@@ -94,7 +95,7 @@ export function LoginScreen() {
         >
           {/* .dva-login-card (Apple Liquid Glass container border-radius: 40px) */}
           <View style={styles.cardWrap}>
-            <BlurView intensity={58} tint="dark" style={StyleSheet.absoluteFill} />
+            <BlurView intensity={32} tint="systemUltraThinMaterialDark" style={StyleSheet.absoluteFill} />
             <View style={styles.cardTint} />
             <View style={styles.cardInner}>
               <View style={styles.cardHeader}>
@@ -161,7 +162,7 @@ export function LoginScreen() {
                     returnKeyType="done"
                     onSubmitEditing={handleLogin}
                   />
-                  <TouchableOpacity
+                  <BouncyButton
                     onPress={() => setShowPassword((v) => !v)}
                     hitSlop={10}
                     style={styles.eyeBtn}
@@ -171,7 +172,7 @@ export function LoginScreen() {
                       size={20}
                       color="rgba(255, 255, 255, 0.72)"
                     />
-                  </TouchableOpacity>
+                  </BouncyButton>
                 </View>
 
                 {error ? (
@@ -181,7 +182,8 @@ export function LoginScreen() {
                   </View>
                 ) : null}
 
-                <TouchableOpacity
+                <BouncyButton
+                  bounciness="gentle"
                   activeOpacity={0.88}
                   disabled={submitting}
                   onPress={handleLogin}
@@ -202,7 +204,7 @@ export function LoginScreen() {
                       </>
                     )}
                   </LinearGradient>
-                </TouchableOpacity>
+                </BouncyButton>
               </View>
             </View>
           </View>
@@ -240,10 +242,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.16)',
-    shadowColor: '#000',
-    shadowOpacity: 0.55,
-    shadowRadius: 30,
-    shadowOffset: { width: 0, height: 18 },
+    boxShadow: GLASS_SHADOW,
     elevation: 16,
   },
   cardTint: {
@@ -252,7 +251,7 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     left: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.28)',
+    backgroundColor: 'rgba(14, 17, 24, 0.34)',
   },
   cardInner: {
     paddingVertical: 28,

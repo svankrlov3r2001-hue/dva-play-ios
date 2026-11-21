@@ -9,7 +9,6 @@ import {
   Switch,
   Text,
   TextInput,
-  TouchableOpacity,
   useWindowDimensions,
   View,
 } from 'react-native';
@@ -17,6 +16,7 @@ import { Feather, Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { showAppAlert } from './AppAlertModal';
+import { BouncyButton } from './BouncyButton';
 import { GlassSurface } from './GlassSurface';
 import { IosRulerSlider } from './IosRulerSlider';
 import { COLORS } from '../constants/config';
@@ -173,15 +173,15 @@ export function PlayerSubtitleSettingsModal({
       return (
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ gap: 12 }}>
           <View style={styles.langToggleRow}>
-            <TouchableOpacity
+            <BouncyButton
               activeOpacity={0.8}
               style={[styles.langPill, settings.subShowVi && styles.langPillActive]}
               onPress={handleToggleVi}
             >
               <Text style={styles.langPillTxt}>Tiếng Việt</Text>
-            </TouchableOpacity>
+            </BouncyButton>
 
-            <TouchableOpacity
+            <BouncyButton
               activeOpacity={0.8}
               style={[styles.swapBtn, settings.subReverse && styles.swapBtnActive]}
               onPress={() => {
@@ -190,35 +190,35 @@ export function PlayerSubtitleSettingsModal({
               }}
             >
               <Ionicons name="swap-vertical" size={18} color="#FFF" />
-            </TouchableOpacity>
+            </BouncyButton>
 
-            <TouchableOpacity
+            <BouncyButton
               activeOpacity={0.8}
               style={[styles.langPill, settings.subShowEn && styles.langPillActive]}
               onPress={handleToggleEn}
             >
               <Text style={styles.langPillTxt}>Tiếng Anh</Text>
-            </TouchableOpacity>
+            </BouncyButton>
           </View>
 
           <View style={styles.tilesGrid}>
-            <TouchableOpacity style={styles.tileBtn} onPress={() => setSubView('font')}>
+            <BouncyButton style={styles.tileBtn} onPress={() => setSubView('font')}>
               <Ionicons name="text-outline" size={20} color="#FFF" />
               <Text style={styles.tileTitle}>Phông chữ</Text>
               <Text style={styles.tileSub} numberOfLines={1}>
                 {activeFontLabel}
               </Text>
-            </TouchableOpacity>
+            </BouncyButton>
 
-            <TouchableOpacity style={styles.tileBtn} onPress={() => setSubView('color')}>
+            <BouncyButton style={styles.tileBtn} onPress={() => setSubView('color')}>
               <Ionicons name="color-palette-outline" size={20} color="#FFF" />
               <Text style={styles.tileTitle}>Màu sắc</Text>
               <Text style={styles.tileSub} numberOfLines={1}>
                 {activeColorLabel}
               </Text>
-            </TouchableOpacity>
+            </BouncyButton>
 
-            <TouchableOpacity style={styles.tileBtn} onPress={() => setSubView('layout')}>
+            <BouncyButton style={styles.tileBtn} onPress={() => setSubView('layout')}>
               <Ionicons name="resize-outline" size={20} color="#FFF" />
               <Text style={styles.tileTitle}>Kích thước & Vị trí</Text>
               <Text style={styles.tileSub} numberOfLines={1}>
@@ -226,29 +226,29 @@ export function PlayerSubtitleSettingsModal({
                   ? 'Tự động'
                   : `Cỡ ${settings.subFontSizeStep} • ${settings.subPositionPct}%`}
               </Text>
-            </TouchableOpacity>
+            </BouncyButton>
 
-            <TouchableOpacity style={styles.tileBtn} onPress={() => setSubView('outline')}>
+            <BouncyButton style={styles.tileBtn} onPress={() => setSubView('outline')}>
               <Ionicons name="sparkles-outline" size={20} color="#FFF" />
               <Text style={styles.tileTitle}>Viền chữ</Text>
               <Text style={styles.tileSub} numberOfLines={1}>
                 {activeOutlineLabel}
               </Text>
-            </TouchableOpacity>
+            </BouncyButton>
 
-            <TouchableOpacity style={styles.tileBtn} onPress={() => setSubView('delay')}>
+            <BouncyButton style={styles.tileBtn} onPress={() => setSubView('delay')}>
               <Ionicons name="hourglass-outline" size={20} color="#FFF" />
               <Text style={styles.tileTitle}>Độ trễ</Text>
               <Text style={styles.tileSub}>{settings.subDelaySec.toFixed(2)}s</Text>
-            </TouchableOpacity>
+            </BouncyButton>
 
-            <TouchableOpacity style={styles.tileBtn} onPress={() => setSubView('extend')}>
+            <BouncyButton style={styles.tileBtn} onPress={() => setSubView('extend')}>
               <Ionicons name="swap-horizontal-outline" size={20} color="#FFF" />
               <Text style={styles.tileTitle}>Kéo dài</Text>
               <Text style={styles.tileSub}>{settings.subExtendSec.toFixed(2)}s</Text>
-            </TouchableOpacity>
+            </BouncyButton>
 
-            <TouchableOpacity
+            <BouncyButton
               style={[styles.tileBtn, Boolean(settings.subTranslateLang) && styles.tileBtnActive]}
               onPress={() => setSubView('translate')}
             >
@@ -257,9 +257,9 @@ export function PlayerSubtitleSettingsModal({
               <Text style={styles.tileSub} numberOfLines={1}>
                 {activeTransLabel}
               </Text>
-            </TouchableOpacity>
+            </BouncyButton>
 
-            <TouchableOpacity
+            <BouncyButton
               style={[styles.tileBtn, settings.subAiVoiceEnabled && styles.tileBtnActive]}
               onPress={() => setSubView('aivoice')}
             >
@@ -268,9 +268,9 @@ export function PlayerSubtitleSettingsModal({
               <Text style={styles.tileSub} numberOfLines={1}>
                 {activeVoiceLabel}
               </Text>
-            </TouchableOpacity>
+            </BouncyButton>
 
-            <TouchableOpacity
+            <BouncyButton
               style={[styles.tileBtn, styles.tileBtnReload]}
               disabled={isReloadingSubtitles}
               onPress={() => {
@@ -285,17 +285,18 @@ export function PlayerSubtitleSettingsModal({
               )}
               <Text style={[styles.tileTitle, { color: '#93C5FD' }]}>Nạp lại</Text>
               <Text style={styles.tileSub}>Tải mới phụ đề</Text>
-            </TouchableOpacity>
+            </BouncyButton>
           </View>
 
-          <TouchableOpacity
+          <BouncyButton
+            bounciness="gentle"
             activeOpacity={0.8}
             style={styles.resetBannerBtn}
             onPress={handleResetAll}
           >
             <Feather name="rotate-ccw" size={15} color="#FCA5A5" />
             <Text style={styles.resetBannerTxt}>Đặt lại tất cả về mặc định</Text>
-          </TouchableOpacity>
+          </BouncyButton>
         </ScrollView>
       );
     }
@@ -306,8 +307,9 @@ export function PlayerSubtitleSettingsModal({
           {SUBTITLE_FONT_OPTIONS.map((opt) => {
             const selected = settings.subFont === opt.value;
             return (
-              <TouchableOpacity
+              <BouncyButton
                 key={opt.value}
+                bounciness="gentle"
                 style={[styles.listOption, selected && styles.listOptionSelected]}
                 onPress={() => {
                   Haptics.selectionAsync();
@@ -323,7 +325,7 @@ export function PlayerSubtitleSettingsModal({
                   {opt.label}
                 </Text>
                 {selected ? <Ionicons name="checkmark-circle" size={18} color={COLORS.accent} /> : null}
-              </TouchableOpacity>
+              </BouncyButton>
             );
           })}
         </ScrollView>
@@ -338,7 +340,7 @@ export function PlayerSubtitleSettingsModal({
             const c = SUBTITLE_COLOR_PALETTE[key];
             const selected = settings.subColor === key;
             return (
-              <TouchableOpacity
+              <BouncyButton
                 key={key}
                 style={[styles.colorCell, selected && styles.colorCellSelected]}
                 onPress={() => {
@@ -348,7 +350,7 @@ export function PlayerSubtitleSettingsModal({
               >
                 <View style={[styles.colorSwatch, { backgroundColor: c.main }]} />
                 <Text style={styles.colorLabel}>{c.label}</Text>
-              </TouchableOpacity>
+              </BouncyButton>
             );
           })}
         </View>
@@ -446,7 +448,7 @@ export function PlayerSubtitleSettingsModal({
           {SUBTITLE_OUTLINE_OPTIONS.map((opt) => {
             const selected = settings.subOutline === opt.value;
             return (
-              <TouchableOpacity
+              <BouncyButton
                 key={opt.value}
                 style={[styles.outlineCell, selected && styles.listOptionSelected]}
                 onPress={() => {
@@ -455,7 +457,7 @@ export function PlayerSubtitleSettingsModal({
                 }}
               >
                 <Text style={styles.listOptionTxt}>{opt.label}</Text>
-              </TouchableOpacity>
+              </BouncyButton>
             );
           })}
         </View>
@@ -498,7 +500,7 @@ export function PlayerSubtitleSettingsModal({
           </Text>
           <View style={styles.stepperControls}>
             {[-5, -1, -0.25, 0.25, 1, 5].map((d) => (
-              <TouchableOpacity
+              <BouncyButton
                 key={d}
                 style={styles.stepBtn}
                 onPress={() => updateDelta(d)}
@@ -506,7 +508,7 @@ export function PlayerSubtitleSettingsModal({
                 <Text style={styles.stepBtnTxt}>
                   {d > 0 ? `+${d}` : `${d}`}s
                 </Text>
-              </TouchableOpacity>
+              </BouncyButton>
             ))}
           </View>
         </ScrollView>
@@ -526,7 +528,7 @@ export function PlayerSubtitleSettingsModal({
               onChangeText={setLangQuery}
             />
             {settings.subTranslateLang ? (
-              <TouchableOpacity
+              <BouncyButton
                 style={styles.turnOffTag}
                 onPress={() => {
                   Haptics.selectionAsync();
@@ -534,7 +536,7 @@ export function PlayerSubtitleSettingsModal({
                 }}
               >
                 <Text style={styles.turnOffTagTxt}>Tắt dịch</Text>
-              </TouchableOpacity>
+              </BouncyButton>
             ) : null}
           </View>
           <FlatList
@@ -545,7 +547,8 @@ export function PlayerSubtitleSettingsModal({
             renderItem={({ item }) => {
               const selected = settings.subTranslateLang === item.code;
               return (
-                <TouchableOpacity
+                <BouncyButton
+                  bounciness="gentle"
                   style={[styles.listOption, selected && styles.listOptionSelected]}
                   onPress={() => {
                     Haptics.selectionAsync();
@@ -559,7 +562,7 @@ export function PlayerSubtitleSettingsModal({
                   {selected ? (
                     <Ionicons name="checkmark-circle" size={18} color={COLORS.accent} />
                   ) : null}
-                </TouchableOpacity>
+                </BouncyButton>
               );
             }}
           />
@@ -596,8 +599,9 @@ export function PlayerSubtitleSettingsModal({
               ? !settings.subAiVoiceEnabled
               : settings.subAiVoiceEnabled && settings.subAiVoiceMode === opt.value;
           return (
-            <TouchableOpacity
+            <BouncyButton
               key={opt.value}
+              bounciness="gentle"
               style={[styles.listOption, isSelected && styles.listOptionSelected]}
               onPress={() => {
                 Haptics.selectionAsync();
@@ -618,7 +622,7 @@ export function PlayerSubtitleSettingsModal({
               {isSelected ? (
                 <Ionicons name="checkmark-circle" size={18} color={COLORS.accent} />
               ) : null}
-            </TouchableOpacity>
+            </BouncyButton>
           );
         })}
       </ScrollView>
@@ -639,13 +643,13 @@ export function PlayerSubtitleSettingsModal({
         <GlassSurface
           variant="liquid"
           radius={40}
-          intensity={85}
+          intensity={34}
           style={[styles.cardWrap, { width: cardWidth, height: cardHeight }]}
         >
           <View style={styles.inner}>
             <View style={styles.header}>
               {subView !== 'grid' ? (
-                <TouchableOpacity
+                <BouncyButton
                   style={styles.backIconBtn}
                   onPress={() => {
                     Haptics.selectionAsync();
@@ -653,14 +657,14 @@ export function PlayerSubtitleSettingsModal({
                   }}
                 >
                   <Ionicons name="chevron-back" size={20} color="#FFF" />
-                </TouchableOpacity>
+                </BouncyButton>
               ) : (
                 <View style={styles.headerIconPlaceholder} />
               )}
               <Text style={styles.headerTitle}>{renderHeaderTitle()}</Text>
-              <TouchableOpacity style={styles.closeBtn} onPress={handleClose}>
+              <BouncyButton style={styles.closeBtn} onPress={handleClose}>
                 <Ionicons name="close" size={20} color="#FFF" />
-              </TouchableOpacity>
+              </BouncyButton>
             </View>
 
             {renderBody()}

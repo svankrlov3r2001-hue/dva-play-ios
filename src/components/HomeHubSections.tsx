@@ -4,15 +4,15 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TouchableOpacity,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
-import { COLORS } from '../constants/config';
+import { COLORS, GLASS_SHADOW } from '../constants/config';
 import { CountryHubRow, MovieItem, TopicItem } from '../types/models';
+import { BouncyButton } from './BouncyButton';
 import { LazyImage } from './LazyImage';
 import { MovieCard } from './MovieCard';
 
@@ -41,8 +41,9 @@ export function TopicGridSection({
       contentContainerStyle={styles.topicsScroll}
     >
       {topics.map((topic) => (
-        <TouchableOpacity
+        <BouncyButton
           key={topic.id}
+          bounciness="gentle"
           activeOpacity={0.86}
           onPress={() => {
             Haptics.selectionAsync();
@@ -50,7 +51,7 @@ export function TopicGridSection({
           }}
           style={styles.topicCardWrap}
         >
-          <BlurView intensity={42} tint="dark" style={StyleSheet.absoluteFill} />
+          <BlurView intensity={28} tint="systemUltraThinMaterialDark" style={StyleSheet.absoluteFill} />
           <LinearGradient
             colors={TOPIC_GRADIENTS[topic.theme] || TOPIC_GRADIENTS.dark}
             start={{ x: 0, y: 0 }}
@@ -64,7 +65,7 @@ export function TopicGridSection({
               {topic.subtitle}
             </Text>
           </LinearGradient>
-        </TouchableOpacity>
+        </BouncyButton>
       ))}
     </ScrollView>
   );
@@ -97,7 +98,7 @@ export function AnimeHeroSection({
   return (
     <View style={styles.animeWrapper}>
       <View style={styles.animeCard}>
-        <BlurView intensity={45} tint="dark" style={StyleSheet.absoluteFill} />
+        <BlurView intensity={28} tint="systemUltraThinMaterialDark" style={StyleSheet.absoluteFill} />
         <LazyImage
           uri={active.poster_url || active.thumbnail_url}
           style={styles.animeBgImg}
@@ -162,7 +163,7 @@ export function AnimeHeroSection({
           ) : null}
 
           <View style={styles.animeActions}>
-            <TouchableOpacity
+            <BouncyButton
               activeOpacity={0.86}
               onPress={() => {
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -178,10 +179,10 @@ export function AnimeHeroSection({
               >
                 <Ionicons name="play" size={20} color="#FFF" style={{ marginLeft: 2 }} />
               </LinearGradient>
-            </TouchableOpacity>
+            </BouncyButton>
 
             <View style={styles.animeActionGroup}>
-              <TouchableOpacity
+              <BouncyButton
                 onPress={() => onToggleWishlist(active)}
                 style={styles.groupBtn}
               >
@@ -190,14 +191,14 @@ export function AnimeHeroSection({
                   size={19}
                   color={active.in_wishlist ? '#ff4b5c' : '#FFF'}
                 />
-              </TouchableOpacity>
+              </BouncyButton>
               <View style={styles.groupDivider} />
-              <TouchableOpacity
+              <BouncyButton
                 onPress={() => onOpenDetail(active)}
                 style={styles.groupBtn}
               >
                 <Ionicons name="information-circle-outline" size={20} color="#FFF" />
-              </TouchableOpacity>
+              </BouncyButton>
             </View>
           </View>
         </View>
@@ -212,7 +213,7 @@ export function AnimeHeroSection({
         {items.map((item, idx) => {
           const isSelected = idx === selectedIdx;
           return (
-            <TouchableOpacity
+            <BouncyButton
               key={item.videos_id}
               activeOpacity={0.85}
               onPress={() => {
@@ -226,7 +227,7 @@ export function AnimeHeroSection({
                 style={styles.thumbImg}
                 resizeMode="cover"
               />
-            </TouchableOpacity>
+            </BouncyButton>
           );
         })}
       </ScrollView>
@@ -256,7 +257,7 @@ export function CountryHubBoxSection({
   return (
     <View style={styles.hubOuter}>
       <View style={styles.hubBox}>
-        <BlurView intensity={45} tint="dark" style={StyleSheet.absoluteFill} />
+        <BlurView intensity={28} tint="systemUltraThinMaterialDark" style={StyleSheet.absoluteFill} />
         <View style={styles.hubTint} />
 
         {rows.map((row, rowIdx) => (
@@ -273,14 +274,14 @@ export function CountryHubBoxSection({
               >
                 {row.title.replace(/\n/g, ' ')}
               </Text>
-              <TouchableOpacity
+              <BouncyButton
                 onPress={() => {
                   Haptics.selectionAsync();
                   onPressMore(row.id);
                 }}
               >
                 <Text style={styles.hubMore}>Xem thêm ›</Text>
-              </TouchableOpacity>
+              </BouncyButton>
             </View>
 
             <FlatList
@@ -315,6 +316,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.16)',
+    boxShadow: GLASS_SHADOW,
   },
   topicInner: {
     flex: 1,
@@ -343,6 +345,7 @@ const styles = StyleSheet.create({
     minHeight: 332,
     position: 'relative',
     backgroundColor: '#0E121D',
+    boxShadow: GLASS_SHADOW,
   },
   animeBgImg: {
     position: 'absolute',

@@ -11,7 +11,6 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TouchableOpacity,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -19,6 +18,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { showAppAlert } from '../components/AppAlertModal';
+import { BouncyButton } from '../components/BouncyButton';
 import { GlassSurface } from '../components/GlassSurface';
 import { Hero3DCarousel } from '../components/Hero3DCarousel';
 import {
@@ -345,9 +345,10 @@ export function HomeScreen({
     <View style={styles.container}>
       {/* Floating Apple Glass Header matching dva_play/templates/header.php */}
       <View style={[styles.floatingHeader, { top: insets.top + 8 }]}>
-        <GlassSurface intensity={64} radius={26} style={styles.headerCapsule}>
+        <GlassSurface intensity={28} radius={26} style={styles.headerCapsule}>
           <View style={styles.headerRow}>
-            <TouchableOpacity
+            <BouncyButton
+              bounciness="gentle"
               activeOpacity={0.85}
               onPress={() => {
                 Haptics.selectionAsync();
@@ -361,10 +362,10 @@ export function HomeScreen({
                 resizeMode="contain"
               />
               <Text style={styles.brandText}>Đặng Việt Anh</Text>
-            </TouchableOpacity>
+            </BouncyButton>
 
             <View style={styles.headerActions}>
-              <TouchableOpacity
+              <BouncyButton
                 style={styles.iconCircle}
                 accessibilityLabel="Quét QR đăng nhập nhanh"
                 onPress={() => {
@@ -373,8 +374,8 @@ export function HomeScreen({
                 }}
               >
                 <Ionicons name="qr-code-outline" size={18} color="#FFF" />
-              </TouchableOpacity>
-              <TouchableOpacity
+              </BouncyButton>
+              <BouncyButton
                 style={styles.iconCircle}
                 onPress={() => {
                   Haptics.selectionAsync();
@@ -382,11 +383,11 @@ export function HomeScreen({
                 }}
               >
                 <Ionicons name="tv-outline" size={18} color="#FFF" />
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.iconCircle} onPress={openNotifications}>
+              </BouncyButton>
+              <BouncyButton style={styles.iconCircle} onPress={openNotifications}>
                 <Ionicons name="notifications-outline" size={18} color="#FFF" />
-              </TouchableOpacity>
-              <TouchableOpacity
+              </BouncyButton>
+              <BouncyButton
                 activeOpacity={0.85}
                 style={styles.avatarCircleBtn}
                 onPress={() => {
@@ -404,7 +405,7 @@ export function HomeScreen({
                 ) : (
                   <Ionicons name="person" size={17} color="#FFF" />
                 )}
-              </TouchableOpacity>
+              </BouncyButton>
             </View>
           </View>
         </GlassSurface>
@@ -422,7 +423,7 @@ export function HomeScreen({
             const label = isGenreBtn && selectedGenreName ? selectedGenreName : tab.label;
 
             return (
-              <TouchableOpacity
+              <BouncyButton
                 key={tab.key}
                 activeOpacity={0.82}
                 onPress={() => {
@@ -435,7 +436,7 @@ export function HomeScreen({
                 }}
               >
                 <GlassSurface
-                  intensity={active ? 72 : 48}
+                  intensity={active ? 32 : 26}
                   radius={20}
                   style={[styles.modeChip, active && styles.modeChipActive]}
                 >
@@ -452,7 +453,7 @@ export function HomeScreen({
                     ) : null}
                   </View>
                 </GlassSurface>
-              </TouchableOpacity>
+              </BouncyButton>
             );
           })}
         </ScrollView>
@@ -592,19 +593,19 @@ export function HomeScreen({
             onPress={() => setGenreSheetOpen(false)}
           />
           <GlassSurface
-            intensity={75}
+            intensity={34}
             radius={30}
             style={[styles.genreCard, { marginTop: insets.top + 96 }]}
           >
             <View style={styles.notifHead}>
               <Text style={styles.notifTitle}>Chọn Thể loại</Text>
-              <TouchableOpacity onPress={() => setGenreSheetOpen(false)}>
+              <BouncyButton onPress={() => setGenreSheetOpen(false)}>
                 <Ionicons name="close" size={20} color="#FFF" />
-              </TouchableOpacity>
+              </BouncyButton>
             </View>
             <ScrollView style={{ maxHeight: 360 }} showsVerticalScrollIndicator={false}>
               <View style={styles.genreGrid}>
-                <TouchableOpacity
+                <BouncyButton
                   onPress={() => {
                     Haptics.selectionAsync();
                     handleSelectCategory('home', '', '');
@@ -619,11 +620,11 @@ export function HomeScreen({
                   >
                     Tất cả thể loại
                   </Text>
-                </TouchableOpacity>
+                </BouncyButton>
                 {genresList.map((g) => {
                   const isSel = selectedGenreId === String(g.id);
                   return (
-                    <TouchableOpacity
+                    <BouncyButton
                       key={g.id}
                       onPress={() => {
                         Haptics.selectionAsync();
@@ -637,7 +638,7 @@ export function HomeScreen({
                       >
                         {g.name}
                       </Text>
-                    </TouchableOpacity>
+                    </BouncyButton>
                   );
                 })}
               </View>
@@ -654,23 +655,24 @@ export function HomeScreen({
             onPress={() => setNotifOpen(false)}
           />
           <GlassSurface
-            intensity={70}
+            intensity={34}
             radius={28}
             style={[styles.notifCard, { marginTop: insets.top + 66 }]}
           >
             <View style={styles.notifHead}>
               <Text style={styles.notifTitle}>Phim mới cập nhật</Text>
-              <TouchableOpacity onPress={() => setNotifOpen(false)}>
+              <BouncyButton onPress={() => setNotifOpen(false)}>
                 <Ionicons name="close" size={20} color="#FFF" />
-              </TouchableOpacity>
+              </BouncyButton>
             </View>
             <ScrollView style={{ maxHeight: 340 }}>
               {notifications.length === 0 ? (
                 <Text style={styles.notifEmpty}>Đang tải thông báo...</Text>
               ) : (
                 notifications.map((n) => (
-                  <TouchableOpacity
+                  <BouncyButton
                     key={n.videos_id}
+                    bounciness="gentle"
                     style={styles.notifRow}
                     onPress={() => {
                       setNotifOpen(false);
@@ -691,7 +693,7 @@ export function HomeScreen({
                       </Text>
                     </View>
                     <Ionicons name="chevron-forward" size={16} color={COLORS.muted} />
-                  </TouchableOpacity>
+                  </BouncyButton>
                 ))
               )}
             </ScrollView>

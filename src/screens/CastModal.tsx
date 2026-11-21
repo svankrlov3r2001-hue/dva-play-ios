@@ -11,7 +11,6 @@ import {
   StyleSheet,
   Text,
   TextInput,
-  TouchableOpacity,
   useWindowDimensions,
   View,
 } from 'react-native';
@@ -21,6 +20,7 @@ import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AmbientAppBackground } from '../components/AmbientAppBackground';
 import { showAppAlert } from '../components/AppAlertModal';
+import { BouncyButton } from '../components/BouncyButton';
 import { GlassSurface } from '../components/GlassSurface';
 import { COLORS } from '../constants/config';
 import {
@@ -283,12 +283,12 @@ export function CastModal({
         <View style={styles.permBox}>
           <Ionicons name="camera-outline" size={34} color={COLORS.muted} />
           <Text style={styles.permText}>Cần quyền Camera để quét mã QR trên TV</Text>
-          <TouchableOpacity
+          <BouncyButton
             style={styles.permBtn}
             onPress={() => requestPermission().catch(() => {})}
           >
             <Text style={styles.permBtnTxt}>Cấp quyền Camera</Text>
-          </TouchableOpacity>
+          </BouncyButton>
         </View>
       )}
       <View
@@ -312,7 +312,7 @@ export function CastModal({
           value={manualCode}
           onChangeText={setManualCode}
         />
-        <TouchableOpacity
+        <BouncyButton
           style={styles.connectBtn}
           disabled={pairing}
           onPress={() => handlePair(manualCode)}
@@ -322,7 +322,7 @@ export function CastModal({
           ) : (
             <Text style={styles.connectBtnTxt}>Kết nối</Text>
           )}
-        </TouchableOpacity>
+        </BouncyButton>
       </View>
     </View>
   );
@@ -356,7 +356,8 @@ export function CastModal({
         </View>
 
         {movieToCast ? (
-          <TouchableOpacity
+          <BouncyButton
+            bounciness="gentle"
             style={styles.pushBtn}
             onPress={() => pushMovieToTv(senderToken, movieToCast)}
           >
@@ -364,35 +365,35 @@ export function CastModal({
             <Text style={styles.pushBtnText} numberOfLines={1}>
               Phát "{movieToCast.title}" lên TV
             </Text>
-          </TouchableOpacity>
+          </BouncyButton>
         ) : null}
 
         <View style={styles.controlsRow}>
-          <TouchableOpacity
+          <BouncyButton
             style={styles.ctrlBtn}
             onPress={() => sendCommand('seek_rel', { delta: -15 })}
           >
             <Ionicons name="play-back" size={22} color="#FFF" />
             <Text style={styles.ctrlLabel}>-15s</Text>
-          </TouchableOpacity>
+          </BouncyButton>
 
-          <TouchableOpacity
+          <BouncyButton
             style={[styles.ctrlBtn, styles.ctrlPlay]}
             onPress={() => sendCommand('toggle_play')}
           >
             <Ionicons name={tvPaused ? 'play' : 'pause'} size={28} color="#FFF" />
             <Text style={styles.ctrlLabel}>{tvPaused ? 'Phát' : 'Tạm dừng'}</Text>
-          </TouchableOpacity>
+          </BouncyButton>
 
-          <TouchableOpacity
+          <BouncyButton
             style={styles.ctrlBtn}
             onPress={() => sendCommand('seek_rel', { delta: 15 })}
           >
             <Ionicons name="play-forward" size={22} color="#FFF" />
             <Text style={styles.ctrlLabel}>+15s</Text>
-          </TouchableOpacity>
+          </BouncyButton>
 
-          <TouchableOpacity
+          <BouncyButton
             style={styles.ctrlBtn}
             onPress={() => sendCommand('toggle_mute')}
           >
@@ -402,12 +403,12 @@ export function CastModal({
               color="#FFF"
             />
             <Text style={styles.ctrlLabel}>{tvMuted ? 'Bật tiếng' : 'Tắt tiếng'}</Text>
-          </TouchableOpacity>
+          </BouncyButton>
         </View>
 
-        <TouchableOpacity style={styles.stopBtn} onPress={handleDisconnect}>
+        <BouncyButton bounciness="gentle" style={styles.stopBtn} onPress={handleDisconnect}>
           <Text style={styles.stopTxt}>Ngắt kết nối TV</Text>
-        </TouchableOpacity>
+        </BouncyButton>
       </View>
     );
   };
@@ -436,7 +437,7 @@ export function CastModal({
           >
             <GlassSurface
               variant="liquid"
-              intensity={85}
+              intensity={34}
               radius={40}
               style={{ width: cardWidth, height: cardHeight }}
             >
@@ -452,7 +453,7 @@ export function CastModal({
                       </Text>
                     ) : null}
                   </View>
-                  <TouchableOpacity
+                  <BouncyButton
                     style={styles.closeBtn}
                     hitSlop={10}
                     onPress={() => {
@@ -461,7 +462,7 @@ export function CastModal({
                     }}
                   >
                     <Ionicons name="close" size={22} color="#FFF" />
-                  </TouchableOpacity>
+                  </BouncyButton>
                 </View>
 
                 {senderToken ? (
@@ -523,14 +524,14 @@ export function CastModal({
       >
         <View style={styles.header}>
           <Text style={styles.title}>DVA Cast lên TV</Text>
-          <TouchableOpacity style={styles.closeBtn} onPress={onClose}>
+          <BouncyButton style={styles.closeBtn} onPress={onClose}>
             <Ionicons name="close" size={22} color="#FFF" />
-          </TouchableOpacity>
+          </BouncyButton>
         </View>
 
         {senderToken ? (
           <View style={styles.remoteWrap}>
-            <GlassSurface variant="liquid" intensity={85} radius={40} style={styles.remoteCard}>
+            <GlassSurface variant="liquid" intensity={34} radius={40} style={styles.remoteCard}>
               {remoteControlsContent(false)}
             </GlassSurface>
           </View>
@@ -545,7 +546,7 @@ export function CastModal({
 
             {cameraBox(false)}
 
-            <GlassSurface variant="liquid" intensity={85} radius={40} style={styles.manualCard}>
+            <GlassSurface variant="liquid" intensity={34} radius={40} style={styles.manualCard}>
               {manualInputBox}
             </GlassSurface>
           </ScrollView>

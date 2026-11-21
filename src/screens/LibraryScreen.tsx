@@ -8,7 +8,6 @@ import {
   StyleProp,
   StyleSheet,
   Text,
-  TouchableOpacity,
   useWindowDimensions,
   View,
 } from 'react-native';
@@ -17,6 +16,7 @@ import * as Haptics from 'expo-haptics';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { showAppAlert } from '../components/AppAlertModal';
+import { BouncyButton } from '../components/BouncyButton';
 import { GlassSurface } from '../components/GlassSurface';
 import { MovieCard } from '../components/MovieCard';
 import { COLORS, RADII } from '../constants/config';
@@ -330,7 +330,7 @@ export function LibraryScreen({
       : undefined;
 
     return (
-      <GlassSurface intensity={42} radius={RADII.md} style={styles.offlineCard}>
+      <GlassSurface intensity={28} radius={RADII.md} style={styles.offlineCard}>
         <OfflinePosterImage
           localUri={item.local_poster_uri}
           remoteUri={item.thumbnail_url || item.poster_url}
@@ -364,14 +364,14 @@ export function LibraryScreen({
         <View style={styles.offlineActions}>
           {item.status === 'completed' ? (
             <>
-              <TouchableOpacity
+              <BouncyButton
                 style={styles.playCircle}
                 onPress={() => onPlayOffline(item, playableGroup)}
               >
                 <Ionicons name="play" size={16} color="#FFF" />
-              </TouchableOpacity>
+              </BouncyButton>
               {!isHls ? (
-                <TouchableOpacity
+                <BouncyButton
                   style={styles.actionCircle}
                   onPress={() =>
                     exportOfflineToFiles(item.local_uri).catch((err) => {
@@ -380,23 +380,23 @@ export function LibraryScreen({
                   }
                 >
                   <Ionicons name="share-outline" size={16} color="#FFF" />
-                </TouchableOpacity>
+                </BouncyButton>
               ) : null}
             </>
           ) : (
-            <TouchableOpacity
+            <BouncyButton
               style={styles.actionCircle}
               onPress={() => void restartOfflineDownload(item.id)}
             >
               <Ionicons name="refresh" size={16} color="#5AC8FA" />
-            </TouchableOpacity>
+            </BouncyButton>
           )}
-          <TouchableOpacity
+          <BouncyButton
             style={styles.actionCircle}
             onPress={() => handleDeleteOffline(item)}
           >
             <Ionicons name="trash-outline" size={16} color="#FCA5A5" />
-          </TouchableOpacity>
+          </BouncyButton>
         </View>
       </GlassSurface>
     );
@@ -453,7 +453,8 @@ export function LibraryScreen({
     };
 
     return (
-      <TouchableOpacity
+      <BouncyButton
+        bounciness="gentle"
         activeOpacity={0.86}
         onPress={handleCardPress}
         style={{ width: gridCardWidth, marginBottom: 16 }}
@@ -476,14 +477,14 @@ export function LibraryScreen({
           </View>
 
           {/* Top-right delete button */}
-          <TouchableOpacity
+          <BouncyButton
             onPress={handleCardDelete}
             hitSlop={6}
             style={styles.gridRemoveBtn}
             accessibilityLabel="Xóa khỏi Ngoại tuyến"
           >
             <Ionicons name="close" size={14} color="#FFFFFF" />
-          </TouchableOpacity>
+          </BouncyButton>
 
           {/* Bottom split badge matching Dang xem cards */}
           <View style={[styles.floatingSplitBadgesCenter, resumePct > 0 && { bottom: 12 }]}>
@@ -518,14 +519,15 @@ export function LibraryScreen({
         <Text style={styles.posterSub} numberOfLines={1}>
           {subLabel}
         </Text>
-      </TouchableOpacity>
+      </BouncyButton>
     );
   };
 
   const renderOfflineHeader = () => (
     <View style={{ gap: 10, marginBottom: 12 }}>
       {openedSeriesGroup ? (
-        <TouchableOpacity
+        <BouncyButton
+          bounciness="gentle"
           style={styles.seriesBackHeader}
           onPress={() => {
             Haptics.selectionAsync();
@@ -536,7 +538,7 @@ export function LibraryScreen({
           <Text style={styles.seriesBackTitle} numberOfLines={1}>
             {openedSeriesGroup.title} ({openedSeriesGroup.episodes.length} tập)
           </Text>
-        </TouchableOpacity>
+        </BouncyButton>
       ) : null}
 
       {!offlineOnlyMode && activeDownloads.length > 0 ? (
@@ -547,7 +549,7 @@ export function LibraryScreen({
           {activeDownloads.map((dl) => (
             <GlassSurface
               key={dl.id}
-              intensity={48}
+              intensity={28}
               radius={RADII.md}
               style={styles.activeDlCard}
             >
@@ -562,7 +564,7 @@ export function LibraryScreen({
                   </Text>
                 </View>
                 <View style={styles.offlineActions}>
-                  <TouchableOpacity
+                  <BouncyButton
                     style={styles.actionCircle}
                     onPress={() => {
                       Haptics.selectionAsync();
@@ -571,35 +573,35 @@ export function LibraryScreen({
                     accessibilityLabel="Khởi động lại liên kết tải"
                   >
                     <Feather name="refresh-cw" size={14} color="#93C5FD" />
-                  </TouchableOpacity>
+                  </BouncyButton>
                   {dl.status === 'downloading' ? (
-                    <TouchableOpacity
+                    <BouncyButton
                       style={styles.actionCircle}
                       onPress={() => pauseOfflineDownload(dl.id)}
                     >
                       <Ionicons name="pause" size={15} color="#FFFFFF" />
-                    </TouchableOpacity>
+                    </BouncyButton>
                   ) : dl.status === 'queued' ? (
-                    <TouchableOpacity
+                    <BouncyButton
                       style={styles.actionCircle}
                       onPress={() => pauseOfflineDownload(dl.id)}
                     >
                       <Ionicons name="pause" size={15} color="#FFFFFF" />
-                    </TouchableOpacity>
+                    </BouncyButton>
                   ) : (
-                    <TouchableOpacity
+                    <BouncyButton
                       style={styles.actionCircle}
                       onPress={() => resumeOfflineDownload(dl.id)}
                     >
                       <Ionicons name="play" size={15} color="#FFFFFF" />
-                    </TouchableOpacity>
+                    </BouncyButton>
                   )}
-                  <TouchableOpacity
+                  <BouncyButton
                     style={styles.actionCircle}
                     onPress={() => cancelOfflineDownload(dl.id)}
                   >
                     <Ionicons name="close" size={16} color="#FCA5A5" />
-                  </TouchableOpacity>
+                  </BouncyButton>
                 </View>
               </View>
               <View style={styles.dlTrack}>
@@ -643,7 +645,7 @@ export function LibraryScreen({
       </Text>
 
       {offlineOnlyMode ? (
-        <GlassSurface intensity={48} radius={18} style={styles.offlineModeBanner}>
+        <GlassSurface intensity={28} radius={18} style={styles.offlineModeBanner}>
           <View style={styles.offlineBannerLeft}>
             <Ionicons name="cloud-offline-outline" size={18} color="#FBBF24" />
             <View style={{ flex: 1 }}>
@@ -654,7 +656,7 @@ export function LibraryScreen({
             </View>
           </View>
           {onReconnectOnline ? (
-            <TouchableOpacity
+            <BouncyButton
               style={styles.reconnectBtn}
               onPress={() => {
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -663,11 +665,11 @@ export function LibraryScreen({
             >
               <Ionicons name="refresh" size={14} color="#FFF" />
               <Text style={styles.reconnectTxt}>Kết nối lại</Text>
-            </TouchableOpacity>
+            </BouncyButton>
           ) : null}
         </GlassSurface>
       ) : (
-        <GlassSurface intensity={52} radius={18} style={styles.segmentWrap}>
+        <GlassSurface intensity={28} radius={18} style={styles.segmentWrap}>
           {(
             [
               { key: 'wishlist', label: `Yêu thích (${wishlist.length})` },
@@ -675,7 +677,7 @@ export function LibraryScreen({
               { key: 'offline', label: `Ngoại tuyến (${offlineItems.length})` },
             ] as const
           ).map((seg) => (
-            <TouchableOpacity
+            <BouncyButton
               key={seg.key}
               style={[styles.segmentBtn, activeTab === seg.key && styles.segmentBtnActive]}
               onPress={() => {
@@ -687,7 +689,7 @@ export function LibraryScreen({
               <Text style={[styles.segmentText, activeTab === seg.key && styles.segmentTextActive]}>
                 {seg.label}
               </Text>
-            </TouchableOpacity>
+            </BouncyButton>
           ))}
         </GlassSurface>
       )}

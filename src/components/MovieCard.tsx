@@ -1,9 +1,10 @@
 import React from 'react';
-import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { COLORS } from '../constants/config';
 import { MovieItem } from '../types/models';
+import { BouncyButton } from './BouncyButton';
 import { LazyImage } from './LazyImage';
 
 interface MovieCardProps {
@@ -53,7 +54,8 @@ export function MovieCard({
     ].filter(Boolean);
 
     return (
-      <TouchableOpacity
+      <BouncyButton
+        bounciness="gentle"
         activeOpacity={0.86}
         onPress={() => onPress(item)}
         style={[styles.watchedCard, fullWidth && { marginRight: 0 }, { width: cardW }]}
@@ -100,23 +102,24 @@ export function MovieCard({
             </Text>
           </View>
           {onRemoveWatched ? (
-            <TouchableOpacity
+            <BouncyButton
               onPress={() => onRemoveWatched(item)}
               hitSlop={10}
               style={styles.optionsDotsBtn}
             >
               <Ionicons name="ellipsis-vertical" size={16} color={COLORS.muted} />
-            </TouchableOpacity>
+            </BouncyButton>
           ) : null}
         </View>
-      </TouchableOpacity>
+      </BouncyButton>
     );
   }
 
   if (layout === 'theatrical') {
     const cardW = width || 312;
     return (
-      <TouchableOpacity
+      <BouncyButton
+        bounciness="gentle"
         activeOpacity={0.86}
         onPress={() => onPress(item)}
         style={[styles.theatricalCard, { width: cardW }]}
@@ -169,14 +172,15 @@ export function MovieCard({
             </View>
           </View>
         </View>
-      </TouchableOpacity>
+      </BouncyButton>
     );
   }
 
   if (layout === 'landscape') {
     const cardW = width || 242;
     return (
-      <TouchableOpacity
+      <BouncyButton
+        bounciness="gentle"
         activeOpacity={0.86}
         onPress={() => onPress(item)}
         style={[styles.landscapeCard, { width: cardW }]}
@@ -212,7 +216,7 @@ export function MovieCard({
         <Text style={styles.cardSub} numberOfLines={1}>
           {titleSecondary || (item.genres && item.genres[0]) || ''}
         </Text>
-      </TouchableOpacity>
+      </BouncyButton>
     );
   }
 
@@ -224,7 +228,8 @@ export function MovieCard({
       : ['T16', item.year || '2026', item.runtime || item.video_quality || 'FHD'];
 
     return (
-      <TouchableOpacity
+      <BouncyButton
+        bounciness="gentle"
         activeOpacity={0.86}
         onPress={() => onPress(item)}
         style={[styles.top10Card, { width: cardW }]}
@@ -253,7 +258,7 @@ export function MovieCard({
             </Text>
           </View>
         </View>
-      </TouchableOpacity>
+      </BouncyButton>
     );
   }
 
@@ -267,7 +272,8 @@ export function MovieCard({
     onRemoveWatched && item.time_remaining ? item.time_remaining : titleSecondary;
 
   return (
-    <TouchableOpacity
+    <BouncyButton
+      bounciness="gentle"
       activeOpacity={0.86}
       onPress={() => onPress(item)}
       style={[
@@ -287,14 +293,14 @@ export function MovieCard({
           style={styles.bottomScrim}
         />
         {onRemoveWatched ? (
-          <TouchableOpacity
+          <BouncyButton
             onPress={() => onRemoveWatched(item)}
             hitSlop={6}
             style={styles.gridRemoveBtn}
             accessibilityLabel="Xóa khỏi Đang xem"
           >
             <Ionicons name="close" size={14} color="#FFF" />
-          </TouchableOpacity>
+          </BouncyButton>
         ) : null}
         <View style={[styles.floatingSplitBadgesCenter, watchedPct > 0 && { bottom: 12 }]}>
           <View style={styles.splitSubHalf}>
@@ -319,7 +325,7 @@ export function MovieCard({
           {gridSubtitleText}
         </Text>
       ) : null}
-    </TouchableOpacity>
+    </BouncyButton>
   );
 }
 

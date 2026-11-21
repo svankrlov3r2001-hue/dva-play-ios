@@ -7,7 +7,6 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TouchableOpacity,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -16,12 +15,13 @@ import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AmbientAppBackground } from '../components/AmbientAppBackground';
 import { showAppAlert } from '../components/AppAlertModal';
+import { BouncyButton } from '../components/BouncyButton';
 import { GlassSurface } from '../components/GlassSurface';
 import { MovieCard } from '../components/MovieCard';
 import { OfflineDownloadSheet } from '../components/OfflineDownloadSheet';
 import { SkeletonCrossfade } from '../components/SkeletonCrossfade';
 import { MovieDetailSkeleton } from '../components/SkeletonLoaders';
-import { COLORS, RADII } from '../constants/config';
+import { COLORS, GLASS_SHADOW, RADII } from '../constants/config';
 import {
   fetchMovieDetailsApi,
   toggleWishlistApi,
@@ -212,12 +212,12 @@ export function MovieDetailScreen({
           skeleton={
             <View style={{ flex: 1 }}>
               <MovieDetailSkeleton topInset={insets.top} active={visible && (loading || !movie)} />
-              <TouchableOpacity
+              <BouncyButton
                 onPress={onClose}
                 style={[styles.floatingBack, { top: insets.top + 10, zIndex: 20 }]}
               >
                 <Ionicons name="arrow-back" size={22} color="#FFF" />
-              </TouchableOpacity>
+              </BouncyButton>
             </View>
           }
         >
@@ -240,9 +240,9 @@ export function MovieDetailScreen({
               />
 
               <View style={[styles.topBar, { top: insets.top + 8 }]}>
-                <TouchableOpacity style={styles.roundGlassBtn} onPress={onClose}>
+                <BouncyButton style={styles.roundGlassBtn} onPress={onClose}>
                   <Ionicons name="arrow-back" size={21} color="#FFF" />
-                </TouchableOpacity>
+                </BouncyButton>
               </View>
 
               <View style={styles.posterSummary}>
@@ -299,7 +299,8 @@ export function MovieDetailScreen({
 
             {/* Primary Actions */}
             <View style={styles.actionsSection}>
-              <TouchableOpacity
+              <BouncyButton
+                bounciness="gentle"
                 activeOpacity={0.86}
                 style={styles.playBtn}
                 onPress={() => {
@@ -311,10 +312,10 @@ export function MovieDetailScreen({
                 <Text style={styles.playBtnText}>
                   {movie.watch_history?.viewed_information || 'Xem ngay'}
                 </Text>
-              </TouchableOpacity>
+              </BouncyButton>
 
               <View style={styles.quickActionRow}>
-                <TouchableOpacity style={styles.quickBtn} onPress={handleWishlist}>
+                <BouncyButton style={styles.quickBtn} onPress={handleWishlist}>
                   <Ionicons
                     name={inWishlist ? 'bookmark' : 'bookmark-outline'}
                     size={21}
@@ -323,9 +324,9 @@ export function MovieDetailScreen({
                   <Text style={styles.quickBtnLabel}>
                     {inWishlist ? 'Đã lưu' : 'Yêu thích'}
                   </Text>
-                </TouchableOpacity>
+                </BouncyButton>
 
-                <TouchableOpacity
+                <BouncyButton
                   style={styles.quickBtn}
                   onPress={handleOpenOfflineSheet}
                 >
@@ -358,9 +359,9 @@ export function MovieDetailScreen({
                           ? 'Đã tải'
                           : 'Tải ngoại tuyến'}
                   </Text>
-                </TouchableOpacity>
+                </BouncyButton>
 
-                <TouchableOpacity
+                <BouncyButton
                   style={styles.quickBtn}
                   onPress={() => {
                     Haptics.selectionAsync();
@@ -373,7 +374,7 @@ export function MovieDetailScreen({
                 >
                   <Ionicons name="tv-outline" size={21} color="#FFF" />
                   <Text style={styles.quickBtnLabel}>DVA Cast</Text>
-                </TouchableOpacity>
+                </BouncyButton>
               </View>
             </View>
 
@@ -389,7 +390,7 @@ export function MovieDetailScreen({
                   { key: 'related', label: 'Liên quan' },
                 ] as const
               ).map((t) => (
-                <TouchableOpacity
+                <BouncyButton
                   key={t.key}
                   style={[styles.tabPill, activeTab === t.key && styles.tabPillActive]}
                   onPress={() => {
@@ -400,7 +401,7 @@ export function MovieDetailScreen({
                   <Text style={[styles.tabTxt, activeTab === t.key && styles.tabTxtActive]}>
                     {t.label}
                   </Text>
-                </TouchableOpacity>
+                </BouncyButton>
               ))}
             </View>
 
@@ -419,7 +420,7 @@ export function MovieDetailScreen({
                         contentContainerStyle={styles.seasonRow}
                       >
                         {movie.seasons.map((s, idx) => (
-                          <TouchableOpacity
+                          <BouncyButton
                             key={s.seasons_id}
                             style={[
                               styles.seasonChip,
@@ -435,7 +436,7 @@ export function MovieDetailScreen({
                             >
                               {s.seasons_name}
                             </Text>
-                          </TouchableOpacity>
+                          </BouncyButton>
                         ))}
                       </ScrollView>
                     ) : null}
@@ -447,7 +448,7 @@ export function MovieDetailScreen({
                       {seasonEpisodes.map((ep, idx) => {
                         const isActive = movie.watch_history?.last_stream_code === ep.stream_code;
                         return (
-                          <TouchableOpacity
+                          <BouncyButton
                             key={ep.episodes_id}
                             style={[styles.epBtn, isActive && styles.epBtnActive]}
                             onPress={() => {
@@ -467,7 +468,7 @@ export function MovieDetailScreen({
                             <Text style={[styles.epTxt, isActive && { color: '#FFF' }]} numberOfLines={1}>
                               {ep.episodes_name}
                             </Text>
-                          </TouchableOpacity>
+                          </BouncyButton>
                         );
                       })}
                     </View>
@@ -477,7 +478,7 @@ export function MovieDetailScreen({
                     <Text style={styles.subHeading}>Chọn máy chủ phát</Text>
                     <View style={styles.epGrid}>
                       {movie.sources.map((src: SourceItem) => (
-                        <TouchableOpacity
+                        <BouncyButton
                           key={src.video_file_id}
                           style={styles.epBtn}
                           onPress={() => {
@@ -492,7 +493,7 @@ export function MovieDetailScreen({
                           <Text style={styles.epTxt} numberOfLines={1}>
                             {src.label}
                           </Text>
-                        </TouchableOpacity>
+                        </BouncyButton>
                       ))}
                     </View>
                   </View>
@@ -512,7 +513,7 @@ export function MovieDetailScreen({
                         {grp.items.map((star, idx) => (
                           <GlassSurface
                             key={`${grp.title}_${star.id}_${idx}`}
-                            intensity={38}
+                            intensity={26}
                             radius={18}
                             style={styles.starCard}
                           >
@@ -637,9 +638,12 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: 'rgba(0,0,0,0.52)',
+    backgroundColor: 'rgba(20, 22, 28, 0.42)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.16)',
     alignItems: 'center',
     justifyContent: 'center',
+    boxShadow: GLASS_SHADOW,
   },
   posterSummary: {
     flexDirection: 'row',

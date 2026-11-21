@@ -7,7 +7,6 @@ import {
   StyleSheet,
   Switch,
   Text,
-  TouchableOpacity,
   useWindowDimensions,
   View,
 } from 'react-native';
@@ -15,6 +14,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { showAppAlert } from './AppAlertModal';
+import { BouncyButton } from './BouncyButton';
 import { GlassSurface } from './GlassSurface';
 import { COLORS } from '../constants/config';
 import { useSettings } from '../context/SettingsContext';
@@ -262,7 +262,7 @@ export function OfflineDownloadSheet({
           <Text style={styles.statusBannerTxt}>
             Đã lưu trên máy • {formatBytes(item.size_bytes)}
           </Text>
-          <TouchableOpacity
+          <BouncyButton
             onPress={() =>
               showAppAlert('Xóa tệp ngoại tuyến?', 'Tệp phim này sẽ bị xóa khỏi bộ nhớ máy.', [
                 { text: 'Hủy', style: 'cancel' },
@@ -271,7 +271,7 @@ export function OfflineDownloadSheet({
             }
           >
             <Ionicons name="trash-outline" size={16} color="#FCA5A5" />
-          </TouchableOpacity>
+          </BouncyButton>
         </View>
       );
     }
@@ -284,13 +284,13 @@ export function OfflineDownloadSheet({
             </Text>
             <View style={styles.inlineBtns}>
               {item.status === 'downloading' ? (
-                <TouchableOpacity onPress={() => pauseOfflineDownload(item.id)} style={styles.miniIconBtn}>
+                <BouncyButton onPress={() => pauseOfflineDownload(item.id)} style={styles.miniIconBtn}>
                   <Ionicons name="pause" size={13} color="#FFF" />
-                </TouchableOpacity>
+                </BouncyButton>
               ) : null}
-              <TouchableOpacity onPress={() => cancelOfflineDownload(item.id)} style={styles.miniIconBtn}>
+              <BouncyButton onPress={() => cancelOfflineDownload(item.id)} style={styles.miniIconBtn}>
                 <Ionicons name="close" size={14} color="#FCA5A5" />
-              </TouchableOpacity>
+              </BouncyButton>
             </View>
           </View>
           <View style={styles.progTrack}>
@@ -306,12 +306,12 @@ export function OfflineDownloadSheet({
             ? `Tạm dừng (${item.progress}%)`
             : item.error_message || 'Tải thất bại'}
         </Text>
-        <TouchableOpacity onPress={() => resumeOfflineDownload(item.id)} style={styles.retryMiniBtn}>
+        <BouncyButton onPress={() => resumeOfflineDownload(item.id)} style={styles.retryMiniBtn}>
           <Text style={styles.retryMiniTxt}>Tiếp tục</Text>
-        </TouchableOpacity>
-        <TouchableOpacity onPress={() => removeOfflineDownload(item.id)} style={styles.miniIconBtn}>
+        </BouncyButton>
+        <BouncyButton onPress={() => removeOfflineDownload(item.id)} style={styles.miniIconBtn}>
           <Ionicons name="trash-outline" size={14} color="#FCA5A5" />
-        </TouchableOpacity>
+        </BouncyButton>
       </View>
     );
   };
@@ -326,7 +326,8 @@ export function OfflineDownloadSheet({
       {/* Primary Action Buttons */}
       {!isCurrentCompleted && !isCurrentActive ? (
         <View style={{ gap: 7 }}>
-          <TouchableOpacity
+          <BouncyButton
+            bounciness="gentle"
             activeOpacity={0.85}
             disabled={submittingBatch}
             style={styles.primaryBtn}
@@ -344,22 +345,24 @@ export function OfflineDownloadSheet({
                   ? 'Tải tập hiện tại về máy'
                   : 'Tải phim này về máy'}
             </Text>
-          </TouchableOpacity>
+          </BouncyButton>
 
           {isSeries && settings.autoDownloadNextCount > 0 ? (
-            <TouchableOpacity
+            <BouncyButton
+              bounciness="gentle"
               activeOpacity={0.8}
               disabled={submittingBatch}
               style={styles.secondaryBtn}
               onPress={() => handleDownloadCurrentAndNext(false)}
             >
               <Text style={styles.secondaryBtnTxt}>Chỉ tải tập hiện tại</Text>
-            </TouchableOpacity>
+            </BouncyButton>
           ) : null}
         </View>
       ) : isSeries && settings.autoDownloadNextCount > 0 && pendingNextEpisodes.length > 0 ? (
         <View style={{ gap: 7 }}>
-          <TouchableOpacity
+          <BouncyButton
+            bounciness="gentle"
             activeOpacity={0.85}
             disabled={submittingBatch}
             style={styles.primaryBtn}
@@ -375,7 +378,7 @@ export function OfflineDownloadSheet({
                 ? `Tải ${pendingNextEpisodes.length} tập tiếp theo về máy`
                 : `Tải thêm ${pendingNextEpisodes.length} tập tiếp theo`}
             </Text>
-          </TouchableOpacity>
+          </BouncyButton>
         </View>
       ) : null}
 
@@ -409,13 +412,13 @@ export function OfflineDownloadSheet({
             </Text>
           </View>
           <View style={styles.stepper}>
-            <TouchableOpacity style={styles.stepBtn} onPress={() => adjustNextCount(-1)}>
+            <BouncyButton style={styles.stepBtn} onPress={() => adjustNextCount(-1)}>
               <Ionicons name="remove" size={15} color="#FFF" />
-            </TouchableOpacity>
+            </BouncyButton>
             <Text style={styles.stepValue}>{settings.autoDownloadNextCount}</Text>
-            <TouchableOpacity style={styles.stepBtn} onPress={() => adjustNextCount(1)}>
+            <BouncyButton style={styles.stepBtn} onPress={() => adjustNextCount(1)}>
               <Ionicons name="add" size={15} color="#FFF" />
-            </TouchableOpacity>
+            </BouncyButton>
           </View>
         </View>
 
@@ -423,7 +426,7 @@ export function OfflineDownloadSheet({
           {[0, 1, 2, 3, 5, 10].map((cnt) => {
             const active = settings.autoDownloadNextCount === cnt;
             return (
-              <TouchableOpacity
+              <BouncyButton
                 key={cnt}
                 style={[styles.presetChip, active && styles.presetChipActive]}
                 onPress={() => {
@@ -434,7 +437,7 @@ export function OfflineDownloadSheet({
                 <Text style={[styles.presetTxt, active && styles.presetTxtActive]}>
                   {cnt === 0 ? 'Tắt' : `+${cnt} tập`}
                 </Text>
-              </TouchableOpacity>
+              </BouncyButton>
             );
           })}
         </View>
@@ -494,8 +497,9 @@ export function OfflineDownloadSheet({
                     : 'rgba(255,255,255,0.85)';
 
             return (
-              <TouchableOpacity
+              <BouncyButton
                 key={`${ep.episodes_id}_${ep.stream_code}`}
+                bounciness="gentle"
                 activeOpacity={0.8}
                 style={[styles.epRow, isCur && styles.epRowCurrent]}
                 onPress={() => handleEpisodePress(ep)}
@@ -514,7 +518,7 @@ export function OfflineDownloadSheet({
                   ) : null}
                 </View>
                 <Ionicons name={iconName} size={20} color={iconColor} />
-              </TouchableOpacity>
+              </BouncyButton>
             );
           })}
         </ScrollView>
@@ -548,7 +552,7 @@ export function OfflineDownloadSheet({
         <GlassSurface
           variant="liquid"
           radius={40}
-          intensity={82}
+          intensity={34}
           style={[
             styles.cardWrap,
             {
@@ -571,9 +575,9 @@ export function OfflineDownloadSheet({
                   Hỗ trợ tải ngầm ngay cả khi thoát ra màn hình chính hoặc khóa máy
                 </Text>
               </View>
-              <TouchableOpacity style={styles.closeBtn} onPress={onClose}>
+              <BouncyButton style={styles.closeBtn} onPress={onClose}>
                 <Ionicons name="close" size={22} color="#FFF" />
-              </TouchableOpacity>
+              </BouncyButton>
             </View>
 
             {isLandscape ? (

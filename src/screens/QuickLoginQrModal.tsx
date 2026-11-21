@@ -10,7 +10,6 @@ import {
   StyleSheet,
   Text,
   TextInput,
-  TouchableOpacity,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -20,6 +19,7 @@ import * as LocalAuthentication from 'expo-local-authentication';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AmbientAppBackground } from '../components/AmbientAppBackground';
 import { showAppAlert } from '../components/AppAlertModal';
+import { BouncyButton } from '../components/BouncyButton';
 import { GlassSurface } from '../components/GlassSurface';
 import { COLORS } from '../constants/config';
 import { useAuth } from '../context/AuthContext';
@@ -332,7 +332,7 @@ export function QuickLoginQrModal({ visible, onClose }: QuickLoginQrModalProps) 
       >
         <View style={styles.header}>
           <Text style={styles.title}>Kích hoạt đăng nhập nhanh</Text>
-          <TouchableOpacity
+          <BouncyButton
             style={styles.closeBtn}
             onPress={() => {
               Haptics.selectionAsync();
@@ -340,7 +340,7 @@ export function QuickLoginQrModal({ visible, onClose }: QuickLoginQrModalProps) 
             }}
           >
             <Ionicons name="close" size={22} color="#FFF" />
-          </TouchableOpacity>
+          </BouncyButton>
         </View>
 
         {step === 'scan' ? (
@@ -373,12 +373,12 @@ export function QuickLoginQrModal({ visible, onClose }: QuickLoginQrModalProps) 
                   <Text style={styles.permText}>
                     Cần quyền Camera để quét mã QR đăng nhập nhanh
                   </Text>
-                  <TouchableOpacity
+                  <BouncyButton
                     style={styles.permBtn}
                     onPress={() => requestPermission().catch(() => {})}
                   >
                     <Text style={styles.permBtnTxt}>Cấp quyền Camera</Text>
-                  </TouchableOpacity>
+                  </BouncyButton>
                 </View>
               )}
               <View style={styles.scanFrame} pointerEvents="none" />
@@ -389,7 +389,7 @@ export function QuickLoginQrModal({ visible, onClose }: QuickLoginQrModalProps) 
               ) : null}
             </View>
 
-            <GlassSurface variant="liquid" intensity={68} radius={26} style={styles.card}>
+            <GlassSurface variant="liquid" intensity={30} radius={26} style={styles.card}>
               <Text style={styles.cardLabel}>Hoặc nhập mã thiết bị 9 số</Text>
               <View style={styles.manualRow}>
                 <TextInput
@@ -401,7 +401,7 @@ export function QuickLoginQrModal({ visible, onClose }: QuickLoginQrModalProps) 
                   value={manualKey}
                   onChangeText={setManualKey}
                 />
-                <TouchableOpacity
+                <BouncyButton
                   style={styles.connectBtn}
                   disabled={claiming}
                   onPress={() => void handleSelectOrScanKey(manualKey)}
@@ -411,11 +411,11 @@ export function QuickLoginQrModal({ visible, onClose }: QuickLoginQrModalProps) 
                   ) : (
                     <Text style={styles.connectBtnTxt}>Tiếp tục</Text>
                   )}
-                </TouchableOpacity>
+                </BouncyButton>
               </View>
             </GlassSurface>
 
-            <GlassSurface variant="liquid" intensity={68} radius={26} style={styles.card}>
+            <GlassSurface variant="liquid" intensity={30} radius={26} style={styles.card}>
               <View style={styles.listHeader}>
                 <Text style={styles.cardLabel}>Thiết bị đang chờ đăng nhập</Text>
                 {loadingDevices ? <ActivityIndicator size="small" color={COLORS.muted} /> : null}
@@ -423,8 +423,9 @@ export function QuickLoginQrModal({ visible, onClose }: QuickLoginQrModalProps) 
               {pendingDevices.length > 0 ? (
                 <View style={styles.deviceList}>
                   {pendingDevices.map((dev) => (
-                    <TouchableOpacity
+                    <BouncyButton
                       key={dev.key}
+                      bounciness="gentle"
                       activeOpacity={0.82}
                       style={styles.deviceRow}
                       disabled={claiming}
@@ -442,7 +443,7 @@ export function QuickLoginQrModal({ visible, onClose }: QuickLoginQrModalProps) 
                         <Text style={styles.deviceCode}>{dev.formatted_key}</Text>
                       </View>
                       <Ionicons name="chevron-forward" size={18} color={COLORS.muted} />
-                    </TouchableOpacity>
+                    </BouncyButton>
                   ))}
                 </View>
               ) : (
@@ -457,7 +458,7 @@ export function QuickLoginQrModal({ visible, onClose }: QuickLoginQrModalProps) 
             showsVerticalScrollIndicator={false}
             contentContainerStyle={styles.confirmScroll}
           >
-            <GlassSurface variant="liquid" intensity={78} radius={34} style={styles.confirmCard}>
+            <GlassSurface variant="liquid" intensity={34} radius={34} style={styles.confirmCard}>
               <View style={styles.userIdentityRow}>
                 {user?.avatar_url ? (
                   <Image
@@ -505,7 +506,8 @@ export function QuickLoginQrModal({ visible, onClose }: QuickLoginQrModalProps) 
                 </View>
               ) : null}
 
-              <TouchableOpacity
+              <BouncyButton
+                bounciness="gentle"
                 activeOpacity={0.86}
                 disabled={approving}
                 style={styles.bioPrimaryBtn}
@@ -517,16 +519,16 @@ export function QuickLoginQrModal({ visible, onClose }: QuickLoginQrModalProps) 
                   <Ionicons name="scan-outline" size={20} color="#FFF" />
                 )}
                 <Text style={styles.bioPrimaryText}>Xác nhận bằng {bioLabel}</Text>
-              </TouchableOpacity>
+              </BouncyButton>
 
-              <TouchableOpacity
+              <BouncyButton
                 style={styles.togglePwLink}
                 onPress={() => setShowPasswordBox((prev) => !prev)}
               >
                 <Text style={styles.togglePwText}>
                   {showPasswordBox ? 'Ẩn nhập mật khẩu thủ công' : 'Hoặc xác nhận bằng mật khẩu'}
                 </Text>
-              </TouchableOpacity>
+              </BouncyButton>
 
               {showPasswordBox ? (
                 <View style={styles.passwordSection}>
@@ -540,7 +542,7 @@ export function QuickLoginQrModal({ visible, onClose }: QuickLoginQrModalProps) 
                       value={passwordInput}
                       onChangeText={setPasswordInput}
                     />
-                    <TouchableOpacity
+                    <BouncyButton
                       style={styles.eyeBtn}
                       onPress={() => setShowPassText((v) => !v)}
                     >
@@ -549,9 +551,10 @@ export function QuickLoginQrModal({ visible, onClose }: QuickLoginQrModalProps) 
                         size={19}
                         color={COLORS.muted}
                       />
-                    </TouchableOpacity>
+                    </BouncyButton>
                   </View>
-                  <TouchableOpacity
+                  <BouncyButton
+                    bounciness="gentle"
                     activeOpacity={0.85}
                     disabled={approving}
                     style={styles.pwSubmitBtn}
@@ -562,14 +565,14 @@ export function QuickLoginQrModal({ visible, onClose }: QuickLoginQrModalProps) 
                     ) : (
                       <Text style={styles.pwSubmitText}>Xác nhận đăng nhập</Text>
                     )}
-                  </TouchableOpacity>
+                  </BouncyButton>
                 </View>
               ) : null}
 
-              <TouchableOpacity style={styles.rescanBtn} onPress={resetModalState}>
+              <BouncyButton style={styles.rescanBtn} onPress={resetModalState}>
                 <Ionicons name="qr-code-outline" size={16} color={COLORS.textSecondary} />
                 <Text style={styles.rescanText}>Quay lại quét mã khác</Text>
-              </TouchableOpacity>
+              </BouncyButton>
             </GlassSurface>
           </ScrollView>
         )}

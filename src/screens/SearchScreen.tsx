@@ -6,13 +6,13 @@ import {
   StyleSheet,
   Text,
   TextInput,
-  TouchableOpacity,
   useWindowDimensions,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { BouncyButton } from '../components/BouncyButton';
 import { GlassSurface } from '../components/GlassSurface';
 import { LazyImage } from '../components/LazyImage';
 import { MovieCard } from '../components/MovieCard';
@@ -111,7 +111,7 @@ export function SearchScreen({ onOpenPreview, onOpenDetail }: SearchScreenProps)
       <Text style={styles.title}>Tìm kiếm</Text>
 
       <View style={styles.searchBoxWrap}>
-        <GlassSurface intensity={55} radius={RADII.md} style={styles.searchBar}>
+        <GlassSurface intensity={28} radius={RADII.md} style={styles.searchBar}>
           <Ionicons name="search" size={19} color={COLORS.muted} />
           <TextInput
             style={styles.input}
@@ -126,7 +126,7 @@ export function SearchScreen({ onOpenPreview, onOpenDetail }: SearchScreenProps)
             onSubmitEditing={() => runFullSearch()}
           />
           {query.length > 0 ? (
-            <TouchableOpacity
+            <BouncyButton
               onPress={() => {
                 setQuery('');
                 setSuggestions([]);
@@ -135,7 +135,7 @@ export function SearchScreen({ onOpenPreview, onOpenDetail }: SearchScreenProps)
               }}
             >
               <Ionicons name="close-circle" size={19} color={COLORS.muted} />
-            </TouchableOpacity>
+            </BouncyButton>
           ) : null}
         </GlassSurface>
       </View>
@@ -188,7 +188,7 @@ export function SearchScreen({ onOpenPreview, onOpenDetail }: SearchScreenProps)
               <Text style={styles.subTitle}>Từ khóa gợi ý</Text>
               <View style={styles.tagWrap}>
                 {QUICK_TAGS.map((tag) => (
-                  <TouchableOpacity
+                  <BouncyButton
                     key={tag}
                     style={styles.tagChip}
                     onPress={() => {
@@ -198,7 +198,7 @@ export function SearchScreen({ onOpenPreview, onOpenDetail }: SearchScreenProps)
                   >
                     <Ionicons name="trending-up" size={14} color={COLORS.accent} />
                     <Text style={styles.tagText}>{tag}</Text>
-                  </TouchableOpacity>
+                  </BouncyButton>
                 ))}
               </View>
 
@@ -207,7 +207,7 @@ export function SearchScreen({ onOpenPreview, onOpenDetail }: SearchScreenProps)
                   <Ionicons name="sparkles" size={16} color={COLORS.accent} />
                   <Text style={styles.recHeading}>Đề xuất cho bạn</Text>
                 </View>
-                <TouchableOpacity
+                <BouncyButton
                   activeOpacity={0.8}
                   style={styles.refreshRecBtn}
                   onPress={() => {
@@ -217,7 +217,7 @@ export function SearchScreen({ onOpenPreview, onOpenDetail }: SearchScreenProps)
                 >
                   <Ionicons name="shuffle-outline" size={15} color={COLORS.textSecondary} />
                   <Text style={styles.refreshRecText}>Đổi gợi ý</Text>
-                </TouchableOpacity>
+                </BouncyButton>
               </View>
             </View>
           }
@@ -246,7 +246,8 @@ export function SearchScreen({ onOpenPreview, onOpenDetail }: SearchScreenProps)
             paddingBottom: insets.bottom + 110,
           }}
           renderItem={({ item }) => (
-            <TouchableOpacity
+            <BouncyButton
+              bounciness="gentle"
               style={styles.suggestRow}
               onPress={() => onOpenDetail(item.videos_id)}
             >
@@ -266,7 +267,7 @@ export function SearchScreen({ onOpenPreview, onOpenDetail }: SearchScreenProps)
                 </Text>
               </View>
               <Ionicons name="chevron-forward" size={18} color={COLORS.muted} />
-            </TouchableOpacity>
+            </BouncyButton>
           )}
         />
       )}

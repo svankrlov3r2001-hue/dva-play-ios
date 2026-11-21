@@ -5,15 +5,15 @@ import {
   PanResponder,
   StyleSheet,
   Text,
-  TouchableOpacity,
   useWindowDimensions,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
-import { COLORS } from '../constants/config';
+import { COLORS, GLASS_SHADOW } from '../constants/config';
 import { MovieItem } from '../types/models';
+import { BouncyButton } from './BouncyButton';
 import { LazyImage } from './LazyImage';
 
 interface Hero3DCarouselProps {
@@ -147,8 +147,10 @@ export function Hero3DCarousel({
     const zIndex = rel === 0 ? 100 : isNear ? 20 : 10;
 
     return (
-      <TouchableOpacity
+      <BouncyButton
         key={slotKey}
+        bounciness="gentle"
+        pressScale={0.96}
         activeOpacity={0.92}
         onPress={() => {
           Haptics.selectionAsync();
@@ -185,8 +187,9 @@ export function Hero3DCarousel({
         />
         {!isCenter ? <View style={styles.dimOverlay} /> : null}
         {isCenter ? (
-          <TouchableOpacity
+          <BouncyButton
             activeOpacity={0.85}
+            pressScale={0.84}
             onPress={() => {
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
               onPlay(item);
@@ -201,9 +204,9 @@ export function Hero3DCarousel({
             >
               <Ionicons name="play" size={20} color="#FFF" style={{ marginLeft: 2 }} />
             </LinearGradient>
-          </TouchableOpacity>
+          </BouncyButton>
         ) : null}
-      </TouchableOpacity>
+      </BouncyButton>
     );
   };
 
@@ -285,7 +288,8 @@ export function Hero3DCarousel({
         ) : null}
 
         <View style={styles.actionsRow}>
-          <TouchableOpacity
+          <BouncyButton
+            bounciness="gentle"
             activeOpacity={0.88}
             onPress={() => {
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -302,10 +306,11 @@ export function Hero3DCarousel({
               <Ionicons name="play" size={16} color="#FFF" />
               <Text style={styles.watchNowTxt}>Xem ngay</Text>
             </LinearGradient>
-          </TouchableOpacity>
+          </BouncyButton>
 
-          <TouchableOpacity
+          <BouncyButton
             activeOpacity={0.82}
+            pressScale={0.86}
             onPress={() => onToggleWishlist(activeItem)}
             style={[
               styles.wishlistBtn,
@@ -317,22 +322,23 @@ export function Hero3DCarousel({
               size={22}
               color="#FFF"
             />
-          </TouchableOpacity>
+          </BouncyButton>
 
-          <TouchableOpacity
+          <BouncyButton
             activeOpacity={0.82}
+            pressScale={0.86}
             onPress={() => onOpenDetail(activeItem.videos_id)}
             style={styles.wishlistBtn}
           >
             <Ionicons name="information-circle-outline" size={21} color="#FFF" />
-          </TouchableOpacity>
+          </BouncyButton>
         </View>
 
         {/* Bottom Nav: Dots left, prev/next arrows right */}
         <View style={styles.navRow}>
           <View style={styles.dotsRow}>
             {items.map((h, i) => (
-              <TouchableOpacity
+              <BouncyButton
                 key={h.videos_id}
                 onPress={() => {
                   Haptics.selectionAsync();
@@ -341,12 +347,13 @@ export function Hero3DCarousel({
                 hitSlop={6}
               >
                 <View style={[styles.dot, i === activeIndex && styles.dotActive]} />
-              </TouchableOpacity>
+              </BouncyButton>
             ))}
           </View>
 
           <View style={styles.arrowsRow}>
-            <TouchableOpacity
+            <BouncyButton
+              pressScale={0.84}
               onPress={() => {
                 Haptics.selectionAsync();
                 goToIndex(activeIndex - 1);
@@ -354,8 +361,9 @@ export function Hero3DCarousel({
               style={styles.arrowBtn}
             >
               <Ionicons name="chevron-back" size={18} color="#FFF" />
-            </TouchableOpacity>
-            <TouchableOpacity
+            </BouncyButton>
+            <BouncyButton
+              pressScale={0.84}
               onPress={() => {
                 Haptics.selectionAsync();
                 goToIndex(activeIndex + 1);
@@ -363,7 +371,7 @@ export function Hero3DCarousel({
               style={styles.arrowBtn}
             >
               <Ionicons name="chevron-forward" size={18} color="#FFF" />
-            </TouchableOpacity>
+            </BouncyButton>
           </View>
         </View>
       </Animated.View>
@@ -518,6 +526,7 @@ const styles = StyleSheet.create({
   watchNowWrap: {
     borderRadius: 24,
     overflow: 'hidden',
+    boxShadow: GLASS_SHADOW,
   },
   watchNowBtn: {
     paddingHorizontal: 22,
@@ -540,6 +549,7 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255, 255, 255, 0.18)',
     alignItems: 'center',
     justifyContent: 'center',
+    boxShadow: GLASS_SHADOW,
   },
   wishlistBtnActive: {
     backgroundColor: 'rgba(229, 9, 20, 0.28)',

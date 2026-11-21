@@ -8,13 +8,13 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TouchableOpacity,
   useWindowDimensions,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { BouncyButton } from './BouncyButton';
 import { GlassSurface } from './GlassSurface';
 import { COLORS } from '../constants/config';
 import { EpisodeItem, OfflineDownloadItem, SeasonItem } from '../types/models';
@@ -400,7 +400,7 @@ export function PlayerEpisodeListModal({
         <GlassSurface
           variant="liquid"
           radius={40}
-          intensity={85}
+          intensity={34}
           style={[styles.cardWrap, { width: cardWidth, height: cardHeight }]}
         >
           <View style={styles.splitRow}>
@@ -422,7 +422,7 @@ export function PlayerEpisodeListModal({
                 </Text>
 
                 {seasons.length > 0 ? (
-                  <TouchableOpacity
+                  <BouncyButton
                     activeOpacity={0.8}
                     style={styles.seasonBtn}
                     onPress={() => {
@@ -435,13 +435,14 @@ export function PlayerEpisodeListModal({
                       {activeSeasonLabel}
                     </Text>
                     <Ionicons name="chevron-down" size={14} color="rgba(255,255,255,0.75)" />
-                  </TouchableOpacity>
+                  </BouncyButton>
                 ) : null}
               </View>
 
               <View style={styles.sidebarBtns}>
                 {watchingIndex >= 0 || watchingSeasonId ? (
-                  <TouchableOpacity
+                  <BouncyButton
+                    bounciness="gentle"
                     activeOpacity={0.8}
                     style={styles.sideActionBtn}
                     onPress={scrollToWatching}
@@ -450,10 +451,11 @@ export function PlayerEpisodeListModal({
                     <Text style={styles.sideActionTxt} numberOfLines={1}>
                       Tập đang xem
                     </Text>
-                  </TouchableOpacity>
+                  </BouncyButton>
                 ) : null}
 
-                <TouchableOpacity
+                <BouncyButton
+                  bounciness="gentle"
                   activeOpacity={0.8}
                   style={styles.sideActionBtn}
                   onPress={() => {
@@ -463,9 +465,10 @@ export function PlayerEpisodeListModal({
                 >
                   <Ionicons name="refresh-outline" size={16} color="#FFF" />
                   <Text style={styles.sideActionTxt}>Tải lại</Text>
-                </TouchableOpacity>
+                </BouncyButton>
 
-                <TouchableOpacity
+                <BouncyButton
+                  bounciness="gentle"
                   activeOpacity={0.8}
                   style={[styles.sideActionBtn, styles.sideCloseBtn]}
                   onPress={() => {
@@ -475,7 +478,7 @@ export function PlayerEpisodeListModal({
                 >
                   <Ionicons name="close" size={17} color="#FFF" />
                   <Text style={styles.sideActionTxt}>Đóng</Text>
-                </TouchableOpacity>
+                </BouncyButton>
               </View>
             </View>
 
@@ -524,7 +527,8 @@ export function PlayerEpisodeListModal({
                     );
 
                     return (
-                      <TouchableOpacity
+                      <BouncyButton
+                        bounciness="gentle"
                         activeOpacity={0.82}
                         style={[
                           styles.epCard,
@@ -569,7 +573,7 @@ export function PlayerEpisodeListModal({
                             </Text>
                           ) : null}
                         </View>
-                      </TouchableOpacity>
+                      </BouncyButton>
                     );
                   }}
                 />
@@ -584,15 +588,15 @@ export function PlayerEpisodeListModal({
                 style={StyleSheet.absoluteFill}
                 onPress={() => setSeasonPopupOpen(false)}
               />
-              <GlassSurface variant="liquid" radius={40} intensity={90} style={styles.seasonPopupCard}>
+              <GlassSurface variant="liquid" radius={40} intensity={34} style={styles.seasonPopupCard}>
                 <View style={styles.seasonPopupHeader}>
                   <Text style={styles.seasonPopupTitle}>Chọn mùa phim</Text>
-                  <TouchableOpacity
+                  <BouncyButton
                     style={styles.seasonCloseBtn}
                     onPress={() => setSeasonPopupOpen(false)}
                   >
                     <Ionicons name="close" size={18} color="#FFF" />
-                  </TouchableOpacity>
+                  </BouncyButton>
                 </View>
                 <ScrollView
                   showsVerticalScrollIndicator={false}
@@ -604,8 +608,9 @@ export function PlayerEpisodeListModal({
                     const isSelected = sId === String(selectedSeasonId);
                     const sLabel = formatSeasonName(season.seasons_name, sIdx + 1);
                     return (
-                      <TouchableOpacity
+                      <BouncyButton
                         key={sId}
+                        bounciness="gentle"
                         activeOpacity={0.8}
                         style={[
                           styles.seasonItem,
@@ -633,7 +638,7 @@ export function PlayerEpisodeListModal({
                         >
                           {sLabel}
                         </Text>
-                      </TouchableOpacity>
+                      </BouncyButton>
                     );
                   })}
                 </ScrollView>
