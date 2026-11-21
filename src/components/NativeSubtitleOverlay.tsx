@@ -57,18 +57,23 @@ function OutlinedText({
   if (!text) return null;
 
   if (outline === 'none') {
-    return <Text style={style}>{text}</Text>;
+    return (
+      <Text allowFontScaling={false} style={style}>
+        {text}
+      </Text>
+    );
   }
 
   if (outline === 'shadow') {
     return (
       <Text
+        allowFontScaling={false}
         style={[
           style,
           {
-            textShadowColor: 'rgba(0,0,0,0.95)',
-            textShadowOffset: { width: 2, height: 2 },
-            textShadowRadius: 4,
+            textShadowColor: 'rgba(0,0,0,0.9)',
+            textShadowOffset: { width: 1.5, height: 1.5 },
+            textShadowRadius: 3,
           },
         ]}
       >
@@ -80,11 +85,12 @@ function OutlinedText({
   if (outline === 'raise') {
     return (
       <Text
+        allowFontScaling={false}
         style={[
           style,
           {
             textShadowColor: '#000000',
-            textShadowOffset: { width: 2, height: -2 },
+            textShadowOffset: { width: 1.5, height: -1.5 },
             textShadowRadius: 1,
           },
         ]}
@@ -97,11 +103,12 @@ function OutlinedText({
   if (outline === 'lower') {
     return (
       <Text
+        allowFontScaling={false}
         style={[
           style,
           {
             textShadowColor: '#000000',
-            textShadowOffset: { width: -2, height: 2 },
+            textShadowOffset: { width: -1.5, height: 1.5 },
             textShadowRadius: 1,
           },
         ]}
@@ -111,13 +118,24 @@ function OutlinedText({
     );
   }
 
-  // 'uniform' / 'uniform2': multi-directional crisp black stroke matching subtitleUI.php
-  const strokeWidth = outline === 'uniform' ? 2 : 1.5;
+  // 'uniform' / 'uniform2': thin razor-crisp 8-way border matching web Arial Regular stroke
+  const flatStyle = StyleSheet.flatten(style);
+  const fontSize = typeof flatStyle?.fontSize === 'number' ? flatStyle.fontSize : 20;
+  const d =
+    outline === 'uniform'
+      ? Math.max(0.75, Math.min(1.2, fontSize * 0.042))
+      : Math.max(0.6, Math.min(0.95, fontSize * 0.032));
+  const diag = Number((d * 0.72).toFixed(2));
+  const offset = Number(d.toFixed(2));
   const strokeOffsets = [
-    { x: -strokeWidth, y: 0 },
-    { x: strokeWidth, y: 0 },
-    { x: 0, y: -strokeWidth },
-    { x: 0, y: strokeWidth },
+    { x: -offset, y: 0 },
+    { x: offset, y: 0 },
+    { x: 0, y: -offset },
+    { x: 0, y: offset },
+    { x: -diag, y: -diag },
+    { x: diag, y: -diag },
+    { x: -diag, y: diag },
+    { x: diag, y: diag },
   ];
 
   return (
@@ -125,15 +143,16 @@ function OutlinedText({
       {strokeOffsets.map((off, idx) => (
         <Text
           key={idx}
+          allowFontScaling={false}
           style={[
             style,
             styles.strokeLayer,
             {
               color: '#000000',
               transform: [{ translateX: off.x }, { translateY: off.y }],
-              textShadowColor: '#000000',
+              textShadowColor: 'rgba(0,0,0,0.85)',
               textShadowOffset: { width: 0, height: 0 },
-              textShadowRadius: outline === 'uniform' ? 4 : 1.5,
+              textShadowRadius: 0.4,
             },
           ]}
         >
@@ -141,12 +160,13 @@ function OutlinedText({
         </Text>
       ))}
       <Text
+        allowFontScaling={false}
         style={[
           style,
           {
-            textShadowColor: 'rgba(0,0,0,0.9)',
+            textShadowColor: 'rgba(0,0,0,0.75)',
             textShadowOffset: { width: 0, height: 1 },
-            textShadowRadius: outline === 'uniform' ? 4 : 2,
+            textShadowRadius: 1.5,
           },
         ]}
       >
@@ -466,7 +486,7 @@ export function NativeSubtitleOverlay({
           color: isReversed ? secondaryColor : primaryColor,
           fontSize: isReversed ? secondaryFontSize : primaryFontSize,
           lineHeight: Math.round((isReversed ? secondaryFontSize : primaryFontSize) * 1.2),
-          fontWeight: '500',
+          fontWeight: '400',
           textAlign: 'center',
           fontFamily,
         }}
@@ -487,7 +507,7 @@ export function NativeSubtitleOverlay({
           color: isReversed ? primaryColor : secondaryColor,
           fontSize: isReversed ? primaryFontSize : secondaryFontSize,
           lineHeight: Math.round((isReversed ? primaryFontSize : secondaryFontSize) * 1.2),
-          fontWeight: '500',
+          fontWeight: '400',
           textAlign: 'center',
           fontFamily,
         }}
@@ -516,7 +536,7 @@ export function NativeSubtitleOverlay({
               color: palette.main,
               fontSize: primaryFontSize,
               lineHeight: Math.round(primaryFontSize * 1.2),
-              fontWeight: '500',
+              fontWeight: '400',
               textAlign: 'center',
               fontFamily,
             }}

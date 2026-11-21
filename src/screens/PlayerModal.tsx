@@ -507,25 +507,23 @@ export function PlayerModal({
       subtitle?: string,
       tone: WaterDropToastPayload['tone'] = 'default'
     ) => {
-      let resolvedTitle = title;
+      let resolvedTitle = 'Đặng Việt Anh';
       let resolvedSub = subtitle;
-      if (!resolvedSub) {
-        if (title.includes('•')) {
-          const [tPart, ...rest] = title.split('•');
-          resolvedTitle = tPart.trim();
-          resolvedSub = rest.join('•').trim();
-        } else if (title.includes(':')) {
-          const [tPart, ...rest] = title.split(':');
-          resolvedTitle = tPart.trim();
-          resolvedSub = rest.join(':').trim();
-        } else {
-          resolvedSub = 'Đặng Việt Anh';
-        }
+      if (resolvedSub && resolvedSub !== 'Đặng Việt Anh') {
+        resolvedTitle = title;
+      } else {
+        resolvedSub = title;
       }
       const nextId = ++toastIdRef.current;
-      setToastPayload({ id: nextId, title: resolvedTitle, subtitle: resolvedSub, tone });
+      setToastPayload({
+        id: nextId,
+        title: resolvedTitle,
+        subtitle: resolvedSub,
+        tone,
+        durationSec: 3,
+      });
       if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-      toastTimerRef.current = setTimeout(() => setToastPayload(null), 2700);
+      toastTimerRef.current = setTimeout(() => setToastPayload(null), 3000);
     },
     []
   );
@@ -2288,6 +2286,7 @@ export function PlayerModal({
         title: `Đang tua nhanh ${settings.holdSeekSpeed}x`,
         subtitle: 'Thả tay để trở lại tốc độ phát bình thường',
         tone: 'info',
+        durationSec: 0,
       }
     : toastPayload;
 
@@ -2452,7 +2451,7 @@ export function PlayerModal({
         <WaterDropToastBanner
           toast={holdToastPayload}
           topOffset={Math.max(insets.top, 8) + 8}
-          maxWidth={Math.min(winWidth - 48, 390)}
+          maxWidth={Math.min(Math.round(winWidth * 0.78), 410)}
         />
 
         {/* Floating Next-Episode Countdown Pill */}

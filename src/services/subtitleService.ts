@@ -23,9 +23,9 @@ export const SUBTITLE_FONT_OPTIONS: {
   label: string;
   iosFontFamily?: string;
 }[] = [
-  { value: 'Arial,Helvetica,sans-serif', label: 'Ahri (Mặc định)' },
+  { value: 'Arial,Helvetica,sans-serif', label: 'Ahri (Mặc định)', iosFontFamily: 'Arial' },
   { value: 'Noto Sans', label: 'Noto Sans', iosFontFamily: 'Helvetica Neue' },
-  { value: 'Roboto', label: 'Roboto', iosFontFamily: 'System' },
+  { value: 'Roboto', label: 'Roboto', iosFontFamily: 'Helvetica Neue' },
   { value: 'Inter', label: 'Inter', iosFontFamily: 'Avenir Next' },
   { value: 'Literata', label: 'Literata (Serif)', iosFontFamily: 'Georgia' },
 ];

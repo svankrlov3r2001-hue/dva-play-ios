@@ -11,13 +11,12 @@ import {
   View,
 } from 'react-native';
 import { Feather, Ionicons } from '@expo/vector-icons';
-import { BlurView } from 'expo-blur';
 import * as Haptics from 'expo-haptics';
-import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { showAppAlert } from './AppAlertModal';
 import { BouncyButton } from './BouncyButton';
-import { COLORS, GLASS_SHADOW } from '../constants/config';
+import { GlassSurface } from './GlassSurface';
+import { COLORS } from '../constants/config';
 import { useSettings } from '../context/SettingsContext';
 import { ContrastLevelOption, HoldSeekSpeedOption } from '../types/models';
 
@@ -632,17 +631,12 @@ export function PlayerGeneralSettingsModal({
       <View style={styles.backdrop}>
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
 
-        <View style={[styles.sheetCard, { width: cardWidth, height: cardHeight }]}>
-          <BlurView intensity={34} tint="systemUltraThinMaterialDark" style={StyleSheet.absoluteFill} />
-          <View style={styles.sheetDarkTint} />
-          <LinearGradient
-            pointerEvents="none"
-            colors={['rgba(255,255,255,0.15)', 'rgba(255,255,255,0)']}
-            start={{ x: 0.5, y: 0 }}
-            end={{ x: 0.5, y: 1 }}
-            style={styles.sheetTopSheen}
-          />
-
+        <GlassSurface
+          variant="liquid"
+          radius={40}
+          intensity={28}
+          style={[styles.sheetCard, { width: cardWidth, height: cardHeight }]}
+        >
           <View style={styles.inner}>
             <View style={styles.header}>
               {subView !== 'main' ? (
@@ -676,7 +670,7 @@ export function PlayerGeneralSettingsModal({
 
             {renderContent()}
           </View>
-        </View>
+        </GlassSurface>
       </View>
     </Modal>
   );
@@ -691,32 +685,13 @@ const styles = StyleSheet.create({
     padding: 12,
   },
   sheetCard: {
-    borderRadius: 28,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.16)',
-    boxShadow: GLASS_SHADOW,
+    borderRadius: 40,
     elevation: 18,
-  },
-  sheetDarkTint: {
-    position: 'absolute',
-    top: 0,
-    right: 0,
-    bottom: 0,
-    left: 0,
-    backgroundColor: 'rgba(14, 17, 25, 0.56)',
-  },
-  sheetTopSheen: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    height: 16,
   },
   inner: {
     flex: 1,
-    paddingHorizontal: 18,
-    paddingVertical: 15,
+    paddingHorizontal: 22,
+    paddingVertical: 18,
   },
   header: {
     flexDirection: 'row',
@@ -729,8 +704,6 @@ const styles = StyleSheet.create({
     height: 34,
     borderRadius: 17,
     backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.12)',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -752,9 +725,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     backgroundColor: 'rgba(255, 255, 255, 0.08)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-    borderRadius: 12,
+    borderRadius: 14,
     paddingHorizontal: 12,
   },
   searchInput: {
@@ -763,10 +734,8 @@ const styles = StyleSheet.create({
     fontSize: 13.5,
   },
   clockPill: {
-    backgroundColor: 'rgba(255, 255, 255, 0.06)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-    borderRadius: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.07)',
+    borderRadius: 14,
     paddingHorizontal: 11,
     paddingVertical: 4,
     alignItems: 'flex-end',
@@ -790,10 +759,8 @@ const styles = StyleSheet.create({
     marginLeft: 8,
   },
   insetGroup: {
-    borderRadius: 16,
-    backgroundColor: 'rgba(255, 255, 255, 0.06)',
-    borderWidth: 0.75,
-    borderColor: 'rgba(255, 255, 255, 0.09)',
+    borderRadius: 24,
+    backgroundColor: 'rgba(255, 255, 255, 0.07)',
     overflow: 'hidden',
   },
   groupedRow: {
@@ -884,14 +851,11 @@ const styles = StyleSheet.create({
   choiceChip: {
     paddingHorizontal: 17,
     paddingVertical: 10,
-    borderRadius: 16,
+    borderRadius: 18,
     backgroundColor: 'rgba(255, 255, 255, 0.08)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
   },
   choiceChipActive: {
     backgroundColor: COLORS.accent,
-    borderColor: COLORS.accent,
   },
   choiceChipTxt: {
     color: '#FFFFFF',

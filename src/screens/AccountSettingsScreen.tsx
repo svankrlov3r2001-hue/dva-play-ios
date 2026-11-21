@@ -13,7 +13,6 @@ import {
   View,
 } from 'react-native';
 import { Feather, Ionicons } from '@expo/vector-icons';
-import { BlurView } from 'expo-blur';
 import * as Haptics from 'expo-haptics';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -591,7 +590,7 @@ export function AccountSettingsScreen({
         showsVerticalScrollIndicator={false}
       >
         {/* Apple Account Profile Card */}
-        <GlassSurface intensity={30} radius={22} style={styles.profileCard}>
+        <GlassSurface variant="liquid" intensity={28} radius={40} style={styles.profileCard}>
           <View style={styles.profileRow}>
             <View style={styles.avatarRing}>
               <Image
@@ -622,9 +621,7 @@ export function AccountSettingsScreen({
 
         {/* Section 1: Playback & Experience */}
         <Text style={styles.sectionHeader}>TRẢI NGHIỆM XEM PHIM</Text>
-        <View style={styles.insetGroup}>
-          <BlurView intensity={28} tint="systemUltraThinMaterialDark" style={StyleSheet.absoluteFill} />
-          <View style={styles.insetGroupFill} />
+        <GlassSurface variant="liquid" radius={40} intensity={28} style={styles.insetGroup}>
 
           <View style={styles.groupedColumnRow}>
             <View style={styles.rowHeaderTop}>
@@ -697,13 +694,11 @@ export function AccountSettingsScreen({
             value={settings.highContrastMode}
             onChange={(v) => void updateSetting('highContrastMode', v)}
           />
-        </View>
+        </GlassSurface>
 
         {/* Section 2: Offline Storage & Retention (Item 8) */}
         <Text style={styles.sectionHeader}>LƯU TRỮ &amp; NGOẠI TUYẾN</Text>
-        <View style={styles.insetGroup}>
-          <BlurView intensity={28} tint="systemUltraThinMaterialDark" style={StyleSheet.absoluteFill} />
-          <View style={styles.insetGroupFill} />
+        <GlassSurface variant="liquid" radius={40} intensity={28} style={styles.insetGroup}>
 
           {/* Storage Usage Bar */}
           <View style={styles.groupedColumnRow}>
@@ -935,13 +930,11 @@ export function AccountSettingsScreen({
             value={settings.preferOfflineWhenOnline}
             onChange={(v) => void updateSetting('preferOfflineWhenOnline', v)}
           />
-        </View>
+        </GlassSurface>
 
         {/* Section 3: Security, Proxy & TV Cast */}
         <Text style={styles.sectionHeader}>BẢO MẬT &amp; KẾT NỐI</Text>
-        <View style={styles.insetGroup}>
-          <BlurView intensity={28} tint="systemUltraThinMaterialDark" style={StyleSheet.absoluteFill} />
-          <View style={styles.insetGroupFill} />
+        <GlassSurface variant="liquid" radius={40} intensity={28} style={styles.insetGroup}>
 
           <IosSwitchRow
             icon="scan"
@@ -1321,13 +1314,11 @@ export function AccountSettingsScreen({
               ) : null}
             </View>
           </View>
-        </View>
+        </GlassSurface>
 
         {/* Section 4: App & Updates */}
         <Text style={styles.sectionHeader}>ỨNG DỤNG &amp; CẬP NHẬT</Text>
-        <View style={styles.insetGroup}>
-          <BlurView intensity={28} tint="systemUltraThinMaterialDark" style={StyleSheet.absoluteFill} />
-          <View style={styles.insetGroupFill} />
+        <GlassSurface variant="liquid" radius={40} intensity={28} style={styles.insetGroup}>
 
           <View style={styles.navRow}>
             <View style={[styles.iosBadge, { backgroundColor: '#5856D6' }]}>
@@ -1410,13 +1401,15 @@ export function AccountSettingsScreen({
               ))}
             </View>
           ) : null}
-        </View>
+        </GlassSurface>
 
         {/* Sign Out Action Card */}
-        <BouncyButton bounciness="gentle" activeOpacity={0.82} style={styles.logoutCard} onPress={handleLogout}>
-          <Ionicons name="log-out-outline" size={19} color="#FF6B6B" />
-          <Text style={styles.logoutTxt}>Đăng xuất tài khoản</Text>
-        </BouncyButton>
+        <GlassSurface variant="liquid" radius={40} intensity={28} style={styles.logoutCardShell}>
+          <BouncyButton bounciness="gentle" activeOpacity={0.82} style={styles.logoutCard} onPress={handleLogout}>
+            <Ionicons name="log-out-outline" size={19} color="#FF6B6B" />
+            <Text style={styles.logoutTxt}>Đăng xuất tài khoản</Text>
+          </BouncyButton>
+        </GlassSurface>
       </ScrollView>
 
       <AppUpdateModal
@@ -1506,7 +1499,8 @@ const styles = StyleSheet.create({
     backgroundColor: 'transparent',
   },
   profileCard: {
-    padding: 16,
+    paddingVertical: 18,
+    paddingHorizontal: 20,
     marginBottom: 16,
   },
   profileRow: {
@@ -1572,21 +1566,10 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   insetGroup: {
-    borderRadius: 18,
-    overflow: 'hidden',
-    borderWidth: 0.75,
-    borderColor: 'rgba(255,255,255,0.12)',
+    borderRadius: 40,
+    paddingVertical: 10,
+    paddingHorizontal: 4,
     marginBottom: 18,
-    position: 'relative',
-    boxShadow: GLASS_SHADOW,
-  },
-  insetGroupFill: {
-    position: 'absolute',
-    top: 0,
-    right: 0,
-    bottom: 0,
-    left: 0,
-    backgroundColor: 'rgba(18, 22, 34, 0.44)',
   },
   insetDivider: {
     height: StyleSheet.hairlineWidth,
@@ -2002,17 +1985,18 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 17.5,
   },
+  logoutCardShell: {
+    borderRadius: 40,
+    marginTop: 4,
+  },
   logoutCard: {
-    height: 50,
-    borderRadius: 16,
+    height: 52,
+    borderRadius: 40,
     backgroundColor: 'rgba(239, 68, 68, 0.14)',
-    borderWidth: 1,
-    borderColor: 'rgba(239, 68, 68, 0.28)',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
-    marginTop: 4,
   },
   logoutTxt: {
     color: '#FF8A80',

@@ -24,8 +24,8 @@ export function GlassSurface({
   variant = 'default',
   noShadow = false,
 }: GlassSurfaceProps) {
-  const iosIntensity = Math.max(12, Math.min(intensity, 36));
-  const androidIntensity = Math.max(16, Math.min(intensity, 46));
+  const iosIntensity = Math.max(12, Math.min(intensity, 32));
+  const androidIntensity = Math.max(16, Math.min(intensity, 42));
   const resolvedIntensity = Platform.OS === 'ios' ? iosIntensity : androidIntensity;
 
   if (variant === 'liquid') {
@@ -55,9 +55,7 @@ export function GlassSurface({
               StyleSheet.absoluteFill,
               {
                 borderRadius: radius,
-                backgroundColor: 'rgba(16, 18, 24, 0.16)',
-                borderWidth: StyleSheet.hairlineWidth,
-                borderColor: 'rgba(255, 255, 255, 0.16)',
+                backgroundColor: 'rgba(20, 20, 20, 0.2)',
               },
             ]}
           />

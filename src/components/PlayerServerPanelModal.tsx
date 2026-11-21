@@ -1,23 +1,18 @@
 import React from 'react';
 import {
   ActivityIndicator,
-  Image,
   Modal,
   Pressable,
   ScrollView,
   StyleSheet,
-  Switch,
   Text,
   useWindowDimensions,
   View,
 } from 'react-native';
 import { Feather, Ionicons } from '@expo/vector-icons';
-import { BlurView } from 'expo-blur';
 import * as Haptics from 'expo-haptics';
-import { LinearGradient } from 'expo-linear-gradient';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BouncyButton } from './BouncyButton';
-import { COLORS, GLASS_SHADOW } from '../constants/config';
+import { GlassSurface } from './GlassSurface';
 import {
   BackupServerId,
   formatVietnameseEta,
@@ -39,7 +34,7 @@ interface PlayerServerPanelModalProps {
 }
 
 /**
- * Native iOS Liquid Glass video source switcher modal.
+ * Compact sleek borderless Liquid Glass server switcher for the iOS player.
  */
 export function PlayerServerPanelModal({
   visible,
@@ -51,20 +46,13 @@ export function PlayerServerPanelModal({
   onSelectServer,
   onRefreshPings,
   pingRefreshing,
-  posterUrl = '',
 }: PlayerServerPanelModalProps) {
-  const insets = useSafeAreaInsets();
-  const { width: winWidth, height: winHeight } = useWindowDimensions();
-  const isLandscape = winWidth > winHeight;
+  const { width, height } = useWindowDimensions();
+  const cardWidth = Math.min(width - 40, 560);
+  const cardMaxHeight = Math.min(height - 32, 232);
 
-  if (!visible) return null;
-
-  const cardWidth = isLandscape
-    ? Math.min(780, winWidth - Math.max(36, insets.left + insets.right + 20))
-    : Math.min(460, winWidth - 20);
-
-  const activeServerLabel =
-    servers.find((s) => s.id === activeServerId)?.label || 'Chưa chọn máy chủ';
+  const activeServer = servers.find((s) => s.id === activeServerId);
+  const activeServerLabel = activeServer?.label || 'Tự chọn';
 
   return (
     <Modal
@@ -78,46 +66,49 @@ export function PlayerServerPanelModal({
       <View style={styles.backdrop}>
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
 
-        <View style={[styles.sheetContainer, { width: cardWidth }]}>
-          <BlurView intensity={34} tint="systemUltraThinMaterialDark" style={StyleSheet.absoluteFill} />
-          <View style={styles.sheetDarkTint} />
-          <LinearGradient
-            pointerEvents="none"
-            colors={['rgba(255,255,255,0.16)', 'rgba(255,255,255,0)']}
-            start={{ x: 0.5, y: 0 }}
-            end={{ x: 0.5, y: 1 }}
-            style={styles.sheetTopSheen}
-          />
-
+        <GlassSurface
+          variant="liquid"
+          radius={40}
+          intensity={28}
+          style={[styles.sheetCard, { width: cardWidth, maxHeight: cardMaxHeight }]}
+        >
           <View style={styles.inner}>
-            {/* Header Row */}
+            {/* Sleek Single-Line Header */}
             <View style={styles.headerRow}>
               <View style={styles.titleCluster}>
-                <View style={styles.headerIconBadge}>
-                  <Feather name="hard-drive" size={17} color={COLORS.accent} />
+                <View style={styles.headerIconDot}>
+                  <Ionicons name="server-outline" size={16} color="#FF4D57" />
                 </View>
                 <View style={{ flexShrink: 1 }}>
-                  <Text style={styles.headerTitle}>Máy chủ phát phim</Text>
+                  <Text style={styles.headerTitle} numberOfLines={1}>
+                    Máy chủ phát phim
+                  </Text>
                   <Text style={styles.headerSubtitle} numberOfLines={1}>
-                    Đang phát: {activeServerLabel}
+                    Đang chọn: {activeServerLabel}
                   </Text>
                 </View>
               </View>
 
               <View style={styles.headerRight}>
-                <View style={styles.autoPill}>
-                  <Text style={styles.autoLabel}>Tự tối ưu</Text>
-                  <Switch
-                    value={autoOptimal}
-                    trackColor={{ false: 'rgba(255,255,255,0.2)', true: COLORS.accent }}
-                    thumbColor="#FFFFFF"
-                    style={styles.compactSwitch}
-                    onValueChange={(val) => {
-                      Haptics.selectionAsync();
-                      onToggleAutoOptimal(val);
-                    }}
+                <BouncyButton
+                  bounciness="gentle"
+                  activeOpacity={0.8}
+                  style={[styles.autoToggleBtn, autoOptimal && styles.autoToggleBtnActive]}
+                  onPress={() => {
+                    Haptics.selectionAsync();
+                    onToggleAutoOptimal(!autoOptimal);
+                  }}
+                >
+                  <View
+                    style={[
+                      styles.autoDot,
+                      { backgroundColor: autoOptimal ? '#30D158' : 'rgba(255,255,255,0.4)' },
+                    ]}
                   />
-                </View>
+                  <Text style={[styles.autoBtnTxt, autoOptimal && styles.autoBtnTxtActive]}>
+                    Tự tối ưu
+                  </Text>
+                </BouncyButton>
 
                 <BouncyButton
                   activeOpacity={0.78}
@@ -130,7 +121,7 @@ export function PlayerServerPanelModal({
                   {pingRefreshing ? (
                     <ActivityIndicator size="small" color="#FFFFFF" />
                   ) : (
-                    <Feather name="refresh-cw" size={16} color="#FFFFFF" />
+                    <Feather name="refresh-cw" size={14} color="#FFFFFF" />
                   )}
                 </BouncyButton>
 
@@ -142,12 +133,12 @@ export function PlayerServerPanelModal({
                     onClose();
                   }}
                 >
-                  <Ionicons name="close" size={19} color="#FFFFFF" />
+                  <Ionicons name="close" size={17} color="#FFFFFF" />
                 </BouncyButton>
               </View>
             </View>
 
-            {/* Server Cards Row */}
+            {/* Compact Server Cards */}
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
@@ -160,45 +151,38 @@ export function PlayerServerPanelModal({
                 const formattedEta = formatVietnameseEta(srv.etaText);
                 const isErrored = Boolean(srv.errored || srv.status === 'error');
 
-                let statusBadge = 'Chưa hỗ trợ';
-                let statusColor = 'rgba(255,255,255,0.72)';
+                let statusText = 'Chưa hỗ trợ';
+                let statusColor = 'rgba(255,255,255,0.68)';
                 let statusDotColor = '#8E8E93';
 
                 if (!srv.supported) {
-                  statusBadge = 'Chưa hỗ trợ';
-                } else if (srv.errored) {
-                  statusBadge = 'Lỗi phiên • Thử lại';
+                  statusText = 'Chưa hỗ trợ';
+                } else if (srv.errored || srv.status === 'error') {
+                  statusText = 'Lỗi • Thử lại';
                   statusColor = '#FF8A80';
                   statusDotColor = '#FF453A';
                 } else if (srv.status === 'ready') {
-                  statusBadge =
-                    isActive
-                      ? 'Đang phát'
-                      : srv.id === '99'
-                        ? 'Ngoại tuyến 100%'
-                        : 'Sẵn sàng';
-                  statusColor = isActive ? '#FFFFFF' : '#B7F7C8';
-                  statusDotColor = '#30D158';
+                  statusText = isActive ? 'Đang phát' : 'Sẵn sàng';
+                  statusColor = isActive ? '#FFFFFF' : '#30D158';
+                  statusDotColor = isActive ? '#FFFFFF' : '#30D158';
                 } else if (srv.status === 'preview_30p') {
-                  statusBadge = `Xem trước 30p (${srv.progress}%)`;
+                  statusText = `Xem 30p (${srv.progress}%)`;
                   statusColor = '#FFD60A';
                   statusDotColor = '#FFD60A';
                 } else if (srv.status === 'preview_10p') {
-                  statusBadge = `Xem trước 10p (${srv.progress}%)`;
+                  statusText = `Xem 10p (${srv.progress}%)`;
                   statusColor = '#FFD60A';
                   statusDotColor = '#FFD60A';
                 } else if (srv.status === 'downloading') {
-                  statusBadge = srv.progressLabel || `Đang xử lý ${srv.progress}%`;
+                  statusText = formattedEta
+                    ? `${srv.progress}% • ${formattedEta}`
+                    : `Đang tải ${srv.progress}%`;
                   statusColor = '#FDE68A';
                   statusDotColor = '#FF9F0A';
                 } else if (srv.status === 'checking') {
-                  statusBadge = 'Đang kiểm tra...';
-                  statusColor = 'rgba(255,255,255,0.75)';
+                  statusText = 'Đang kiểm tra';
+                  statusColor = 'rgba(255,255,255,0.72)';
                   statusDotColor = '#9CA3AF';
-                } else if (srv.status === 'error') {
-                  statusBadge = srv.progressLabel || 'Lỗi kết nối • Thử lại';
-                  statusColor = '#FF8A80';
-                  statusDotColor = '#FF453A';
                 }
 
                 let pingTxt = '';
@@ -212,7 +196,7 @@ export function PlayerServerPanelModal({
                     pingColor =
                       srv.pingMs <= 180 ? '#30D158' : srv.pingMs <= 500 ? '#FFD60A' : '#FF9F0A';
                   } else if (srv.pingFailed) {
-                    pingTxt = 'Timeout';
+                    pingTxt = 'Chậm';
                     pingColor = '#FF453A';
                   }
                 }
@@ -221,7 +205,7 @@ export function PlayerServerPanelModal({
                   <BouncyButton
                     key={srv.id}
                     bounciness="gentle"
-                    activeOpacity={disabled ? 1 : 0.8}
+                    activeOpacity={disabled ? 1 : 0.82}
                     disabled={disabled}
                     style={[
                       styles.serverCard,
@@ -234,71 +218,45 @@ export function PlayerServerPanelModal({
                       onSelectServer(srv.id);
                     }}
                   >
-                    {posterUrl ? (
-                      <Image
-                        source={{ uri: posterUrl }}
-                        style={styles.cardBgPoster}
-                        blurRadius={24}
-                      />
-                    ) : null}
-                    <View
-                      style={[
-                        styles.cardGlassLayer,
-                        isActive && styles.cardGlassLayerActive,
-                      ]}
-                    />
-
-                    {/* Card Top: Server Title + Ping / Live Pill */}
+                    {/* Row 1: Icon + Full Unclipped Title */}
                     <View style={styles.cardTopRow}>
-                      <View style={styles.cardNameWrap}>
-                        <Ionicons
-                          name={srv.id === '99' ? 'phone-portrait-outline' : 'cloud-outline'}
-                          size={14}
-                          color={isActive ? '#FFFFFF' : 'rgba(255,255,255,0.72)'}
-                        />
-                        <Text style={styles.cardTitle} numberOfLines={1}>
-                          {srv.label}
-                        </Text>
-                      </View>
-
-                      {isActive ? (
-                        <View style={styles.activePill}>
-                          <View style={styles.activePulseDot} />
-                          <Text style={styles.activePillTxt}>Đang phát</Text>
-                        </View>
-                      ) : pingTxt ? (
-                        <View style={styles.pingPill}>
-                          <View style={[styles.pingDot, { backgroundColor: pingColor }]} />
-                          <Text style={[styles.pingBadge, { color: pingColor }]}>{pingTxt}</Text>
-                        </View>
-                      ) : null}
+                      <Ionicons
+                        name={srv.id === '99' ? 'phone-portrait-outline' : 'cloud-outline'}
+                        size={14}
+                        color={isActive ? '#FFFFFF' : 'rgba(255,255,255,0.75)'}
+                      />
+                      <Text style={styles.cardTitle} numberOfLines={1}>
+                        {srv.label}
+                      </Text>
                     </View>
 
-                    {/* Card Description */}
-                    <Text style={styles.cardSubtitle} numberOfLines={2}>
+                    {/* Row 2: 1-line Subtitle */}
+                    <Text style={styles.cardSubtitle} numberOfLines={1}>
                       {srv.subtitle}
                     </Text>
 
-                    {/* Footer Status + Progress */}
+                    {/* Row 3: Compact Status Left + Ping Right */}
                     <View style={styles.cardFooter}>
-                      <View style={styles.cardDivider} />
                       <View style={styles.cardStatusRow}>
-                        {isErrored ? (
-                          <Feather name="rotate-cw" size={12} color="#FF8A80" />
-                        ) : playable && isActive ? (
-                          <Ionicons name="checkmark-circle" size={13} color="#FFFFFF" />
-                        ) : (
-                          <View style={[styles.statusDot, { backgroundColor: statusDotColor }]} />
-                        )}
-                        <Text
-                          style={[styles.cardStatusTxt, { color: statusColor }]}
-                          numberOfLines={1}
-                        >
-                          {statusBadge}
-                        </Text>
-                        {formattedEta && srv.status !== 'ready' ? (
-                          <Text style={styles.etaTxt} numberOfLines={1}>
-                            • {formattedEta}
+                        <View style={styles.statusCluster}>
+                          {isErrored ? (
+                            <Feather name="rotate-cw" size={11} color="#FF8A80" />
+                          ) : playable && isActive ? (
+                            <Ionicons name="checkmark-circle" size={12} color="#FFFFFF" />
+                          ) : (
+                            <View style={[styles.statusDot, { backgroundColor: statusDotColor }]} />
+                          )}
+                          <Text
+                            style={[styles.cardStatusTxt, { color: statusColor }]}
+                            numberOfLines={1}
+                          >
+                            {statusText}
+                          </Text>
+                        </View>
+
+                        {pingTxt ? (
+                          <Text style={[styles.pingTxt, { color: pingColor }]} numberOfLines={1}>
+                            {pingTxt}
                           </Text>
                         ) : null}
                       </View>
@@ -311,7 +269,7 @@ export function PlayerServerPanelModal({
                           <View
                             style={[
                               styles.cardProgFill,
-                              { width: `${Math.max(5, srv.progress)}%` },
+                              { width: `${Math.max(6, srv.progress)}%` },
                             ]}
                           />
                         </View>
@@ -322,7 +280,7 @@ export function PlayerServerPanelModal({
               })}
             </ScrollView>
           </View>
-        </View>
+        </GlassSurface>
       </View>
     </Modal>
   );
@@ -331,106 +289,89 @@ export function PlayerServerPanelModal({
 const styles = StyleSheet.create({
   backdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.42)',
+    backgroundColor: 'rgba(0, 0, 0, 0.36)',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 14,
+    padding: 16,
   },
-  sheetContainer: {
-    borderRadius: 28,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.16)',
-    boxShadow: GLASS_SHADOW,
+  sheetCard: {
+    borderRadius: 40,
     elevation: 18,
   },
-  sheetDarkTint: {
-    position: 'absolute',
-    top: 0,
-    right: 0,
-    bottom: 0,
-    left: 0,
-    backgroundColor: 'rgba(14, 17, 25, 0.54)',
-  },
-  sheetTopSheen: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    height: 18,
-  },
   inner: {
-    paddingHorizontal: 18,
-    paddingVertical: 16,
-    gap: 14,
+    paddingTop: 18,
+    paddingBottom: 18,
+    paddingHorizontal: 22,
   },
   headerRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 10,
-    flexWrap: 'wrap',
+    marginBottom: 14,
   },
   titleCluster: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 11,
+    gap: 10,
     flexShrink: 1,
   },
-  headerIconBadge: {
-    width: 36,
-    height: 36,
+  headerIconDot: {
+    width: 30,
+    height: 30,
     borderRadius: 11,
-    backgroundColor: 'rgba(229, 9, 20, 0.16)',
-    borderWidth: 1,
-    borderColor: 'rgba(229, 9, 20, 0.36)',
+    backgroundColor: 'rgba(229, 9, 20, 0.18)',
     alignItems: 'center',
     justifyContent: 'center',
   },
   headerTitle: {
     color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '800',
+    fontSize: 15,
+    fontWeight: '700',
     letterSpacing: -0.2,
   },
   headerSubtitle: {
     color: 'rgba(255, 255, 255, 0.58)',
-    fontSize: 11.5,
+    fontSize: 11,
     fontWeight: '500',
     marginTop: 1,
   },
   headerRight: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 7,
   },
-  autoPill: {
+  autoToggleBtn: {
+    height: 32,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: 'rgba(255, 255, 255, 0.09)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    borderRadius: 20,
-    paddingLeft: 12,
-    paddingRight: 6,
-    height: 36,
+    paddingHorizontal: 11,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
   },
-  autoLabel: {
-    color: '#FFFFFF',
+  autoToggleBtnActive: {
+    backgroundColor: 'rgba(48, 209, 88, 0.2)',
+  },
+  autoDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  autoBtnTxt: {
+    color: 'rgba(255, 255, 255, 0.78)',
     fontSize: 12,
+    fontWeight: '600',
+  },
+  autoBtnTxtActive: {
+    color: '#B7F7C8',
     fontWeight: '700',
   },
-  compactSwitch: {
-    transform: [{ scaleX: 0.85 }, { scaleY: 0.85 }],
-  },
   circleBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.12)',
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.09)',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -439,148 +380,81 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
   },
   serverCard: {
-    width: 186,
-    height: 124,
-    borderRadius: 20,
-    overflow: 'hidden',
-    padding: 13,
+    width: 156,
+    minHeight: 88,
+    borderRadius: 24,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    paddingHorizontal: 13,
+    paddingVertical: 11,
     justifyContent: 'space-between',
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
   },
   serverCardActive: {
-    borderColor: 'rgba(229, 9, 20, 0.82)',
-    borderWidth: 1.5,
-    shadowColor: '#E50914',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.35,
-    shadowRadius: 12,
+    backgroundColor: 'rgba(229, 9, 20, 0.26)',
   },
   serverCardError: {
-    borderColor: 'rgba(255, 69, 58, 0.35)',
+    backgroundColor: 'rgba(255, 69, 58, 0.14)',
   },
   serverCardDisabled: {
-    opacity: 0.4,
-  },
-  cardBgPoster: {
-    position: 'absolute',
-    top: 0,
-    right: 0,
-    bottom: 0,
-    left: 0,
-    opacity: 0.18,
-  },
-  cardGlassLayer: {
-    position: 'absolute',
-    top: 0,
-    right: 0,
-    bottom: 0,
-    left: 0,
-    backgroundColor: 'rgba(18, 22, 32, 0.72)',
-  },
-  cardGlassLayerActive: {
-    backgroundColor: 'rgba(130, 12, 22, 0.42)',
+    opacity: 0.44,
   },
   cardTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
     gap: 6,
-  },
-  cardNameWrap: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    flex: 1,
-    minWidth: 0,
   },
   cardTitle: {
     flex: 1,
     color: '#FFFFFF',
-    fontSize: 13.5,
-    fontWeight: '800',
-  },
-  activePill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: COLORS.accent,
-    paddingHorizontal: 7,
-    paddingVertical: 3,
-    borderRadius: 99,
-  },
-  activePulseDot: {
-    width: 5,
-    height: 5,
-    borderRadius: 2.5,
-    backgroundColor: '#FFFFFF',
-  },
-  activePillTxt: {
-    color: '#FFFFFF',
-    fontSize: 9.5,
-    fontWeight: '800',
-  },
-  pingPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 7,
-    paddingVertical: 2.5,
-    borderRadius: 99,
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  pingDot: {
-    width: 5.5,
-    height: 5.5,
-    borderRadius: 3,
-  },
-  pingBadge: {
-    fontSize: 10.5,
+    fontSize: 13,
     fontWeight: '700',
-    fontVariant: ['tabular-nums'],
+    letterSpacing: -0.1,
   },
   cardSubtitle: {
-    color: 'rgba(255, 255, 255, 0.56)',
+    color: 'rgba(255, 255, 255, 0.6)',
     fontSize: 11,
-    lineHeight: 15,
+    fontWeight: '400',
+    marginTop: 4,
   },
   cardFooter: {
-    gap: 6,
-  },
-  cardDivider: {
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    marginTop: 8,
+    gap: 5,
   },
   cardStatusRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 6,
+  },
+  statusCluster: {
+    flexDirection: 'row',
+    alignItems: 'center',
     gap: 5,
-  },
-  statusDot: {
-    width: 6.5,
-    height: 6.5,
-    borderRadius: 3.5,
-  },
-  cardStatusTxt: {
-    fontSize: 11.5,
-    fontWeight: '700',
     flexShrink: 1,
   },
-  etaTxt: {
-    color: '#FFD60A',
+  statusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  cardStatusTxt: {
+    fontSize: 11,
+    fontWeight: '600',
+    flexShrink: 1,
+  },
+  pingTxt: {
     fontSize: 10.5,
     fontWeight: '600',
+    fontVariant: ['tabular-nums'],
   },
   cardProgTrack: {
-    height: 3.5,
+    height: 2.5,
     borderRadius: 2,
-    backgroundColor: 'rgba(255, 255, 255, 0.16)',
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
     overflow: 'hidden',
   },
   cardProgFill: {
     height: '100%',
-    backgroundColor: COLORS.accent,
     borderRadius: 2,
+    backgroundColor: '#FF9F0A',
   },
 });
