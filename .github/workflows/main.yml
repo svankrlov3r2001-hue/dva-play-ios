@@ -19,6 +19,147 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Verify & Prepare P12 Signing Keychain
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          set -e
+          if [ -z "$APPLE_CERTIFICATE_BASE64" ] || [ -z "$APPLE_PROVISIONING_PROFILE_BASE64" ]; then
+            echo "HAS_SIGNING=0" >> "$GITHUB_ENV"
+            echo "Signing secrets not configured - will build unsigned .ipa for Sideloadly."
+            exit 0
+          fi
+
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          CERT_PATH="$RUNNER_TEMP/certificate.p12"
+          MACOS_CERT_PATH="$RUNNER_TEMP/cert_macos.p12"
+          PEM_PATH="$RUNNER_TEMP/bundle.pem"
+          PP_PATH="$RUNNER_TEMP/profile.mobileprovision"
+          PROFILE_PLIST="$RUNNER_TEMP/profile.plist"
+          ENTITLEMENTS_PATH="$RUNNER_TEMP/entitlements.plist"
+
+          python3 - << 'PYEOF'
+          import base64, os, re
+
+          def decode_secret(var_name, out_path):
+              raw = os.environ.get(var_name, "")
+              cleaned = re.sub(r"\s+", "", raw)
+              data = base64.b64decode(cleaned)
+              with open(out_path, "wb") as f:
+                  f.write(data)
+
+          decode_secret("APPLE_CERTIFICATE_BASE64", os.path.join(os.environ["RUNNER_TEMP"], "certificate.p12"))
+          decode_secret("APPLE_PROVISIONING_PROFILE_BASE64", os.path.join(os.environ["RUNNER_TEMP"], "profile.mobileprovision"))
+          PYEOF
+
+          security cms -D -i "$PP_PATH" > "$PROFILE_PLIST"
+
+          eval "$(python3 - "$PROFILE_PLIST" "$ENTITLEMENTS_PATH" << 'PYEOF'
+          import plistlib, shlex, sys
+
+          profile_plist_path, ent_out_path = sys.argv[1], sys.argv[2]
+          with open(profile_plist_path, "rb") as f:
+              prof = plistlib.load(f)
+
+          ent = prof.get("Entitlements", {})
+          app_id = str(ent.get("application-identifier", ""))
+          team_ids = prof.get("TeamIdentifier") or []
+          team_id = str(team_ids[0]) if team_ids else str(ent.get("com.apple.developer.team-identifier", ""))
+          prefix = f"{team_id}."
+          bundle_id = app_id[len(prefix):] if (team_id and app_id.startswith(prefix)) else app_id
+          profile_name = str(prof.get("Name", ""))
+
+          minimal_ent = {
+              "application-identifier": app_id,
+              "com.apple.developer.team-identifier": team_id,
+              "get-task-allow": bool(ent.get("get-task-allow", False)),
+              "keychain-access-groups": [app_id] if app_id else [],
+          }
+          with open(ent_out_path, "wb") as f:
+              plistlib.dump(minimal_ent, f)
+
+          print(f"PROFILE_APP_ID={shlex.quote(app_id)}")
+          print(f"PROFILE_TEAM_ID={shlex.quote(team_id)}")
+          print(f"PROFILE_BUNDLE_ID={shlex.quote(bundle_id)}")
+          print(f"PROFILE_NAME={shlex.quote(profile_name)}")
+          PYEOF
+          )"
+
+          if [ -z "$PROFILE_BUNDLE_ID" ] || [ -z "$PROFILE_TEAM_ID" ]; then
+            echo "ERROR: Invalid provisioning profile metadata!"
+            exit 1
+          fi
+          echo "Preflight Profile OK -> Bundle ID: $PROFILE_BUNDLE_ID | Team: $PROFILE_TEAM_ID | Profile: $PROFILE_NAME"
+
+          security delete-keychain "$KEYCHAIN_PATH" >/dev/null 2>&1 || true
+          security create-keychain -p "dva-temp-pass" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "dva-temp-pass" "$KEYCHAIN_PATH"
+
+          if security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH" 2>/dev/null; then
+            echo "Imported P12 directly into temporary keychain."
+          else
+            echo "Direct P12 import failed (OpenSSL 3 PBES2 detected); re-encoding to macOS legacy PKCS#12..."
+            OPENSSL_BIN=""
+            BREW_OSSL="$(brew --prefix openssl@3 2>/dev/null || true)/bin/openssl"
+            for cand in /opt/homebrew/opt/openssl@3/bin/openssl /usr/local/opt/openssl@3/bin/openssl "$BREW_OSSL" "$(command -v openssl || true)"; do
+              if [ -n "$cand" ] && [ -x "$cand" ]; then
+                OPENSSL_BIN="$cand"
+                break
+              fi
+            done
+            if [ -z "$OPENSSL_BIN" ]; then
+              echo "ERROR: Could not locate openssl binary to convert P12!"
+              exit 1
+            fi
+            echo "Using OpenSSL: $OPENSSL_BIN ($($OPENSSL_BIN version))"
+
+            rm -f "$PEM_PATH" "$MACOS_CERT_PATH"
+            if ! "$OPENSSL_BIN" pkcs12 -in "$CERT_PATH" -nodes -passin env:APPLE_CERTIFICATE_PASSWORD -out "$PEM_PATH" 2>/dev/null; then
+              "$OPENSSL_BIN" pkcs12 -legacy -in "$CERT_PATH" -nodes -passin env:APPLE_CERTIFICATE_PASSWORD -out "$PEM_PATH"
+            fi
+
+            if ! "$OPENSSL_BIN" pkcs12 -export -in "$PEM_PATH" -out "$MACOS_CERT_PATH" -passout pass:dva-p12-temp -certpbe PBE-SHA1-3DES -keypbe PBE-SHA1-3DES -macalg sha1 2>/dev/null; then
+              "$OPENSSL_BIN" pkcs12 -legacy -export -in "$PEM_PATH" -out "$MACOS_CERT_PATH" -passout pass:dva-p12-temp -certpbe PBE-SHA1-3DES -keypbe PBE-SHA1-3DES -macalg sha1
+            fi
+
+            security import "$MACOS_CERT_PATH" -P "dva-p12-temp" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+            rm -f "$PEM_PATH" "$MACOS_CERT_PATH"
+            echo "Imported re-encoded P12 into temporary keychain successfully."
+          fi
+
+          curl -fsSL --retry 3 https://www.apple.com/certificateauthority/AppleWWDRCAG3.cer -o "$RUNNER_TEMP/AppleWWDRCAG3.cer" && security import "$RUNNER_TEMP/AppleWWDRCAG3.cer" -k "$KEYCHAIN_PATH" -A >/dev/null 2>&1 || true
+          curl -fsSL --retry 3 https://www.apple.com/certificateauthority/AppleWWDRCAG4.cer -o "$RUNNER_TEMP/AppleWWDRCAG4.cer" && security import "$RUNNER_TEMP/AppleWWDRCAG4.cer" -k "$KEYCHAIN_PATH" -A >/dev/null 2>&1 || true
+
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "dva-temp-pass" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db >/dev/null 2>&1 || security list-keychains -d user -s "$KEYCHAIN_PATH"
+
+          SIGN_IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | python3 -c "import re, sys; txt = sys.stdin.read(); m = re.search(r'\b([0-9A-F]{40})\b', txt); print(m.group(1) if m else '')")
+          if [ -z "$SIGN_IDENTITY" ]; then
+            echo "ERROR: No valid code signing identity found in temporary keychain!"
+            security find-identity -v -p codesigning "$KEYCHAIN_PATH" || true
+            security find-identity -p codesigning "$KEYCHAIN_PATH" || true
+            exit 1
+          fi
+          echo "Preflight Signing Identity SHA-1 verified: $SIGN_IDENTITY"
+
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          cp "$PP_PATH" ~/Library/MobileDevice/Provisioning\ Profiles/profile.mobileprovision
+
+          {
+            echo "HAS_SIGNING=1"
+            echo "SIGN_IDENTITY=$SIGN_IDENTITY"
+            echo "KEYCHAIN_PATH=$KEYCHAIN_PATH"
+            echo "PP_PATH=$PP_PATH"
+            echo "ENTITLEMENTS_PATH=$ENTITLEMENTS_PATH"
+            echo "PROFILE_APP_ID=$PROFILE_APP_ID"
+            echo "PROFILE_TEAM_ID=$PROFILE_TEAM_ID"
+            echo "PROFILE_BUNDLE_ID=$PROFILE_BUNDLE_ID"
+            echo "PROFILE_NAME=$PROFILE_NAME"
+          } >> "$GITHUB_ENV"
+
       - name: Set up Node.js 20.x
         uses: actions/setup-node@v4
         with:
@@ -46,10 +187,6 @@ jobs:
 
       - name: Build iOS .app & Package DVA-Play-iOS.ipa
         working-directory: ${{ env.APP_DIR }}
-        env:
-          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
         run: |
           set -e
           NODE_BIN=$(command -v node || true)
@@ -97,108 +234,46 @@ jobs:
           cp -R "$APP_PATH" "build/Payload/$APP_BASENAME"
           TARGET_APP="build/Payload/$APP_BASENAME"
 
-          if [ -n "$APPLE_CERTIFICATE_BASE64" ] && [ -n "$APPLE_PROVISIONING_PROFILE_BASE64" ]; then
-            echo "P12 signing secrets detected - signing $TARGET_APP for direct OTA & Sideloadly..."
-            KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
-            CERT_PATH="$RUNNER_TEMP/certificate.p12"
-            PP_PATH="$RUNNER_TEMP/profile.mobileprovision"
-            PROFILE_PLIST="$RUNNER_TEMP/profile.plist"
-            ENTITLEMENTS_PATH="$RUNNER_TEMP/entitlements.plist"
-
-            python3 - << 'PYEOF'
-          import base64, os, re
-
-          def decode_secret(var_name, out_path):
-              raw = os.environ.get(var_name, "")
-              cleaned = re.sub(r"\s+", "", raw)
-              data = base64.b64decode(cleaned)
-              with open(out_path, "wb") as f:
-                  f.write(data)
-
-          decode_secret("APPLE_CERTIFICATE_BASE64", os.path.join(os.environ["RUNNER_TEMP"], "certificate.p12"))
-          decode_secret("APPLE_PROVISIONING_PROFILE_BASE64", os.path.join(os.environ["RUNNER_TEMP"], "profile.mobileprovision"))
-          PYEOF
-
-            security cms -D -i "$PP_PATH" > "$PROFILE_PLIST"
-
-            eval "$(python3 - "$PROFILE_PLIST" "$ENTITLEMENTS_PATH" << 'PYEOF'
-          import plistlib, shlex, sys
-
-          profile_plist_path, ent_out_path = sys.argv[1], sys.argv[2]
-          with open(profile_plist_path, "rb") as f:
-              prof = plistlib.load(f)
-
-          ent = prof.get("Entitlements", {})
-          app_id = str(ent.get("application-identifier", ""))
-          team_ids = prof.get("TeamIdentifier") or []
-          team_id = str(team_ids[0]) if team_ids else str(ent.get("com.apple.developer.team-identifier", ""))
-          prefix = f"{team_id}."
-          bundle_id = app_id[len(prefix):] if (team_id and app_id.startswith(prefix)) else app_id
-          profile_name = str(prof.get("Name", ""))
-
-          minimal_ent = {
-              "application-identifier": app_id,
-              "com.apple.developer.team-identifier": team_id,
-              "get-task-allow": bool(ent.get("get-task-allow", False)),
-              "keychain-access-groups": [app_id] if app_id else [],
-          }
-          with open(ent_out_path, "wb") as f:
-              plistlib.dump(minimal_ent, f)
-
-          print(f"PROFILE_APP_ID={shlex.quote(app_id)}")
-          print(f"PROFILE_TEAM_ID={shlex.quote(team_id)}")
-          print(f"PROFILE_BUNDLE_ID={shlex.quote(bundle_id)}")
-          print(f"PROFILE_NAME={shlex.quote(profile_name)}")
-          PYEOF
-            )"
-
-            if [ -z "$PROFILE_BUNDLE_ID" ] || [ -z "$PROFILE_TEAM_ID" ]; then
-              echo "ERROR: Invalid provisioning profile metadata!"
-              exit 1
-            fi
-            echo "Signing Bundle ID: $PROFILE_BUNDLE_ID | Team: $PROFILE_TEAM_ID | Profile: $PROFILE_NAME"
-
-            security delete-keychain "$KEYCHAIN_PATH" >/dev/null 2>&1 || true
-            security create-keychain -p "dva-temp-pass" "$KEYCHAIN_PATH"
-            security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          if [ "${HAS_SIGNING:-0}" = "1" ]; then
+            echo "Signing $TARGET_APP with P12 identity $SIGN_IDENTITY ($PROFILE_BUNDLE_ID)..."
             security unlock-keychain -p "dva-temp-pass" "$KEYCHAIN_PATH"
-            security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
-            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "dva-temp-pass" "$KEYCHAIN_PATH"
-            security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain
 
-            SIGN_IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | python3 -c "import re, sys; txt = sys.stdin.read(); m = re.search(r'\b([0-9A-F]{40})\b', txt); print(m.group(1) if m else '')")
-            if [ -z "$SIGN_IDENTITY" ]; then
-              echo "ERROR: Could not locate valid code signing identity in P12!"
-              security find-identity -v "$KEYCHAIN_PATH" || true
-              exit 1
-            fi
-            echo "Using signing identity SHA-1: $SIGN_IDENTITY"
-
-            /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $PROFILE_BUNDLE_ID" "$TARGET_APP/Info.plist"
-            /usr/libexec/PlistBuddy -c "Delete :DvaSignedBuild" "$TARGET_APP/Info.plist" >/dev/null 2>&1 || true
-            /usr/libexec/PlistBuddy -c "Add :DvaSignedBuild bool true" "$TARGET_APP/Info.plist"
-            /usr/libexec/PlistBuddy -c "Delete :DvaSignedTeamId" "$TARGET_APP/Info.plist" >/dev/null 2>&1 || true
-            /usr/libexec/PlistBuddy -c "Add :DvaSignedTeamId string $PROFILE_TEAM_ID" "$TARGET_APP/Info.plist"
-            /usr/libexec/PlistBuddy -c "Delete :DvaSignedProfileName" "$TARGET_APP/Info.plist" >/dev/null 2>&1 || true
-            /usr/libexec/PlistBuddy -c "Add :DvaSignedProfileName string $PROFILE_NAME" "$TARGET_APP/Info.plist"
-
+            rm -rf "$TARGET_APP/_CodeSignature"
+            xattr -cr "$TARGET_APP" 2>/dev/null || true
             cp "$PP_PATH" "$TARGET_APP/embedded.mobileprovision"
 
-            find "$TARGET_APP" -type f \( -name "*.dylib" \) | while IFS= read -r target_bin; do
-              codesign --force --sign "$SIGN_IDENTITY" --timestamp=none "$target_bin"
+            python3 - "$TARGET_APP/Info.plist" "$PROFILE_BUNDLE_ID" "$PROFILE_TEAM_ID" "$PROFILE_NAME" << 'PYEOF'
+          import plistlib, sys
+
+          plist_path, bundle_id, team_id, prof_name = sys.argv[1:5]
+          with open(plist_path, "rb") as f:
+              fmt = plistlib.FMT_BINARY
+              data = plistlib.load(f)
+
+          data["CFBundleIdentifier"] = bundle_id
+          data["DvaSignedBuild"] = True
+          data["DvaSignedTeamId"] = team_id
+          data["DvaSignedProfileName"] = prof_name
+
+          with open(plist_path, "wb") as f:
+              plistlib.dump(data, f, fmt=fmt)
+          PYEOF
+
+            find "$TARGET_APP" -type f -name "*.dylib" | while IFS= read -r target_bin; do
+              codesign --force --sign "$SIGN_IDENTITY" --keychain "$KEYCHAIN_PATH" --timestamp=none "$target_bin"
             done
             if [ -d "$TARGET_APP/Frameworks" ]; then
               find "$TARGET_APP/Frameworks" -maxdepth 2 -name "*.framework" -type d | while IFS= read -r fw; do
-                codesign --force --sign "$SIGN_IDENTITY" --timestamp=none "$fw"
+                codesign --force --sign "$SIGN_IDENTITY" --keychain "$KEYCHAIN_PATH" --timestamp=none "$fw"
               done
             fi
             if [ -d "$TARGET_APP/PlugIns" ]; then
               find "$TARGET_APP/PlugIns" -maxdepth 2 -name "*.appex" -type d | while IFS= read -r appex; do
-                codesign --force --sign "$SIGN_IDENTITY" --entitlements "$ENTITLEMENTS_PATH" --timestamp=none "$appex"
+                codesign --force --sign "$SIGN_IDENTITY" --keychain "$KEYCHAIN_PATH" --entitlements "$ENTITLEMENTS_PATH" --timestamp=none "$appex"
               done
             fi
 
-            codesign --force --sign "$SIGN_IDENTITY" --entitlements "$ENTITLEMENTS_PATH" --timestamp=none "$TARGET_APP"
+            codesign --force --sign "$SIGN_IDENTITY" --keychain "$KEYCHAIN_PATH" --entitlements "$ENTITLEMENTS_PATH" --timestamp=none "$TARGET_APP"
             codesign --verify --deep --strict --verbose=2 "$TARGET_APP"
           else
             echo "No signing secrets found - packaging unsigned .ipa for Sideloadly / AltStore..."
@@ -217,4 +292,4 @@ jobs:
         if: always()
         run: |
           security delete-keychain "$RUNNER_TEMP/app-signing.keychain-db" >/dev/null 2>&1 || true
-          rm -f "$RUNNER_TEMP/certificate.p12" "$RUNNER_TEMP/profile.mobileprovision" "$RUNNER_TEMP/profile.plist" "$RUNNER_TEMP/entitlements.plist"
+          rm -f "$RUNNER_TEMP/certificate.p12" "$RUNNER_TEMP/cert_macos.p12" "$RUNNER_TEMP/bundle.pem" "$RUNNER_TEMP/profile.mobileprovision" "$RUNNER_TEMP/profile.plist" "$RUNNER_TEMP/entitlements.plist" "$RUNNER_TEMP/AppleWWDRCAG3.cer" "$RUNNER_TEMP/AppleWWDRCAG4.cer"
