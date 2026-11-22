@@ -552,6 +552,14 @@ export function PlayerModal({
   const viewBRef = useRef<VideoView | null>(null);
   const layerAOpacity = useRef(new Animated.Value(1)).current;
   const layerBOpacity = useRef(new Animated.Value(0)).current;
+  const layerAScale = useRef(new Animated.Value(1)).current;
+  const layerBScale = useRef(new Animated.Value(1)).current;
+  const transitionVeilOpacity = useRef(new Animated.Value(0)).current;
+  const [transitionTopLayer, setTransitionTopLayer] = useState<'A' | 'B' | null>(null);
+  const crossfadeSeqRef = useRef(0);
+  const crossfadePreRollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const crossfadeAudioIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const crossfadeToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [activeLayer, setActiveLayer] = useState<'A' | 'B'>('A');
   const activeLayerRef = useRef<'A' | 'B'>('A');
@@ -564,6 +572,60 @@ export function PlayerModal({
   const getInactivePlayer = useCallback((): VideoPlayer => {
     return activeLayerRef.current === 'A' ? playerB : playerA;
   }, [playerA, playerB]);
+
+  const cancelEpisodeCrossfade = useCallback(
+    (opts?: { keepInactiveRunning?: boolean }) => {
+      crossfadeSeqRef.current += 1;
+      if (crossfadePreRollTimerRef.current) {
+        clearTimeout(crossfadePreRollTimerRef.current);
+        crossfadePreRollTimerRef.current = null;
+      }
+      if (crossfadeAudioIntervalRef.current) {
+        clearInterval(crossfadeAudioIntervalRef.current);
+        crossfadeAudioIntervalRef.current = null;
+      }
+      if (crossfadeToastTimerRef.current) {
+        clearTimeout(crossfadeToastTimerRef.current);
+        crossfadeToastTimerRef.current = null;
+      }
+      layerAOpacity.stopAnimation();
+      layerBOpacity.stopAnimation();
+      layerAScale.stopAnimation();
+      layerBScale.stopAnimation();
+      transitionVeilOpacity.stopAnimation();
+      layerAScale.setValue(1);
+      layerBScale.setValue(1);
+      transitionVeilOpacity.setValue(0);
+      setTransitionTopLayer(null);
+
+      const curActive = activeLayerRef.current;
+      const activeOp = curActive === 'A' ? layerAOpacity : layerBOpacity;
+      const inactiveOp = curActive === 'A' ? layerBOpacity : layerAOpacity;
+      activeOp.setValue(1);
+      inactiveOp.setValue(0);
+
+      const activeP = curActive === 'A' ? playerA : playerB;
+      const inactiveP = curActive === 'A' ? playerB : playerA;
+      try {
+        activeP.volume = 1;
+        activeP.muted = false;
+      } catch {}
+      if (!opts?.keepInactiveRunning) {
+        try {
+          inactiveP.volume = 0;
+          inactiveP.muted = true;
+          inactiveP.pause();
+        } catch {}
+      }
+    },
+    [layerAOpacity, layerBOpacity, layerAScale, layerBScale, transitionVeilOpacity, playerA, playerB]
+  );
+
+  useEffect(() => {
+    return () => {
+      cancelEpisodeCrossfade();
+    };
+  }, [cancelEpisodeCrossfade]);
 
   // Core player UI states
   const [localServerPort, setLocalServerPort] = useState<number>(() =>
@@ -1090,9 +1152,11 @@ export function PlayerModal({
       srv: ServerRuntimeState,
       opts: { seekToSec?: number; serverFileKey: string; vnUrl: string; enUrl: string; title: string }
     ) => {
+      cancelEpisodeCrossfade();
       const player = getActivePlayer();
       const inactive = getInactivePlayer();
       try {
+        inactive.volume = 0;
         inactive.muted = true;
         inactive.pause();
       } catch {}
@@ -1138,6 +1202,7 @@ export function PlayerModal({
           contentType: wrapped.contentType,
           metadata: { title: opts.title, artist: 'Đặng Việt Anh' },
         });
+        player.volume = 1;
         player.muted = false;
         player.playbackRate = playbackRateRef.current;
         if (!isLockedRef.current) {
@@ -1145,7 +1210,7 @@ export function PlayerModal({
         }
       } catch {}
     },
-    [ensureLiveLocalPort, getActivePlayer, getInactivePlayer]
+    [cancelEpisodeCrossfade, ensureLiveLocalPort, getActivePlayer, getInactivePlayer]
   );
 
   // Start or restart polling for Phiên 11 / Phiên 36 readiness
@@ -1759,6 +1824,7 @@ export function PlayerModal({
         preloadedNextRef.current = pkg;
         const inactive = getInactivePlayer();
         inactive.muted = true;
+        inactive.volume = 0;
         await inactive.replaceAsync({
           uri: offUrl.url,
           contentType: offUrl.format === 'hls' ? 'hls' : 'progressive',
@@ -1845,6 +1911,7 @@ export function PlayerModal({
 
       const inactive = getInactivePlayer();
       inactive.muted = true;
+      inactive.volume = 0;
       await inactive.replaceAsync({
         uri: wrapped.uri,
         contentType: wrapped.contentType,
@@ -1876,42 +1943,182 @@ export function PlayerModal({
         checkFilePollRef.current = null;
       }
 
+      cancelEpisodeCrossfade({ keepInactiveRunning: true });
+      const myFadeSeq = ++crossfadeSeqRef.current;
+
       const oldLayer = activeLayerRef.current;
       const newLayer: 'A' | 'B' = oldLayer === 'A' ? 'B' : 'A';
       const oldPlayer = oldLayer === 'A' ? playerA : playerB;
       const promotedPlayer = newLayer === 'A' ? playerA : playerB;
+      const oldOpacity = oldLayer === 'A' ? layerAOpacity : layerBOpacity;
+      const newOpacity = newLayer === 'A' ? layerAOpacity : layerBOpacity;
+      const oldScale = oldLayer === 'A' ? layerAScale : layerBScale;
+      const newScale = newLayer === 'A' ? layerAScale : layerBScale;
+      const useSmoothTransition = Boolean(settingsRef.current.transitionEffectEnabled);
 
-      try {
-        if (pkg.skipIntroSec > 0 && promotedPlayer.currentTime < pkg.skipIntroSec) {
-          promotedPlayer.currentTime = pkg.skipIntroSec;
-        }
-        promotedPlayer.playbackRate = playbackRate;
-        promotedPlayer.muted = false;
-        if (!isLockedRef.current) {
-          promotedPlayer.play();
-        }
-      } catch {}
-
-      const durMs = settingsRef.current.transitionEffectEnabled ? 620 : 0;
-      Animated.parallel([
-        Animated.timing(newLayer === 'A' ? layerAOpacity : layerBOpacity, {
-          toValue: 1,
-          duration: durMs,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }),
-        Animated.timing(oldLayer === 'A' ? layerAOpacity : layerBOpacity, {
-          toValue: 0,
-          duration: durMs,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }),
-      ]).start(() => {
+      if (!useSmoothTransition) {
         try {
+          if (pkg.skipIntroSec > 0 && promotedPlayer.currentTime < pkg.skipIntroSec) {
+            promotedPlayer.currentTime = pkg.skipIntroSec;
+          }
+          promotedPlayer.playbackRate = playbackRateRef.current;
+          promotedPlayer.volume = 1;
+          promotedPlayer.muted = false;
+          if (!isLockedRef.current) {
+            promotedPlayer.play();
+          }
+        } catch {}
+
+        newOpacity.setValue(1);
+        oldOpacity.setValue(0);
+        oldScale.setValue(1);
+        newScale.setValue(1);
+        transitionVeilOpacity.setValue(0);
+        setTransitionTopLayer(null);
+        try {
+          oldPlayer.volume = 0;
           oldPlayer.muted = true;
           oldPlayer.pause();
         } catch {}
-      });
+      } else {
+        // Phase 1 — Silent Pre-Roll (220ms): prepare incoming layer seamlessly underneath old episode
+        setTransitionTopLayer(oldLayer);
+        oldOpacity.setValue(1);
+        oldScale.setValue(1);
+        newOpacity.setValue(1);
+        newScale.setValue(1.03);
+        transitionVeilOpacity.setValue(0);
+
+        try {
+          if (pkg.skipIntroSec > 0 && promotedPlayer.currentTime < pkg.skipIntroSec) {
+            promotedPlayer.currentTime = pkg.skipIntroSec;
+          }
+          promotedPlayer.playbackRate = playbackRateRef.current;
+          promotedPlayer.volume = 0;
+          promotedPlayer.muted = false;
+          if (!isLockedRef.current) {
+            promotedPlayer.play();
+          }
+        } catch {}
+
+        const VISUAL_DISSOLVE_MS = 2600;
+        const AUDIO_CROSSFADE_MS = 2800;
+
+        crossfadePreRollTimerRef.current = setTimeout(() => {
+          crossfadePreRollTimerRef.current = null;
+          if (crossfadeSeqRef.current !== myFadeSeq) return;
+
+          // Phase 2 — Optical Cinema Dissolve (2600ms) + Cinema Shadow Breath + Subtle Scale Drift
+          Animated.parallel([
+            Animated.timing(oldOpacity, {
+              toValue: 0,
+              duration: VISUAL_DISSOLVE_MS,
+              easing: Easing.inOut(Easing.sin),
+              useNativeDriver: true,
+            }),
+            Animated.timing(oldScale, {
+              toValue: 1.035,
+              duration: VISUAL_DISSOLVE_MS,
+              easing: Easing.inOut(Easing.sin),
+              useNativeDriver: true,
+            }),
+            Animated.timing(newScale, {
+              toValue: 1,
+              duration: VISUAL_DISSOLVE_MS,
+              easing: Easing.out(Easing.cubic),
+              useNativeDriver: true,
+            }),
+            Animated.sequence([
+              Animated.timing(transitionVeilOpacity, {
+                toValue: 0.34,
+                duration: 1150,
+                easing: Easing.inOut(Easing.sin),
+                useNativeDriver: true,
+              }),
+              Animated.timing(transitionVeilOpacity, {
+                toValue: 0,
+                duration: 1450,
+                easing: Easing.out(Easing.sin),
+                useNativeDriver: true,
+              }),
+            ]),
+          ]).start(() => {
+            if (crossfadeSeqRef.current !== myFadeSeq) return;
+            setTransitionTopLayer(null);
+            oldScale.setValue(1);
+            newScale.setValue(1);
+            transitionVeilOpacity.setValue(0);
+          });
+
+          // Asymmetric L-Cut Audio Crossfade (2800ms) preserving mood between episodes
+          const startOldVol =
+            typeof oldPlayer.volume === 'number' && oldPlayer.volume > 0 ? oldPlayer.volume : 1;
+          const audioStartAt = Date.now();
+          let oldPausedSilently = false;
+
+          crossfadeAudioIntervalRef.current = setInterval(() => {
+            if (crossfadeSeqRef.current !== myFadeSeq) {
+              if (crossfadeAudioIntervalRef.current) {
+                clearInterval(crossfadeAudioIntervalRef.current);
+                crossfadeAudioIntervalRef.current = null;
+              }
+              return;
+            }
+
+            const t = Math.min(1, (Date.now() - audioStartAt) / AUDIO_CROSSFADE_MS);
+            const oldProgress = Math.min(1, t / 0.72);
+            const oldVol =
+              oldProgress >= 1
+                ? 0
+                : Number((startOldVol * Math.pow(Math.cos(oldProgress * (Math.PI / 2)), 1.35)).toFixed(3));
+            const newProgress = t <= 0.26 ? 0 : Math.min(1, (t - 0.26) / 0.74);
+            const newVol =
+              newProgress <= 0
+                ? 0
+                : Number(Math.pow(Math.sin(newProgress * (Math.PI / 2)), 1.2).toFixed(3));
+
+            try {
+              oldPlayer.volume = oldVol;
+              promotedPlayer.volume = newVol;
+            } catch {}
+
+            if (oldVol <= 0.002 && !oldPausedSilently) {
+              oldPausedSilently = true;
+              try {
+                oldPlayer.volume = 0;
+                oldPlayer.muted = true;
+                oldPlayer.pause();
+              } catch {}
+            }
+
+            if (t >= 1) {
+              if (crossfadeAudioIntervalRef.current) {
+                clearInterval(crossfadeAudioIntervalRef.current);
+                crossfadeAudioIntervalRef.current = null;
+              }
+              try {
+                promotedPlayer.volume = 1;
+                promotedPlayer.muted = false;
+                if (!oldPausedSilently) {
+                  oldPlayer.volume = 0;
+                  oldPlayer.muted = true;
+                  oldPlayer.pause();
+                }
+              } catch {}
+            }
+          }, 33);
+        }, 220);
+
+        crossfadeToastTimerRef.current = setTimeout(() => {
+          crossfadeToastTimerRef.current = null;
+          if (crossfadeSeqRef.current !== myFadeSeq) return;
+          showToast(`Đang phát ${pkg.episode.episodes_name}`, 'Chuyển tập mượt mà', 'info', {
+            family: 'ionicons',
+            name: 'film-outline',
+            color: '#FF4D57',
+          });
+        }, 1250);
+      }
 
       activeLayerRef.current = newLayer;
       setActiveLayer(newLayer);
@@ -1942,11 +2149,13 @@ export function PlayerModal({
       } else if (onSwitchEpisode) {
         onSwitchEpisode(pkg.episode, pkg.episodeIndex);
       }
-      showToast(`Đang phát ${pkg.episode.episodes_name}`, undefined, 'info', {
-        family: 'ionicons',
-        name: 'film-outline',
-        color: '#FF4D57',
-      });
+      if (!useSmoothTransition) {
+        showToast(`Đang phát ${pkg.episode.episodes_name}`, undefined, 'info', {
+          family: 'ionicons',
+          name: 'film-outline',
+          color: '#FF4D57',
+        });
+      }
       return;
     }
 
@@ -1963,12 +2172,15 @@ export function PlayerModal({
   }, [
     currentNextEpisode,
     persistCurrentProgress,
+    cancelEpisodeCrossfade,
     updateSetting,
     playerA,
     playerB,
-    playbackRate,
     layerAOpacity,
     layerBOpacity,
+    layerAScale,
+    layerBScale,
+    transitionVeilOpacity,
     onSwitchOfflineItem,
     onSwitchEpisode,
     loadEpisodeByCode,
@@ -2662,6 +2874,7 @@ export function PlayerModal({
   const resetPlayerStateCleanly = useCallback(
     (preservePosterForParams?: PlayerLaunchParams | null) => {
       loadSeqRef.current += 1;
+      cancelEpisodeCrossfade();
       if (checkFilePollRef.current) {
         clearInterval(checkFilePollRef.current);
         checkFilePollRef.current = null;
@@ -2671,6 +2884,8 @@ export function PlayerModal({
         fgStallTimerRef.current = null;
       }
       try {
+        playerA.volume = 1;
+        playerB.volume = 1;
         playerA.pause();
         playerB.pause();
       } catch {}
@@ -2715,7 +2930,7 @@ export function PlayerModal({
       durationRef.current = 0;
       setBufferedPos(0);
     },
-    [playerA, playerB, layerAOpacity, layerBOpacity]
+    [cancelEpisodeCrossfade, playerA, playerB, layerAOpacity, layerBOpacity]
   );
 
   useEffect(() => {
@@ -2938,6 +3153,7 @@ export function PlayerModal({
   // Close cleanup
   const handleClose = useCallback(() => {
     void (async () => {
+      cancelEpisodeCrossfade();
       userExplicitlyPausedRef.current = true;
       void clearActivePlaybackSession();
       clearHudTimer();
@@ -2967,7 +3183,7 @@ export function PlayerModal({
       onWatchProgressSavedRef.current?.();
       onClose();
     })();
-  }, [persistCurrentProgress, clearHudTimer, playerA, playerB, onClose]);
+  }, [cancelEpisodeCrossfade, persistCurrentProgress, clearHudTimer, playerA, playerB, onClose]);
 
   // Buffering-only Auto-Optimal Server Switch with Cooldown (Item 3)
   useEffect(() => {
@@ -3269,8 +3485,9 @@ export function PlayerModal({
           style={[
             styles.layerFill,
             {
-              zIndex: activeLayer === 'A' ? 2 : 1,
+              zIndex: transitionTopLayer ? (transitionTopLayer === 'A' ? 2 : 1) : (activeLayer === 'A' ? 2 : 1),
               opacity: layerAOpacity,
+              transform: [{ scale: layerAScale }],
             },
           ]}
         >
@@ -3307,8 +3524,9 @@ export function PlayerModal({
           style={[
             styles.layerFill,
             {
-              zIndex: activeLayer === 'B' ? 2 : 1,
+              zIndex: transitionTopLayer ? (transitionTopLayer === 'B' ? 2 : 1) : (activeLayer === 'B' ? 2 : 1),
               opacity: layerBOpacity,
+              transform: [{ scale: layerBScale }],
             },
           ]}
         >
@@ -3338,6 +3556,19 @@ export function PlayerModal({
             }}
           />
         </Animated.View>
+
+        {/* Cinema breath veil softening visual mood shift between episodes */}
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            styles.layerFill,
+            {
+              zIndex: 3,
+              backgroundColor: '#05070C',
+              opacity: transitionVeilOpacity,
+            },
+          ]}
+        />
 
         {/* Low contrast softening scrim when contrastLevel === 'Thấp' */}
         {settings.contrastLevel === 'Thấp' ? (
@@ -3713,6 +3944,7 @@ export function PlayerModal({
                   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                   const p = getActivePlayer();
                   if (p.playing) {
+                    cancelEpisodeCrossfade();
                     userExplicitlyPausedRef.current = true;
                     void clearActivePlaybackSession();
                     p.pause();

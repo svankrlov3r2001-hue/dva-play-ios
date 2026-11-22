@@ -757,7 +757,7 @@ function RootAppContent() {
     });
   };
 
-  const handleSwitchOfflineItem = (offline: OfflineDownloadItem) => {
+  const handleSwitchOfflineItem = useCallback((offline: OfflineDownloadItem) => {
     setPlayerParams((prev) =>
       prev
         ? {
@@ -771,9 +771,9 @@ function RootAppContent() {
           }
         : null
     );
-  };
+  }, []);
 
-  const handleSwitchEpisode = (ep: EpisodeItem, epIndex: number) => {
+  const handleSwitchEpisode = useCallback((ep: EpisodeItem, epIndex: number) => {
     setPlayerParams((prev) =>
       prev
         ? {
@@ -786,7 +786,7 @@ function RootAppContent() {
           }
         : null
     );
-  };
+  }, []);
 
   const handleClosePlayer = useCallback(() => {
     closePlayerWithCurtain();
@@ -795,6 +795,15 @@ function RootAppContent() {
   const handleEnterOfflineModeFromPlayer = useCallback(() => {
     closePlayerWithCurtain(() => enterOfflineMode());
   }, [closePlayerWithCurtain, enterOfflineMode]);
+
+  const handleCloseDetail = useCallback(() => {
+    setDetailId(null);
+  }, []);
+
+  const handleClosePreview = useCallback(() => {
+    setPreviewId(null);
+    setPreviewMovie(null);
+  }, []);
 
   const renderLockOverlay = () => {
     if (!isLocked) return null;
@@ -988,7 +997,7 @@ function RootAppContent() {
               videosId={detailId}
               obscuredByPlayer={hidePortraitStage || playerParams !== null}
               watchProgressRevision={watchProgressRevision}
-              onClose={() => setDetailId(null)}
+              onClose={handleCloseDetail}
               onPlay={(p) => launchPlayerWithCurtain(p)}
               onOpenCastWithMovie={(m) => {
                 setCastMovie(m);
@@ -1002,10 +1011,7 @@ function RootAppContent() {
               videosId={previewId}
               initialMovie={previewMovie}
               obscuredByPlayer={hidePortraitStage || playerParams !== null}
-              onClose={() => {
-                setPreviewId(null);
-                setPreviewMovie(null);
-              }}
+              onClose={handleClosePreview}
               onPlay={(p) =>
                 launchPlayerWithCurtain({
                   videosId: p.videosId,

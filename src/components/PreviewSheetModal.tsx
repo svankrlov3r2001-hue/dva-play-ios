@@ -70,6 +70,11 @@ export function PreviewSheetModal({
   const targetStartSecRef = useRef(200);
   const seekAppliedRef = useRef(false);
   const revealedRef = useRef(false);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  const initialWishlistRef = useRef(Boolean(initialMovie?.in_wishlist));
+  initialWishlistRef.current = Boolean(initialMovie?.in_wishlist);
+  const loadedVideosIdRef = useRef<number | null>(null);
 
   const player = useVideoPlayer(null, (p) => {
     p.loop = true;
@@ -158,6 +163,7 @@ export function PreviewSheetModal({
   // Phase 1: Load movie metadata ONLY (never blocked by trailer check or video buffering)
   useEffect(() => {
     if (!visible || !videosId) {
+      loadedVideosIdRef.current = null;
       activeTokenRef.current += 1;
       setLoading(false);
       setInfo(null);
@@ -172,10 +178,15 @@ export function PreviewSheetModal({
       return;
     }
 
+    if (loadedVideosIdRef.current === videosId) {
+      return;
+    }
+    loadedVideosIdRef.current = videosId;
+
     let cancelled = false;
     setLoading(true);
     setInfo(null);
-    setInWishlist(Boolean(initialMovie?.in_wishlist));
+    setInWishlist(initialWishlistRef.current);
     setTrailerActive(false);
     trailerOpacity.setValue(0);
     seekAppliedRef.current = false;
@@ -190,7 +201,7 @@ export function PreviewSheetModal({
         setInWishlist(Boolean(res.in_wishlist));
       } catch (err) {
         if (!cancelled && isNetworkError(err)) {
-          onClose();
+          onCloseRef.current();
           void reportNetworkFailure();
         }
       } finally {
@@ -201,7 +212,7 @@ export function PreviewSheetModal({
     return () => {
       cancelled = true;
     };
-  }, [visible, videosId, initialMovie?.in_wishlist, player, trailerOpacity, onClose]);
+  }, [visible, videosId, player, trailerOpacity]);
 
   // Phase 2: Load & seek trailer >= 200s asynchronously after movie metadata is ready
   useEffect(() => {
