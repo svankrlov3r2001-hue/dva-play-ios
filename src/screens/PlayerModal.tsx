@@ -2998,6 +2998,55 @@ export function PlayerModal({
     [clearHudTimer, seekToWithWarning, showHudWithTimer]
   );
 
+  const pipSubCuesJson = useMemo(() => {
+    if (!settings.subShowVi && !settings.subShowEn) return '';
+    const delay = settings.subDelaySec || 0;
+    const extend = settings.subExtendSec || 0;
+    const vi = settings.subShowVi ? vnCues : [];
+    const en = settings.subShowEn ? enCues : [];
+    if (vi.length === 0 && en.length === 0) return '';
+    const primary = settings.subReverse && en.length > 0 ? en : vi.length > 0 ? vi : en;
+    const secondary = primary === vi ? en : vi;
+    const rows: { s: number; e: number; t: string }[] = [];
+    let secIdx = 0;
+    for (let i = 0; i < primary.length; i++) {
+      const c = primary[i];
+      const s = Math.max(0, Number((c.start + delay).toFixed(2)));
+      const e = Math.max(s + 0.25, Number((c.end + delay + extend).toFixed(2)));
+      let text = c.text.trim();
+      if (secondary.length > 0) {
+        while (secIdx < secondary.length && secondary[secIdx].end < c.start - 0.6) {
+          secIdx++;
+        }
+        if (secIdx < secondary.length) {
+          const m = secondary[secIdx];
+          if (m.start <= c.end + 0.6 && m.end >= c.start - 0.6) {
+            const secTxt = m.text.trim();
+            if (secTxt && secTxt !== text) {
+              text = `${text}\n${secTxt}`;
+            }
+          }
+        }
+      }
+      if (text) rows.push({ s, e, t: text });
+    }
+    if (rows.length === 0) return '';
+    rows.sort((a, b) => a.s - b.s);
+    try {
+      return JSON.stringify(rows);
+    } catch {
+      return '';
+    }
+  }, [
+    settings.subShowVi,
+    settings.subShowEn,
+    settings.subReverse,
+    settings.subDelaySec,
+    settings.subExtendSec,
+    vnCues,
+    enCues,
+  ]);
+
   if (!visible || !params) {
     return null;
   }
@@ -3089,55 +3138,6 @@ export function PlayerModal({
       : !settings.subShowVi && settings.subShowEn
         ? 'en'
         : 'vi';
-
-  const pipSubCuesJson = useMemo(() => {
-    if (!settings.subShowVi && !settings.subShowEn) return '';
-    const delay = settings.subDelaySec || 0;
-    const extend = settings.subExtendSec || 0;
-    const vi = settings.subShowVi ? vnCues : [];
-    const en = settings.subShowEn ? enCues : [];
-    if (vi.length === 0 && en.length === 0) return '';
-    const primary = settings.subReverse && en.length > 0 ? en : vi.length > 0 ? vi : en;
-    const secondary = primary === vi ? en : vi;
-    const rows: { s: number; e: number; t: string }[] = [];
-    let secIdx = 0;
-    for (let i = 0; i < primary.length; i++) {
-      const c = primary[i];
-      const s = Math.max(0, Number((c.start + delay).toFixed(2)));
-      const e = Math.max(s + 0.25, Number((c.end + delay + extend).toFixed(2)));
-      let text = c.text.trim();
-      if (secondary.length > 0) {
-        while (secIdx < secondary.length && secondary[secIdx].end < c.start - 0.6) {
-          secIdx++;
-        }
-        if (secIdx < secondary.length) {
-          const m = secondary[secIdx];
-          if (m.start <= c.end + 0.6 && m.end >= c.start - 0.6) {
-            const secTxt = m.text.trim();
-            if (secTxt && secTxt !== text) {
-              text = `${text}\n${secTxt}`;
-            }
-          }
-        }
-      }
-      if (text) rows.push({ s, e, t: text });
-    }
-    if (rows.length === 0) return '';
-    rows.sort((a, b) => a.s - b.s);
-    try {
-      return JSON.stringify(rows);
-    } catch {
-      return '';
-    }
-  }, [
-    settings.subShowVi,
-    settings.subShowEn,
-    settings.subReverse,
-    settings.subDelaySec,
-    settings.subExtendSec,
-    vnCues,
-    enCues,
-  ]);
 
   const holdToastPayload: WaterDropToastPayload | null = holdBoostActive
     ? {

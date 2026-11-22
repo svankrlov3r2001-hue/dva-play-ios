@@ -697,7 +697,7 @@ export function AccountSettingsScreen({
 
           <View style={styles.insetDivider} />
           <IosSwitchRow
-            icon="return-up-back"
+            icon="arrow-undo"
             badgeColor="#30D158"
             label="Tự động quay lại phim"
             desc="Mở lại ngay bộ phim đang phát khi ứng dụng bị thoát đột ngột"

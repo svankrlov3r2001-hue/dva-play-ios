@@ -64,11 +64,58 @@ export function PreviewSheetModal({
   const backdropOpacity = useRef(new Animated.Value(0)).current;
   const sheetTranslateY = useRef(new Animated.Value(360)).current;
   const trailerOpacity = useRef(new Animated.Value(0)).current;
+  const isMutedRef = useRef(isMuted);
+  isMutedRef.current = isMuted;
+  const activeTokenRef = useRef(0);
+  const targetStartSecRef = useRef(200);
+  const seekAppliedRef = useRef(false);
+  const revealedRef = useRef(false);
 
   const player = useVideoPlayer(null, (p) => {
     p.loop = true;
     p.muted = true;
+    p.timeUpdateEventInterval = 0.25;
   });
+
+  useEffect(() => {
+    const sSub = player.addListener('statusChange', (ev) => {
+      if (ev.status === 'readyToPlay') {
+        const dur = player.duration || 0;
+        const startSec = dur > 15 && dur <= 205 ? Math.floor(dur * 0.25) : 200;
+        targetStartSecRef.current = startSec;
+        if (!seekAppliedRef.current) {
+          seekAppliedRef.current = true;
+          try {
+            player.currentTime = startSec;
+          } catch {}
+        }
+        try {
+          player.muted = isMutedRef.current;
+          player.play();
+        } catch {}
+      }
+    });
+
+    const tSub = player.addListener('timeUpdate', (ev) => {
+      if (revealedRef.current) return;
+      const minExpected = Math.max(0, targetStartSecRef.current - 8);
+      if (ev.currentTime >= minExpected) {
+        revealedRef.current = true;
+        setTrailerActive(true);
+        Animated.timing(trailerOpacity, {
+          toValue: 1,
+          duration: 320,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }).start();
+      }
+    });
+
+    return () => {
+      sSub.remove();
+      tSub.remove();
+    };
+  }, [player, trailerOpacity]);
 
   useEffect(() => {
     if (isOpen) {
@@ -93,11 +140,16 @@ export function PreviewSheetModal({
       sheetTranslateY.stopAnimation();
       backdropOpacity.setValue(0);
       sheetTranslateY.setValue(320);
+      setTrailerActive(false);
+      trailerOpacity.setValue(0);
+      seekAppliedRef.current = false;
+      revealedRef.current = false;
       try {
         player.pause();
       } catch {}
+      player.replaceAsync(null).catch(() => {});
     }
-  }, [isOpen, backdropOpacity, sheetTranslateY, player]);
+  }, [isOpen, backdropOpacity, sheetTranslateY, player, trailerOpacity]);
 
   useEffect(() => {
     player.muted = isMuted;
@@ -106,13 +158,17 @@ export function PreviewSheetModal({
   // Phase 1: Load movie metadata ONLY (never blocked by trailer check or video buffering)
   useEffect(() => {
     if (!visible || !videosId) {
+      activeTokenRef.current += 1;
       setLoading(false);
       setInfo(null);
       setTrailerActive(false);
       trailerOpacity.setValue(0);
+      seekAppliedRef.current = false;
+      revealedRef.current = false;
       try {
         player.pause();
       } catch {}
+      player.replaceAsync(null).catch(() => {});
       return;
     }
 
@@ -122,6 +178,8 @@ export function PreviewSheetModal({
     setInWishlist(Boolean(initialMovie?.in_wishlist));
     setTrailerActive(false);
     trailerOpacity.setValue(0);
+    seekAppliedRef.current = false;
+    revealedRef.current = false;
     setIsMuted(true);
 
     (async () => {
@@ -143,19 +201,25 @@ export function PreviewSheetModal({
     return () => {
       cancelled = true;
     };
-  }, [visible, videosId, initialMovie?.in_wishlist, player, trailerOpacity]);
+  }, [visible, videosId, initialMovie?.in_wishlist, player, trailerOpacity, onClose]);
 
-  // Phase 2: Load & fade-in trailer asynchronously after movie metadata is ready
+  // Phase 2: Load & seek trailer >= 200s asynchronously after movie metadata is ready
   useEffect(() => {
     if (!isOpen || !videosId || !info || info.videos_id !== videosId) {
       return;
     }
 
+    const token = ++activeTokenRef.current;
     let cancelled = false;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => {
       controller.abort();
     }, 3500);
+
+    seekAppliedRef.current = false;
+    revealedRef.current = false;
+    setTrailerActive(false);
+    trailerOpacity.setValue(0);
 
     (async () => {
       let chosenTrailer = info.url_trailer_fallback;
@@ -165,13 +229,13 @@ export function PreviewSheetModal({
         try {
           const chk = await fetch('https://dangvietanh.io.vn/check_file_trailer', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ file: info.title_dot }),
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+            body: `name_movies=${encodeURIComponent(info.title_dot)}`,
             signal: controller.signal,
           });
           if (chk.ok) {
-            const cJson = await chk.json();
-            if (cJson && (cJson.exists || cJson.status === 'ok' || cJson.url)) {
+            const cJson: any = await chk.json();
+            if (cJson && (cJson.status === 'success' || cJson.exists || cJson.status === 'ok')) {
               chosenTrailer = info.url_trailer_hls || info.url_trailer_stream;
               isHls = true;
             }
@@ -185,24 +249,13 @@ export function PreviewSheetModal({
         clearTimeout(timeoutId);
       }
 
-      if (cancelled || !chosenTrailer) return;
+      if (cancelled || activeTokenRef.current !== token || !chosenTrailer) return;
 
       try {
         await player.replaceAsync({
           uri: chosenTrailer,
           contentType: isHls ? 'hls' : 'progressive',
         });
-        if (!cancelled) {
-          player.muted = true;
-          player.play();
-          setTrailerActive(true);
-          Animated.timing(trailerOpacity, {
-            toValue: 1,
-            duration: 320,
-            easing: Easing.out(Easing.cubic),
-            useNativeDriver: true,
-          }).start();
-        }
       } catch {
         // Keep image backdrop cleanly
       }
@@ -210,6 +263,7 @@ export function PreviewSheetModal({
 
     return () => {
       cancelled = true;
+      activeTokenRef.current += 1;
       clearTimeout(timeoutId);
       controller.abort();
       try {

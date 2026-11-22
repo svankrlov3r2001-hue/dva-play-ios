@@ -43,9 +43,9 @@ function computeTitleDot(item: MovieItem): string {
 
 /**
  * Interactive 3D Perspective Hero Carousel:
- * - Default: 5-card fanned 3D deck
- * - After 5s idle: side cards collapse behind center, center poster scales down & docks beside title/meta,
- *   and unblurred full-bleed trailer plays in backdrop with cinema halftone dots overlay.
+ * - Default: 5-card fanned 3D deck while trailer loads & buffers >= 200s
+ * - Once trailer plays its first second: side cards collapse behind center, center poster scales down
+ *   & docks cleanly on the LEFT beside narrowed movie metadata on the right, and unblurred trailer fades in.
  */
 export function Hero3DCarousel({
   items,
@@ -58,7 +58,6 @@ export function Hero3DCarousel({
   const { width: winWidth, height: winHeight } = useWindowDimensions();
   const portraitWidth = Math.min(winWidth, winHeight);
   const [activeIndex, setActiveIndex] = useState(0);
-  const [infoHeaderHeight, setInfoHeaderHeight] = useState(112);
   const [isDocked, setIsDocked] = useState(false);
   const [trailerReady, setTrailerReady] = useState(false);
   const [trailerMuted, setTrailerMuted] = useState(true);
@@ -66,8 +65,8 @@ export function Hero3DCarousel({
   const deckScale = useRef(new Animated.Value(1)).current;
   const infoFade = useRef(new Animated.Value(1)).current;
   const spreadProgress = useRef(new Animated.Value(1)).current; // 1 = fanned deck, 0 = collapsed
-  const dockProgress = useRef(new Animated.Value(0)).current; // 0 = centered top deck, 1 = docked right-bottom
-  const layoutProgress = useRef(new Animated.Value(0)).current; // non-native driver for right padding
+  const dockProgress = useRef(new Animated.Value(0)).current; // 0 = centered top deck, 1 = docked left beside info
+  const layoutProgress = useRef(new Animated.Value(0)).current; // non-native driver for left padding & minHeight
   const trailerOpacity = useRef(new Animated.Value(0)).current;
 
   const activeIndexRef = useRef(0);
@@ -79,8 +78,10 @@ export function Hero3DCarousel({
   const trailerMutedRef = useRef(trailerMuted);
   trailerMutedRef.current = trailerMuted;
   const hasCollapsedRef = useRef(false);
-  const trailerStartSecRef = useRef(0);
+  const trailerTargetStartRef = useRef(200);
   const trailerInitialSeekDoneRef = useRef(false);
+  const trailerFirstPostSeekSecRef = useRef<number | null>(null);
+  const trailerCollapseTriggeredRef = useRef(false);
   const collapseAnimRef = useRef<Animated.CompositeAnimation | null>(null);
   const sequenceTokenRef = useRef(0);
 
@@ -88,6 +89,7 @@ export function Hero3DCarousel({
     p.loop = true;
     p.muted = true;
     p.staysActiveInBackground = false;
+    p.timeUpdateEventInterval = 0.25;
   });
 
   useEffect(() => {
@@ -105,43 +107,98 @@ export function Hero3DCarousel({
     trailerOpacity.setValue(0);
     setTrailerReady(false);
     trailerInitialSeekDoneRef.current = false;
+    trailerFirstPostSeekSecRef.current = null;
+    trailerCollapseTriggeredRef.current = false;
   }, [trailerOpacity, trailerPlayer]);
 
-  // Listen to trailer player readiness & seek cleanly (only reveal after 5s collapse sequence)
+  const triggerCollapseAndRevealRef = useRef<(token: number) => void>(() => {});
+  triggerCollapseAndRevealRef.current = (token: number) => {
+    if (
+      sequenceTokenRef.current !== token ||
+      !isActiveRef.current ||
+      trailerCollapseTriggeredRef.current
+    ) {
+      return;
+    }
+    trailerCollapseTriggeredRef.current = true;
+    hasCollapsedRef.current = true;
+    setIsDocked(true);
+    setTrailerReady(true);
+
+    if (collapseAnimRef.current) {
+      collapseAnimRef.current.stop();
+      collapseAnimRef.current = null;
+    }
+
+    const anim = Animated.sequence([
+      // Step A: side posters collapse cleanly behind center poster
+      Animated.timing(spreadProgress, {
+        toValue: 0,
+        duration: 380,
+        easing: Easing.inOut(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      // Step B: center poster shrinks down-left beside metadata + metadata shifts right + trailer fades in
+      Animated.parallel([
+        Animated.timing(dockProgress, {
+          toValue: 1,
+          duration: 540,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+        Animated.timing(layoutProgress, {
+          toValue: 1,
+          duration: 500,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: false,
+        }),
+        Animated.timing(trailerOpacity, {
+          toValue: 1,
+          duration: 580,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+      ]),
+    ]);
+    collapseAnimRef.current = anim;
+    anim.start();
+  };
+
+  // Listen to trailer readiness, seek to >= 200s, and collapse deck only after trailer plays 1st second
   useEffect(() => {
     const sSub = trailerPlayer.addListener('statusChange', (ev) => {
       if (!isActiveRef.current) return;
       if (ev.status === 'readyToPlay') {
+        const dur = trailerPlayer.duration || 0;
+        const wanted = dur > 15 && dur <= 205 ? Math.floor(dur * 0.25) : 200;
+        trailerTargetStartRef.current = wanted;
         if (!trailerInitialSeekDoneRef.current) {
           trailerInitialSeekDoneRef.current = true;
-          const dur = trailerPlayer.duration || 0;
-          const wanted = trailerStartSecRef.current;
-          if (wanted > 0 && (dur <= 0 || wanted < dur - 8)) {
-            try {
-              trailerPlayer.currentTime = wanted;
-            } catch {}
-          }
-        }
-        if (!hasCollapsedRef.current) {
           try {
-            trailerPlayer.pause();
+            trailerPlayer.currentTime = wanted;
           } catch {}
-          return;
         }
         try {
           trailerPlayer.muted = trailerMutedRef.current;
           trailerPlayer.play();
         } catch {}
-        setTrailerReady(true);
-        Animated.timing(trailerOpacity, {
-          toValue: 1,
-          duration: 620,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }).start();
       } else if (ev.status === 'error') {
         setTrailerReady(false);
         trailerOpacity.setValue(0);
+      }
+    });
+
+    const tSub = trailerPlayer.addListener('timeUpdate', (ev) => {
+      if (!isActiveRef.current || trailerCollapseTriggeredRef.current) return;
+      const minExpected = Math.max(0, trailerTargetStartRef.current - 8);
+      if (ev.currentTime < minExpected) return;
+
+      if (trailerFirstPostSeekSecRef.current === null) {
+        trailerFirstPostSeekSecRef.current = ev.currentTime;
+        return;
+      }
+      if (ev.currentTime - trailerFirstPostSeekSecRef.current >= 0.95) {
+        triggerCollapseAndRevealRef.current(sequenceTokenRef.current);
       }
     });
 
@@ -150,7 +207,7 @@ export function Hero3DCarousel({
         try {
           trailerPlayer.pause();
         } catch {}
-      } else if (isActiveRef.current && hasCollapsedRef.current && trailerReady) {
+      } else if (isActiveRef.current && trailerInitialSeekDoneRef.current) {
         try {
           trailerPlayer.play();
         } catch {}
@@ -159,9 +216,10 @@ export function Hero3DCarousel({
 
     return () => {
       sSub.remove();
+      tSub.remove();
       appSub.remove();
     };
-  }, [trailerPlayer, trailerOpacity, trailerReady]);
+  }, [trailerPlayer, trailerOpacity]);
 
   useEffect(() => {
     setActiveIndex(0);
@@ -206,9 +264,10 @@ export function Hero3DCarousel({
     [deckScale, infoFade]
   );
 
-  // Per-slide 5-second idle lifecycle:
+  // Per-slide lifecycle:
   // t = 0s: reset to 5-card fanned deck
-  // t = 5s: collapse side cards -> dock center poster right-bottom -> fade in full-bleed unblurred trailer
+  // t = 650ms: resolve & start buffering trailer from >= 200s silently in background
+  // on 1st played second of trailer (in timeUpdate): fold side cards -> dock center card LEFT beside info -> reveal trailer
   useEffect(() => {
     const token = ++sequenceTokenRef.current;
     if (collapseAnimRef.current) {
@@ -216,6 +275,8 @@ export function Hero3DCarousel({
       collapseAnimRef.current = null;
     }
     hasCollapsedRef.current = false;
+    trailerCollapseTriggeredRef.current = false;
+    trailerFirstPostSeekSecRef.current = null;
     setIsDocked(false);
     spreadProgress.setValue(1);
     dockProgress.setValue(0);
@@ -229,7 +290,6 @@ export function Hero3DCarousel({
 
     let resolvedUrl = '';
     let resolvedContentType: 'hls' | 'progressive' = 'progressive';
-    let resolvedStartSec = 200;
     const abortCtrl = new AbortController();
 
     const resolveTrailerAsync = async () => {
@@ -248,7 +308,6 @@ export function Hero3DCarousel({
             const safeDot = encodeURIComponent(titleDot);
             resolvedUrl = `https://dangvietanh.io.vn/trailer/${safeDot}/${safeDot}.m3u8`;
             resolvedContentType = 'hls';
-            resolvedStartSec = 6;
             return;
           }
         }
@@ -259,18 +318,19 @@ export function Hero3DCarousel({
         activeItem.is_tvseries === 1 ? `${titleDot}.Tập.01` : titleDot;
       resolvedUrl = `https://dangvietanh.io.vn/?code=${encodeURIComponent(fallbackCode)}`;
       resolvedContentType = 'progressive';
-      resolvedStartSec = 200;
     };
 
     const resolverPromise = resolveTrailerAsync();
 
-    // Pre-start buffer cleanly around 4.5s so trailer is ready smoothly as card docks at 5s
+    // Begin buffering trailer shortly after slide settles while keeping 3D deck fanned until 1st second plays
     const preloadTimer = setTimeout(() => {
       void (async () => {
         await resolverPromise;
         if (sequenceTokenRef.current !== token || !isActiveRef.current || !resolvedUrl) return;
-        trailerStartSecRef.current = resolvedStartSec;
+        trailerTargetStartRef.current = 200;
         trailerInitialSeekDoneRef.current = false;
+        trailerFirstPostSeekSecRef.current = null;
+        trailerCollapseTriggeredRef.current = false;
         try {
           await trailerPlayer.replaceAsync({
             uri: resolvedUrl,
@@ -278,70 +338,21 @@ export function Hero3DCarousel({
           });
         } catch {}
       })();
-    }, 4400);
+    }, 650);
 
-    const collapseTimer = setTimeout(() => {
-      if (sequenceTokenRef.current !== token || !isActiveRef.current) return;
-      hasCollapsedRef.current = true;
-      setIsDocked(true);
-
-      const anim = Animated.sequence([
-        // Step A: side posters collapse cleanly behind the center poster (Image 9)
-        Animated.timing(spreadProgress, {
-          toValue: 0,
-          duration: 380,
-          easing: Easing.inOut(Easing.cubic),
-          useNativeDriver: true,
-        }),
-        // Step B: center poster shrinks and slides to the lower-right corner beside title/meta (Image 11)
-        Animated.parallel([
-          Animated.timing(dockProgress, {
-            toValue: 1,
-            duration: 540,
-            easing: Easing.out(Easing.cubic),
-            useNativeDriver: true,
-          }),
-          Animated.timing(layoutProgress, {
-            toValue: 1,
-            duration: 500,
-            easing: Easing.out(Easing.cubic),
-            useNativeDriver: false,
-          }),
-        ]),
-      ]);
-      collapseAnimRef.current = anim;
-      anim.start(({ finished }) => {
-        if (!finished || sequenceTokenRef.current !== token || !isActiveRef.current) return;
-        if (trailerPlayer.status === 'readyToPlay') {
-          try {
-            trailerPlayer.muted = trailerMutedRef.current;
-            trailerPlayer.play();
-          } catch {}
-          setTrailerReady(true);
-          Animated.timing(trailerOpacity, {
-            toValue: 1,
-            duration: 550,
-            easing: Easing.out(Easing.cubic),
-            useNativeDriver: true,
-          }).start();
-        }
-      });
-    }, 5000);
-
-    // Advance slowly to next slide only after generous trailer preview time (34s)
+    // Advance slowly to next slide only after generous trailer preview time (36s)
     const nextSlideTimer =
       items.length > 1
         ? setTimeout(() => {
             if (sequenceTokenRef.current === token && isActiveRef.current) {
               goToIndex(activeIndex + 1);
             }
-          }, 34000)
+          }, 36000)
         : null;
 
     return () => {
       abortCtrl.abort();
       clearTimeout(preloadTimer);
-      clearTimeout(collapseTimer);
       if (nextSlideTimer) clearTimeout(nextSlideTimer);
       if (collapseAnimRef.current) {
         collapseAnimRef.current.stop();
@@ -384,14 +395,15 @@ export function Hero3DCarousel({
   const activeItem = items[activeIndex] || items[0];
   const cardW = Math.min(208, portraitWidth * 0.54);
   const cardH = Math.round(cardW * 1.44);
-  const dockScale = 0.48;
+  const dockScale = 0.50;
   const dockW = Math.round(cardW * dockScale);
-  const dockTranslateX = Math.max(
+  const dockH = Math.round(cardH * dockScale);
+  const dockTranslateX = -Math.max(
     48,
-    Math.round((portraitWidth - 36) / 2 - dockW / 2)
+    Math.round((portraitWidth - 36 - dockW) / 2)
   );
   const dockTranslateY = Math.round(
-    (cardH + 22) / 2 + 14 + Math.max(48, infoHeaderHeight * 0.54)
+    (cardH + 22) / 2 + 14 + dockH / 2 + 2
   );
 
   const getRelativeOffset = (idx: number) => {
@@ -499,9 +511,13 @@ export function Hero3DCarousel({
     outputRange: [1, 0],
     extrapolate: 'clamp',
   });
-  const infoRightPadding = layoutProgress.interpolate({
+  const infoLeftPadding = layoutProgress.interpolate({
     inputRange: [0, 1],
     outputRange: [0, dockW + 14],
+  });
+  const infoMinHeight = layoutProgress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, dockH + 4],
   });
 
   const metaPieces = [activeItem.year, activeItem.runtime, activeItem.video_quality || 'FHD'].filter(
@@ -651,13 +667,10 @@ export function Hero3DCarousel({
       {/* Active Info Panel (`.dva-hero-3d-info`) */}
       <Animated.View style={[styles.infoPanel, { opacity: infoFade }]}>
         <Animated.View
-          onLayout={(e) => {
-            const h = e.nativeEvent.layout.height;
-            if (h > 40 && Math.abs(h - infoHeaderHeight) > 3) {
-              setInfoHeaderHeight(h);
-            }
-          }}
-          style={[styles.infoHeaderSlot, { paddingRight: infoRightPadding }]}
+          style={[
+            styles.infoBodySlot,
+            { paddingLeft: infoLeftPadding, minHeight: infoMinHeight },
+          ]}
         >
           <View style={styles.typePill}>
             <Text style={styles.typePillText}>
@@ -679,6 +692,12 @@ export function Hero3DCarousel({
             {viewText ? <Text style={styles.ratingMuted}>{viewText}</Text> : null}
           </View>
 
+          {activeItem.description ? (
+            <Text style={styles.desc} numberOfLines={3}>
+              {activeItem.description}
+            </Text>
+          ) : null}
+
           {isDocked ? (
             <BouncyButton
               accessibilityLabel={`Xem chi tiết ${activeItem.title_primary || activeItem.title}`}
@@ -689,17 +708,11 @@ export function Hero3DCarousel({
               }}
               style={[
                 styles.dockedPosterHitbox,
-                { width: dockW + 4 },
+                { width: dockW + 4, height: dockH + 4 },
               ]}
             />
           ) : null}
         </Animated.View>
-
-        {activeItem.description ? (
-          <Text style={styles.desc} numberOfLines={3}>
-            {activeItem.description}
-          </Text>
-        ) : null}
 
         <View style={styles.actionsRow}>
           <BouncyButton
@@ -939,7 +952,7 @@ const styles = StyleSheet.create({
     gap: 8,
     zIndex: 10,
   },
-  infoHeaderSlot: {
+  infoBodySlot: {
     width: '100%',
     alignItems: 'flex-start',
     gap: 6,
@@ -947,9 +960,8 @@ const styles = StyleSheet.create({
   },
   dockedPosterHitbox: {
     position: 'absolute',
-    right: 0,
-    top: -10,
-    bottom: -10,
+    left: 0,
+    top: 0,
     zIndex: 40,
   },
   typePill: {

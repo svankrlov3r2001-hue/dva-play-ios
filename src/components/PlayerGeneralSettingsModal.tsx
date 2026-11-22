@@ -200,7 +200,7 @@ export function PlayerGeneralSettingsModal({
           },
           {
             id: 'auto_resume_crash',
-            icon: 'return-up-back',
+            icon: 'arrow-undo',
             badgeColor: '#30D158',
             title: 'Tự động quay lại phim',
             subtitle: 'Mở lại ngay khi ứng dụng bị thoát đột ngột',
