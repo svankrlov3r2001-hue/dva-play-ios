@@ -66,7 +66,7 @@ import AVFoundation
 
   updated = updated.replace(
     providerTarget,
-    `${providerTarget}
+    () => `${providerTarget}
 
 private struct DvaProxySpec: Sendable {
   let host: String
@@ -883,7 +883,7 @@ private func dvaRewriteHlsAttributeUri(_ line: String, baseURL: URL) -> String {
 }
 
 private let dvaPipVttCacheLock = NSLock()
-private var dvaPipVttCache: [String: (ts: TimeInterval, body: String)] = [:]
+nonisolated(unsafe) private var dvaPipVttCache: [String: (ts: TimeInterval, body: String)] = [:]
 
 private func dvaResolveAndNormalizeOnlineVtt(vttStr: String, probeUrl: String) -> String {
   let cacheKey = "\\(vttStr)|\\(probeUrl)"
@@ -2655,13 +2655,13 @@ private final class DvaVideoContrastOverlayView: MTKView {
 #endif
 
 #if !os(tvOS)
-private struct DvaPipCueItem: Decodable {
+private struct DvaPipCueItem: Decodable, Sendable {
   let s: Double
   let e: Double
   let t: String
 }
 
-private final class DvaPipSubtitleRenderer {
+private final class DvaPipSubtitleRenderer: @unchecked Sendable {
   private let lock = NSLock()
   private var cues: [DvaPipCueItem] = []
   private var lastJsonHash: Int = 0
@@ -2946,28 +2946,32 @@ public final class VideoView: ExpoView, AVPlayerViewControllerDelegate {`
     }
     let renderer = self.dvaPipSubRenderer
     if #available(iOS 16.0, *) {
-      Task { @MainActor [weak self] in
-        guard let self, self.dvaIsInPip else { return }
-        if let composition = try? await AVVideoComposition.videoComposition(
-          with: item.asset,
-          applyingCIFiltersWithHandler: { request in
-            let src = request.sourceImage
-            let sec = request.compositionTime.seconds
-            if let subImg = renderer.overlayImage(forTime: sec, extent: src.extent) {
-              request.finish(with: subImg.composited(over: src), context: nil)
-            } else {
-              request.finish(with: src, context: nil)
+      AVVideoComposition.videoComposition(
+        with: item.asset,
+        applyingCIFiltersWithHandler: { request in
+          let src = request.sourceImage
+          let sec = request.compositionTime.seconds
+          if let subImg = renderer.overlayImage(forTime: sec, extent: src.extent) {
+            request.finish(with: subImg.composited(over: src), context: nil)
+          } else {
+            request.finish(with: src, context: nil)
+          }
+        },
+        completionHandler: { [weak self, weak avPlayer, weak item] composition, _ in
+          guard let composition else { return }
+          DispatchQueue.main.async {
+            guard let self,
+                  let avPlayer,
+                  let item,
+                  self.dvaIsInPip,
+                  self.pipSubLang.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "off",
+                  avPlayer.currentItem === item else {
+              return
             }
+            item.videoComposition = composition
           }
-        ) {
-          guard self.dvaIsInPip,
-                self.pipSubLang.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "off",
-                avPlayer.currentItem === item else {
-            return
-          }
-          item.videoComposition = composition
         }
-      }
+      )
     }
   }
 
@@ -3003,7 +3007,7 @@ public final class VideoView: ExpoView, AVPlayerViewControllerDelegate {`
         }
         guard self.dvaIsInPip else { return }
         let group = try? await currentItem.asset.loadMediaSelectionGroup(for: .legible)
-        guard self.dvaIsInPip, self.player?.ref.currentItem === currentItem else { return }
+        guard self.dvaIsInPip, currentAvPlayer.currentItem === currentItem else { return }
         if let group, !group.options.isEmpty {
           currentItem.videoComposition = nil
           self.dvaApplySelectionGroup(group, to: currentItem, avPlayer: currentAvPlayer, enable: true)
