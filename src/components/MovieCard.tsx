@@ -195,7 +195,7 @@ export function MovieCard({
             colors={['transparent', 'rgba(0,0,0,0.82)']}
             style={styles.bottomScrim}
           />
-          <View style={[styles.floatingSplitBadgesLeft, watchedPct > 0 && { bottom: 12 }]}>
+          <View style={[styles.floatingSplitBadgesLeft, watchedPct > 0 && { bottom: 16 }]}>
             <View style={styles.splitSubHalf}>
               <Text style={styles.splitPillText}>P.Đề</Text>
             </View>
@@ -367,7 +367,7 @@ const styles = StyleSheet.create({
   landscapeImageWrap: {
     width: '100%',
     aspectRatio: 16 / 9,
-    borderRadius: 22,
+    borderRadius: 40,
     overflow: 'hidden',
     backgroundColor: COLORS.cardPlaceholder,
     borderWidth: 1,
@@ -388,8 +388,8 @@ const styles = StyleSheet.create({
   },
   floatingSplitBadgesLeft: {
     position: 'absolute',
-    left: 10,
-    bottom: 10,
+    left: 16,
+    bottom: 14,
     flexDirection: 'row',
     borderRadius: 10,
     overflow: 'hidden',
@@ -420,14 +420,14 @@ const styles = StyleSheet.create({
   },
   remainPill: {
     position: 'absolute',
-    left: 10,
-    bottom: 11,
+    left: 16,
+    bottom: 14,
     backgroundColor: 'rgba(20, 20, 20, 0.65)',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.14)',
     paddingHorizontal: 10,
     paddingVertical: 4,
-    borderRadius: 11,
+    borderRadius: 14,
   },
   remainPillText: {
     color: '#FFFFFF',
@@ -521,7 +521,7 @@ const styles = StyleSheet.create({
   theatricalHeroBox: {
     width: '100%',
     aspectRatio: 16 / 9.8,
-    borderRadius: 24,
+    borderRadius: 40,
     overflow: 'hidden',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.14)',
@@ -530,9 +530,9 @@ const styles = StyleSheet.create({
   },
   theatricalBottom: {
     position: 'absolute',
-    left: 12,
-    right: 12,
-    bottom: 12,
+    left: 16,
+    right: 16,
+    bottom: 14,
     flexDirection: 'row',
     alignItems: 'flex-end',
   },

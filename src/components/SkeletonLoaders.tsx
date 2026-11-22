@@ -180,7 +180,7 @@ export function HomeHubSkeleton({
         <View style={styles.rowGap12}>
           {[0, 1].map((idx) => (
             <View key={`land-${idx}`} style={{ width: 205, gap: 8 }}>
-              <SkeletonBox progress={progress} width={205} height={116} radius={20} />
+              <SkeletonBox progress={progress} width={205} height={116} radius={40} />
               <SkeletonBox progress={progress} width="80%" height={14} radius={6} />
               <SkeletonBox progress={progress} width="52%" height={11} radius={6} />
             </View>

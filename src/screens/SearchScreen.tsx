@@ -159,7 +159,7 @@ export function SearchScreen({ onOpenPreview, onOpenDetail }: SearchScreenProps)
           initialNumToRender={9}
           maxToRenderPerBatch={6}
           windowSize={5}
-          removeClippedSubviews
+          removeClippedSubviews={false}
           keyExtractor={(item, idx) => `res_${item.videos_id}_${idx}`}
           columnWrapperStyle={styles.gridRowPadded}
           contentContainerStyle={{
@@ -183,7 +183,7 @@ export function SearchScreen({ onOpenPreview, onOpenDetail }: SearchScreenProps)
           initialNumToRender={9}
           maxToRenderPerBatch={6}
           windowSize={5}
-          removeClippedSubviews
+          removeClippedSubviews={false}
           keyboardShouldPersistTaps="handled"
           keyExtractor={(item, idx) => `rec_${item.videos_id}_${idx}`}
           columnWrapperStyle={styles.gridRowPadded}

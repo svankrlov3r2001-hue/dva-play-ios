@@ -835,7 +835,7 @@ export function LibraryScreen({
           initialNumToRender={9}
           maxToRenderPerBatch={6}
           windowSize={5}
-          removeClippedSubviews
+          removeClippedSubviews={false}
           keyExtractor={(item, idx) => `wish_${item.videos_id}_${idx}`}
           columnWrapperStyle={styles.gridRow}
           refreshControl={
@@ -870,7 +870,7 @@ export function LibraryScreen({
           initialNumToRender={9}
           maxToRenderPerBatch={6}
           windowSize={5}
-          removeClippedSubviews
+          removeClippedSubviews={false}
           keyExtractor={(item, idx) => `watched_${item.videos_id}_${idx}`}
           columnWrapperStyle={styles.gridRow}
           refreshControl={

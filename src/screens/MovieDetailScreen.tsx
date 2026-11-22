@@ -560,7 +560,12 @@ export function MovieDetailScreen({
 
             {activeTab === 'related' ? (
               <View style={styles.tabBody}>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  style={{ overflow: 'visible' }}
+                  contentContainerStyle={{ overflow: 'visible' }}
+                >
                   {related.map((rel) => (
                     <MovieCard
                       key={rel.videos_id}

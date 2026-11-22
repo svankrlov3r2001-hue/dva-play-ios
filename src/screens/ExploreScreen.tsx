@@ -251,8 +251,8 @@ export function ExploreScreen({ onOpenPreview }: ExploreScreenProps) {
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.activeTagsRow}
-          style={styles.activeTagsScroll}
+          contentContainerStyle={[styles.activeTagsRow, { overflow: 'visible' }]}
+          style={[styles.activeTagsScroll, { overflow: 'visible' }]}
         >
           {activeSummaryTags.map((lbl) => (
             <View key={lbl} style={styles.activeTagPill}>
@@ -278,7 +278,7 @@ export function ExploreScreen({ onOpenPreview }: ExploreScreenProps) {
           initialNumToRender={9}
           maxToRenderPerBatch={6}
           windowSize={5}
-          removeClippedSubviews
+          removeClippedSubviews={false}
           keyExtractor={(item, idx) => `explore_${item.videos_id}_${idx}`}
           columnWrapperStyle={styles.gridRow}
           contentContainerStyle={{

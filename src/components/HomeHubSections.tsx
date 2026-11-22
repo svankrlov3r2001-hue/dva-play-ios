@@ -38,7 +38,8 @@ export function TopicGridSection({
     <ScrollView
       horizontal
       showsHorizontalScrollIndicator={false}
-      contentContainerStyle={styles.topicsScroll}
+      style={styles.overflowVisible}
+      contentContainerStyle={[styles.topicsScroll, styles.overflowVisible]}
     >
       {topics.map((topic) => (
         <BouncyButton
@@ -208,7 +209,8 @@ export function AnimeHeroSection({
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.thumbStrip}
+        style={styles.overflowVisible}
+        contentContainerStyle={[styles.thumbStrip, styles.overflowVisible]}
       >
         {items.map((item, idx) => {
           const isSelected = idx === selectedIdx;
@@ -288,10 +290,12 @@ export function CountryHubBoxSection({
               data={row.items}
               horizontal
               showsHorizontalScrollIndicator={false}
+              style={styles.overflowVisible}
+              contentContainerStyle={styles.overflowVisible}
               initialNumToRender={2}
               maxToRenderPerBatch={2}
               windowSize={3}
-              removeClippedSubviews
+              removeClippedSubviews={false}
               keyExtractor={(m) => `${row.id}_${m.videos_id}`}
               renderItem={({ item }) => (
                 <MovieCard item={item} layout="landscape" width={226} onPress={onPressMovie} />
@@ -305,6 +309,9 @@ export function CountryHubBoxSection({
 }
 
 const styles = StyleSheet.create({
+  overflowVisible: {
+    overflow: 'visible',
+  },
   topicsScroll: {
     paddingHorizontal: 16,
     gap: 10,

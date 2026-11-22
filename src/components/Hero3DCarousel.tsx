@@ -19,6 +19,7 @@ import { MovieItem } from '../types/models';
 import { BouncyButton } from './BouncyButton';
 import { GlassSurface } from './GlassSurface';
 import { LazyImage } from './LazyImage';
+import { useShimmerProgress } from './SkeletonLoaders';
 
 interface Hero3DCarouselProps {
   items: MovieItem[];
@@ -60,6 +61,7 @@ export function Hero3DCarousel({
   const [activeIndex, setActiveIndex] = useState(0);
   const [isDocked, setIsDocked] = useState(false);
   const [trailerReady, setTrailerReady] = useState(false);
+  const [trailerBuffering, setTrailerBuffering] = useState(false);
   const [trailerMuted, setTrailerMuted] = useState(true);
 
   const deckScale = useRef(new Animated.Value(1)).current;
@@ -68,6 +70,7 @@ export function Hero3DCarousel({
   const dockProgress = useRef(new Animated.Value(0)).current; // 0 = centered top deck, 1 = docked left beside info
   const layoutProgress = useRef(new Animated.Value(0)).current; // non-native driver for left padding & minHeight
   const trailerOpacity = useRef(new Animated.Value(0)).current;
+  const playSkeletonProgress = useShimmerProgress(trailerBuffering && !isDocked && isActive);
 
   const activeIndexRef = useRef(0);
   activeIndexRef.current = activeIndex;
@@ -83,7 +86,16 @@ export function Hero3DCarousel({
   const trailerFirstPostSeekSecRef = useRef<number | null>(null);
   const trailerCollapseTriggeredRef = useRef(false);
   const collapseAnimRef = useRef<Animated.CompositeAnimation | null>(null);
+  const bufferingGuardTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sequenceTokenRef = useRef(0);
+
+  const clearBufferingState = useCallback(() => {
+    if (bufferingGuardTimerRef.current) {
+      clearTimeout(bufferingGuardTimerRef.current);
+      bufferingGuardTimerRef.current = null;
+    }
+    setTrailerBuffering(false);
+  }, []);
 
   const trailerPlayer = useVideoPlayer(null, (p) => {
     p.loop = true;
@@ -109,11 +121,12 @@ export function Hero3DCarousel({
         trailerOpacity.setValue(0);
       }
       setTrailerReady(false);
+      clearBufferingState();
       trailerInitialSeekDoneRef.current = false;
       trailerFirstPostSeekSecRef.current = null;
       trailerCollapseTriggeredRef.current = false;
     },
-    [trailerOpacity, trailerPlayer]
+    [clearBufferingState, trailerOpacity, trailerPlayer]
   );
 
   const triggerCollapseAndRevealRef = useRef<(token: number) => void>(() => {});
@@ -127,6 +140,7 @@ export function Hero3DCarousel({
     }
     trailerCollapseTriggeredRef.current = true;
     hasCollapsedRef.current = true;
+    clearBufferingState();
     setIsDocked(true);
     setTrailerReady(true);
 
@@ -173,7 +187,11 @@ export function Hero3DCarousel({
   useEffect(() => {
     const sSub = trailerPlayer.addListener('statusChange', (ev) => {
       if (!isActiveRef.current) return;
-      if (ev.status === 'readyToPlay') {
+      if (ev.status === 'loading') {
+        if (!trailerCollapseTriggeredRef.current) {
+          setTrailerBuffering(true);
+        }
+      } else if (ev.status === 'readyToPlay') {
         const dur = trailerPlayer.duration || 0;
         const wanted = dur > 15 && dur <= 205 ? Math.floor(dur * 0.25) : 200;
         trailerTargetStartRef.current = wanted;
@@ -188,6 +206,7 @@ export function Hero3DCarousel({
           trailerPlayer.play();
         } catch {}
       } else if (ev.status === 'error') {
+        clearBufferingState();
         setTrailerReady(false);
         trailerOpacity.setValue(0);
       }
@@ -224,7 +243,7 @@ export function Hero3DCarousel({
       tSub.remove();
       appSub.remove();
     };
-  }, [trailerPlayer, trailerOpacity]);
+  }, [clearBufferingState, trailerPlayer, trailerOpacity]);
 
   useEffect(() => {
     setActiveIndex(0);
@@ -377,7 +396,23 @@ export function Hero3DCarousel({
             uri: resolvedUrl,
             contentType: resolvedContentType,
           });
-        } catch {}
+          if (
+            sequenceTokenRef.current === token &&
+            isActiveRef.current &&
+            !trailerCollapseTriggeredRef.current
+          ) {
+            setTrailerBuffering(true);
+            if (bufferingGuardTimerRef.current) {
+              clearTimeout(bufferingGuardTimerRef.current);
+            }
+            bufferingGuardTimerRef.current = setTimeout(() => {
+              bufferingGuardTimerRef.current = null;
+              setTrailerBuffering(false);
+            }, 15000);
+          }
+        } catch {
+          clearBufferingState();
+        }
       })();
     }, wasDocked ? 1150 : 650);
 
@@ -399,6 +434,7 @@ export function Hero3DCarousel({
         collapseAnimRef.current.stop();
         collapseAnimRef.current = null;
       }
+      clearBufferingState();
       stopTrailerImmediately(false);
     };
   }, [
@@ -410,6 +446,7 @@ export function Hero3DCarousel({
     layoutProgress,
     trailerOpacity,
     trailerPlayer,
+    clearBufferingState,
     stopTrailerImmediately,
     goToIndex,
   ]);
@@ -551,6 +588,10 @@ export function Hero3DCarousel({
     inputRange: [0, 0.35],
     outputRange: [1, 0],
     extrapolate: 'clamp',
+  });
+  const playShimmerX = playSkeletonProgress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-58, 68],
   });
   const infoLeftPadding = layoutProgress.interpolate({
     inputRange: [0, 1],
@@ -696,7 +737,35 @@ export function Hero3DCarousel({
                     end={{ x: 1, y: 1 }}
                     style={styles.playDotGradient}
                   >
-                    <Ionicons name="play" size={20} color="#FFF" style={{ marginLeft: 2 }} />
+                    <Ionicons
+                      name="play"
+                      size={20}
+                      color="#FFF"
+                      style={{ marginLeft: 2, opacity: trailerBuffering ? 0.5 : 1 }}
+                    />
+                    {trailerBuffering ? (
+                      <View pointerEvents="none" style={styles.playDotSkeletonOverlay}>
+                        <Animated.View
+                          style={[
+                            styles.playDotSkeletonSweep,
+                            { transform: [{ translateX: playShimmerX }, { rotate: '18deg' }] },
+                          ]}
+                        >
+                          <LinearGradient
+                            colors={[
+                              'transparent',
+                              'rgba(255,255,255,0.22)',
+                              'rgba(255,255,255,0.68)',
+                              'rgba(255,255,255,0.22)',
+                              'transparent',
+                            ]}
+                            start={{ x: 0, y: 0.5 }}
+                            end={{ x: 1, y: 0.5 }}
+                            style={StyleSheet.absoluteFill}
+                          />
+                        </Animated.View>
+                      </View>
+                    ) : null}
                   </LinearGradient>
                 </BouncyButton>
               </Animated.View>
@@ -987,6 +1056,24 @@ const styles = StyleSheet.create({
     borderRadius: 23,
     alignItems: 'center',
     justifyContent: 'center',
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  playDotSkeletonOverlay: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    borderRadius: 23,
+    overflow: 'hidden',
+    backgroundColor: 'rgba(14, 17, 26, 0.42)',
+  },
+  playDotSkeletonSweep: {
+    position: 'absolute',
+    top: -12,
+    bottom: -12,
+    width: 34,
   },
   infoPanel: {
     alignItems: 'flex-start',

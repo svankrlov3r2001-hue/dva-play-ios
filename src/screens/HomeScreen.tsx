@@ -439,7 +439,8 @@ export function HomeScreen({
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.modeChipsRow}
+          style={styles.overflowVisible}
+          contentContainerStyle={[styles.modeChipsRow, styles.overflowVisible]}
         >
           {HEADER_TABS.map((tab) => {
             const isGenreBtn = tab.key === 'genres';
@@ -587,11 +588,12 @@ export function HomeScreen({
                         data={section.items}
                         horizontal
                         showsHorizontalScrollIndicator={false}
-                        contentContainerStyle={styles.carouselPad}
+                        style={styles.overflowVisible}
+                        contentContainerStyle={[styles.carouselPad, styles.overflowVisible]}
                         initialNumToRender={isWideLayout ? 2 : 3}
                         maxToRenderPerBatch={2}
                         windowSize={3}
-                        removeClippedSubviews
+                        removeClippedSubviews={false}
                         keyExtractor={(item) => `${section.id}_${item.videos_id}`}
                         renderItem={({ item }) => (
                           <MovieCard
@@ -884,6 +886,9 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '800',
     letterSpacing: -0.2,
+  },
+  overflowVisible: {
+    overflow: 'visible',
   },
   carouselPad: {
     paddingHorizontal: 16,
