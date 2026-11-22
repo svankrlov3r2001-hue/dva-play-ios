@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import {
   ActivityIndicator,
+  Image,
   Modal,
   Pressable,
   StyleSheet,
@@ -11,7 +12,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { BouncyButton } from './BouncyButton';
-import { GlassSurface } from './GlassSurface';
+import { GlassSurface, WaterDropPopupView } from './GlassSurface';
 import { APP_VERSION, COLORS } from '../constants/config';
 import { triggerDirectP12InstallNow } from '../services/otaService';
 import { VersionManifest } from '../types/models';
@@ -74,18 +75,23 @@ export function AppUpdateModal({ visible, manifest, onDismiss }: AppUpdateModalP
             if (!installing) onDismiss();
           }}
         />
-        <GlassSurface
-          variant="liquid"
-          radius={40}
-          intensity={34}
-          style={[styles.cardWrap, { width: cardWidth }]}
-        >
-          <View style={styles.cardInner}>
-            <View style={styles.badgeIconWrap}>
-              <Ionicons name="sparkles" size={26} color="#FFF" />
-            </View>
+        <WaterDropPopupView visible={visible} triggerKey={manifest.versionName} from="center">
+          <GlassSurface
+            variant="liquid"
+            radius={40}
+            intensity={34}
+            style={[styles.cardWrap, { width: cardWidth }]}
+          >
+            <View style={styles.cardInner}>
+              <View style={styles.logoBadgeWrap}>
+                <Image
+                  source={require('../../assets/splash-logo.png')}
+                  style={styles.logoBadgeImg}
+                  resizeMode="contain"
+                />
+              </View>
 
-            <Text style={styles.title}>Có bản cập nhật mới</Text>
+              <Text style={styles.title}>Có bản cập nhật mới</Text>
             <View style={styles.verRow}>
               <Text style={styles.verPill}>v{manifest.versionName}</Text>
               <Text style={styles.verCurrent}>Hiện tại: v{APP_VERSION}</Text>
@@ -162,6 +168,7 @@ export function AppUpdateModal({ visible, manifest, onDismiss }: AppUpdateModalP
             </View>
           </View>
         </GlassSurface>
+        </WaterDropPopupView>
       </View>
     </Modal>
   );
@@ -183,14 +190,20 @@ const styles = StyleSheet.create({
     paddingVertical: 24,
     alignItems: 'center',
   },
-  badgeIconWrap: {
-    width: 54,
-    height: 54,
-    borderRadius: 27,
-    backgroundColor: COLORS.accent,
+  logoBadgeWrap: {
+    width: 64,
+    height: 64,
+    borderRadius: 18,
+    backgroundColor: 'rgba(14, 17, 26, 0.78)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.14)',
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 14,
+  },
+  logoBadgeImg: {
+    width: 46,
+    height: 46,
   },
   title: {
     color: '#FFF',

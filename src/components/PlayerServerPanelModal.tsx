@@ -12,7 +12,7 @@ import {
 import { Feather, Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { BouncyButton } from './BouncyButton';
-import { GlassSurface } from './GlassSurface';
+import { GlassSurface, WaterDropPopupView } from './GlassSurface';
 import {
   BackupServerId,
   formatVietnameseEta,
@@ -48,6 +48,7 @@ export function PlayerServerPanelModal({
   pingRefreshing,
 }: PlayerServerPanelModalProps) {
   const { width, height } = useWindowDimensions();
+  const isLandscape = width > height;
   const cardWidth = Math.min(width - 24, 672);
   const cardMaxHeight = Math.min(height - 32, 238);
 
@@ -63,15 +64,21 @@ export function PlayerServerPanelModal({
       supportedOrientations={['portrait', 'landscape', 'landscape-left', 'landscape-right']}
       onRequestClose={onClose}
     >
-      <View style={styles.backdrop}>
+      <View
+        style={[
+          styles.backdrop,
+          { paddingTop: isLandscape ? 66 : 96 },
+        ]}
+      >
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
 
-        <GlassSurface
-          variant="liquid"
-          radius={40}
-          intensity={28}
-          style={[styles.sheetCard, { width: cardWidth, maxHeight: cardMaxHeight }]}
-        >
+        <WaterDropPopupView visible={visible} from="top">
+          <GlassSurface
+            variant="liquid"
+            radius={40}
+            intensity={28}
+            style={[styles.sheetCard, { width: cardWidth, maxHeight: cardMaxHeight }]}
+          >
           <View style={styles.inner}>
             {/* Sleek Single-Line Header */}
             <View style={styles.headerRow}>
@@ -281,6 +288,7 @@ export function PlayerServerPanelModal({
             </ScrollView>
           </View>
         </GlassSurface>
+        </WaterDropPopupView>
       </View>
     </Modal>
   );
@@ -291,8 +299,9 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.36)',
     alignItems: 'center',
-    justifyContent: 'center',
-    padding: 16,
+    justifyContent: 'flex-start',
+    paddingHorizontal: 16,
+    paddingBottom: 16,
   },
   sheetCard: {
     borderRadius: 40,

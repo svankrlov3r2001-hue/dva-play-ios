@@ -11,6 +11,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -19,7 +20,7 @@ import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { showAppAlert } from '../components/AppAlertModal';
 import { BouncyButton } from '../components/BouncyButton';
-import { GlassSurface } from '../components/GlassSurface';
+import { GlassSurface, WaterDropPopupView } from '../components/GlassSurface';
 import { Hero3DCarousel } from '../components/Hero3DCarousel';
 import {
   AnimeHeroSection,
@@ -120,6 +121,11 @@ export function HomeScreen({
   watchProgressRevision = 0,
 }: HomeScreenProps) {
   const insets = useSafeAreaInsets();
+  const { width: winWidth } = useWindowDimensions();
+  const notifGridGap = 10;
+  const notifInnerW = Math.max(240, winWidth - 64);
+  const notifCardW = Math.floor((notifInnerW - notifGridGap * 2) / 3);
+  const notifPosterH = Math.round(notifCardW * 1.48);
   const { user } = useAuth();
   const [avatarFailed, setAvatarFailed] = useState(false);
   const [mode, setMode] = useState('home');
@@ -614,58 +620,60 @@ export function HomeScreen({
             style={StyleSheet.absoluteFill}
             onPress={() => setGenreSheetOpen(false)}
           />
-          <GlassSurface
-            intensity={34}
-            radius={30}
-            style={[styles.genreCard, { marginTop: insets.top + 96 }]}
-          >
-            <View style={styles.notifHead}>
-              <Text style={styles.notifTitle}>Chọn Thể loại</Text>
-              <BouncyButton onPress={() => setGenreSheetOpen(false)}>
-                <Ionicons name="close" size={20} color="#FFF" />
-              </BouncyButton>
-            </View>
-            <ScrollView style={{ maxHeight: 360 }} showsVerticalScrollIndicator={false}>
-              <View style={styles.genreGrid}>
-                <BouncyButton
-                  onPress={() => {
-                    Haptics.selectionAsync();
-                    handleSelectCategory('home', '', '');
-                  }}
-                  style={[styles.genreItem, !selectedGenreId && styles.genreItemActive]}
-                >
-                  <Text
-                    style={[
-                      styles.genreItemText,
-                      !selectedGenreId && styles.genreItemTextActive,
-                    ]}
-                  >
-                    Tất cả thể loại
-                  </Text>
+          <WaterDropPopupView from="top" style={{ marginTop: insets.top + 96 }}>
+            <GlassSurface
+              intensity={34}
+              radius={30}
+              style={styles.genreCard}
+            >
+              <View style={styles.notifHead}>
+                <Text style={styles.notifTitle}>Chọn Thể loại</Text>
+                <BouncyButton onPress={() => setGenreSheetOpen(false)}>
+                  <Ionicons name="close" size={20} color="#FFF" />
                 </BouncyButton>
-                {genresList.map((g) => {
-                  const isSel = selectedGenreId === String(g.id);
-                  return (
-                    <BouncyButton
-                      key={g.id}
-                      onPress={() => {
-                        Haptics.selectionAsync();
-                        handleSelectCategory('home', String(g.id), g.name);
-                      }}
-                      style={[styles.genreItem, isSel && styles.genreItemActive]}
-                    >
-                      <Text
-                        numberOfLines={1}
-                        style={[styles.genreItemText, isSel && styles.genreItemTextActive]}
-                      >
-                        {g.name}
-                      </Text>
-                    </BouncyButton>
-                  );
-                })}
               </View>
-            </ScrollView>
-          </GlassSurface>
+              <ScrollView style={{ maxHeight: 360 }} showsVerticalScrollIndicator={false}>
+                <View style={styles.genreGrid}>
+                  <BouncyButton
+                    onPress={() => {
+                      Haptics.selectionAsync();
+                      handleSelectCategory('home', '', '');
+                    }}
+                    style={[styles.genreItem, !selectedGenreId && styles.genreItemActive]}
+                  >
+                    <Text
+                      style={[
+                        styles.genreItemText,
+                        !selectedGenreId && styles.genreItemTextActive,
+                      ]}
+                    >
+                      Tất cả thể loại
+                    </Text>
+                  </BouncyButton>
+                  {genresList.map((g) => {
+                    const isSel = selectedGenreId === String(g.id);
+                    return (
+                      <BouncyButton
+                        key={g.id}
+                        onPress={() => {
+                          Haptics.selectionAsync();
+                          handleSelectCategory('home', String(g.id), g.name);
+                        }}
+                        style={[styles.genreItem, isSel && styles.genreItemActive]}
+                      >
+                        <Text
+                          numberOfLines={1}
+                          style={[styles.genreItemText, isSel && styles.genreItemTextActive]}
+                        >
+                          {g.name}
+                        </Text>
+                      </BouncyButton>
+                    );
+                  })}
+                </View>
+              </ScrollView>
+            </GlassSurface>
+          </WaterDropPopupView>
         </View>
       ) : null}
 
@@ -676,50 +684,79 @@ export function HomeScreen({
             style={StyleSheet.absoluteFill}
             onPress={() => setNotifOpen(false)}
           />
-          <GlassSurface
-            intensity={34}
-            radius={28}
-            style={[styles.notifCard, { marginTop: insets.top + 66 }]}
-          >
-            <View style={styles.notifHead}>
-              <Text style={styles.notifTitle}>Phim mới cập nhật</Text>
-              <BouncyButton onPress={() => setNotifOpen(false)}>
-                <Ionicons name="close" size={20} color="#FFF" />
-              </BouncyButton>
-            </View>
-            <ScrollView style={{ maxHeight: 340 }}>
-              {notifications.length === 0 ? (
-                <Text style={styles.notifEmpty}>Đang tải thông báo...</Text>
-              ) : (
-                notifications.map((n) => (
-                  <BouncyButton
-                    key={n.videos_id}
-                    bounciness="gentle"
-                    style={styles.notifRow}
-                    onPress={() => {
-                      setNotifOpen(false);
-                      onOpenDetail(n.videos_id);
-                    }}
-                  >
-                    <Image
-                      source={{ uri: n.thumbnail_url }}
-                      style={styles.notifThumb}
-                      resizeMode="cover"
-                    />
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.notifItemTitle} numberOfLines={1}>
-                        {n.title}
-                      </Text>
-                      <Text style={styles.notifItemSub} numberOfLines={1}>
-                        {n.subtitle}
-                      </Text>
-                    </View>
-                    <Ionicons name="chevron-forward" size={16} color={COLORS.muted} />
-                  </BouncyButton>
-                ))
-              )}
-            </ScrollView>
-          </GlassSurface>
+          <WaterDropPopupView from="top" style={{ marginTop: insets.top + 66 }}>
+            <GlassSurface
+              intensity={34}
+              radius={28}
+              style={styles.notifCard}
+            >
+              <View style={styles.notifHead}>
+                <Text style={styles.notifTitle}>Phim mới cập nhật</Text>
+                <BouncyButton onPress={() => setNotifOpen(false)}>
+                  <Ionicons name="close" size={20} color="#FFF" />
+                </BouncyButton>
+              </View>
+              <ScrollView style={{ maxHeight: 430 }} showsVerticalScrollIndicator={false}>
+                {notifications.length === 0 ? (
+                  <Text style={styles.notifEmpty}>Đang tải thông báo...</Text>
+                ) : (
+                  <View style={styles.notifGrid}>
+                    {notifications.map((n) => {
+                      const subParts = (n.subtitle || '')
+                        .split('•')
+                        .map((s) => s.trim())
+                        .filter(Boolean);
+                      const typeLabel = subParts[0] || '';
+                      const qualityLabel = subParts[1] || '';
+                      return (
+                        <BouncyButton
+                          key={n.videos_id}
+                          bounciness="gentle"
+                          style={[styles.notifPosterCard, { width: notifCardW }]}
+                          onPress={() => {
+                            setNotifOpen(false);
+                            onOpenDetail(n.videos_id);
+                          }}
+                        >
+                          <View
+                            style={[
+                              styles.notifPosterFrame,
+                              { width: notifCardW, height: notifPosterH },
+                            ]}
+                          >
+                            <Image
+                              source={{ uri: n.thumbnail_url }}
+                              style={StyleSheet.absoluteFill}
+                              resizeMode="cover"
+                            />
+                            <LinearGradient
+                              colors={['transparent', 'rgba(0,0,0,0.72)']}
+                              style={styles.notifPosterGrad}
+                            />
+                            {qualityLabel ? (
+                              <View style={styles.notifQualityBadge}>
+                                <Text style={styles.notifQualityTxt} numberOfLines={1}>
+                                  {qualityLabel}
+                                </Text>
+                              </View>
+                            ) : null}
+                          </View>
+                          <Text style={styles.notifPosterTitle} numberOfLines={2}>
+                            {n.title}
+                          </Text>
+                          {typeLabel ? (
+                            <Text style={styles.notifPosterSub} numberOfLines={1}>
+                              {typeLabel}
+                            </Text>
+                          ) : null}
+                        </BouncyButton>
+                      );
+                    })}
+                  </View>
+                )}
+              </ScrollView>
+            </GlassSurface>
+          </WaterDropPopupView>
         </View>
       ) : null}
     </View>
@@ -922,28 +959,52 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     paddingVertical: 20,
   },
-  notifRow: {
+  notifGrid: {
     flexDirection: 'row',
-    alignItems: 'center',
+    flexWrap: 'wrap',
     gap: 10,
-    paddingVertical: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.06)',
+    paddingBottom: 4,
   },
-  notifThumb: {
-    width: 44,
-    height: 60,
-    borderRadius: 10,
+  notifPosterCard: {
+    gap: 5,
+    marginBottom: 4,
+  },
+  notifPosterFrame: {
+    borderRadius: 14,
+    overflow: 'hidden',
     backgroundColor: COLORS.cardPlaceholder,
+    position: 'relative',
   },
-  notifItemTitle: {
-    color: '#FFF',
-    fontSize: 13.5,
-    fontWeight: '700',
+  notifPosterGrad: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: '45%',
   },
-  notifItemSub: {
-    color: COLORS.muted,
+  notifQualityBadge: {
+    position: 'absolute',
+    right: 6,
+    bottom: 6,
+    backgroundColor: 'rgba(229, 9, 20, 0.88)',
+    borderRadius: 6,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+  },
+  notifQualityTxt: {
+    color: '#FFFFFF',
+    fontSize: 9.5,
+    fontWeight: '800',
+  },
+  notifPosterTitle: {
+    color: '#FFFFFF',
     fontSize: 12,
-    marginTop: 2,
+    fontWeight: '700',
+    lineHeight: 15.5,
+  },
+  notifPosterSub: {
+    color: COLORS.muted,
+    fontSize: 10.5,
+    fontWeight: '600',
   },
 });

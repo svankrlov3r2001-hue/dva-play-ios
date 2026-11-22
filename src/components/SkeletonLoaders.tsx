@@ -319,8 +319,8 @@ export function PlayerLandscapeSkeleton({
   const { width: winWidth, height: winHeight } = useWindowDimensions();
   const landscapeWidth = Math.max(winWidth, winHeight);
   const sweepMax = Math.max(540, Math.round(landscapeWidth));
-  const effectiveLeft = Math.max(20, leftInset);
-  const effectiveRight = Math.max(20, rightInset);
+  const effectiveLeft = Math.max(18, leftInset);
+  const effectiveRight = Math.max(18, rightInset);
 
   return (
     <View style={styles.playerRoot}>
@@ -331,8 +331,8 @@ export function PlayerLandscapeSkeleton({
           {
             paddingLeft: effectiveLeft,
             paddingRight: effectiveRight,
-            paddingTop: 14,
-            paddingBottom: 16,
+            paddingTop: 12,
+            paddingBottom: 14,
           },
         ]}
       >
@@ -344,27 +344,32 @@ export function PlayerLandscapeSkeleton({
                 <Ionicons name="chevron-back" size={23} color="#FFF" />
               </TouchableOpacity>
             ) : (
-              <SkeletonBox progress={progress} width={42} height={42} radius={21} />
+              <SkeletonBox progress={progress} width={44} height={44} radius={22} />
             )}
             <View style={{ gap: 6 }}>
               <SkeletonBox progress={progress} width={220} height={18} radius={8} />
               <SkeletonBox progress={progress} width={116} height={12} radius={6} />
             </View>
           </View>
-          <SkeletonBox progress={progress} width={196} height={48} radius={24} />
+          {/* 3 separate rounded Liquid Glass top-right capsules */}
+          <View style={styles.rowGap8}>
+            <SkeletonBox progress={progress} width={148} height={50} radius={25} />
+            <SkeletonBox progress={progress} width={102} height={50} radius={25} />
+            <SkeletonBox progress={progress} width={50} height={50} radius={25} />
+          </View>
         </View>
 
         {/* Right Vertical Capsule Skeleton */}
-        <View style={[styles.playerSide, { right: effectiveRight }]}>
-          <SkeletonBox progress={progress} width={46} height={136} radius={23} />
+        <View style={[styles.playerSide, { right: 14 }]}>
+          <SkeletonBox progress={progress} width={48} height={138} radius={24} />
         </View>
 
         {/* True Vertical & Horizontal Center Controls Skeleton */}
         <View pointerEvents="none" style={styles.playerCenterWrap}>
           <View style={styles.playerCenterRow}>
-            <SkeletonBox progress={progress} width={54} height={54} radius={27} />
-            <SkeletonBox progress={progress} width={74} height={74} radius={26} />
-            <SkeletonBox progress={progress} width={54} height={54} radius={27} />
+            <SkeletonBox progress={progress} width={56} height={56} radius={28} />
+            <SkeletonBox progress={progress} width={78} height={78} radius={26} />
+            <SkeletonBox progress={progress} width={56} height={56} radius={28} />
           </View>
         </View>
 
@@ -379,16 +384,16 @@ export function PlayerLandscapeSkeleton({
             maxSweep={sweepMax}
           />
           <View style={styles.playerActionsRow}>
-            <View style={styles.rowGap10}>
-              <SkeletonBox progress={progress} width={68} height={38} radius={19} />
-              <SkeletonBox progress={progress} width={44} height={38} radius={19} />
-              <SkeletonBox progress={progress} width={44} height={38} radius={19} />
-              <SkeletonBox progress={progress} width={44} height={38} radius={19} />
-              <SkeletonBox progress={progress} width={44} height={38} radius={19} />
+            <View style={styles.rowGap8}>
+              <SkeletonBox progress={progress} width={68} height={42} radius={21} />
+              <SkeletonBox progress={progress} width={42} height={42} radius={21} />
+              <SkeletonBox progress={progress} width={42} height={42} radius={21} />
+              <SkeletonBox progress={progress} width={42} height={42} radius={21} />
+              <SkeletonBox progress={progress} width={42} height={42} radius={21} />
             </View>
-            <View style={styles.rowGap10}>
-              <SkeletonBox progress={progress} width={66} height={38} radius={19} />
-              <SkeletonBox progress={progress} width={118} height={38} radius={19} />
+            <View style={styles.rowGap8}>
+              <SkeletonBox progress={progress} width={72} height={42} radius={21} />
+              <SkeletonBox progress={progress} width={126} height={42} radius={21} />
             </View>
           </View>
         </View>
@@ -483,9 +488,9 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   playerBackBtn: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: 'rgba(20, 20, 20, 0.56)',
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.16)',
@@ -499,7 +504,7 @@ const styles = StyleSheet.create({
   },
   playerSide: {
     position: 'absolute',
-    top: '32%',
+    top: '29%',
   },
   playerCenterWrap: {
     position: 'absolute',

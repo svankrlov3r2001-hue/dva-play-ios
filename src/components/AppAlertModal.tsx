@@ -10,7 +10,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { BouncyButton } from './BouncyButton';
-import { GlassSurface } from './GlassSurface';
+import { GlassSurface, WaterDropPopupView } from './GlassSurface';
 import { COLORS } from '../constants/config';
 
 export interface AppAlertButton {
@@ -199,65 +199,67 @@ export function AppAlertHost(): React.ReactElement | null {
     >
       <View style={styles.backdrop}>
         <Pressable style={StyleSheet.absoluteFill} onPress={handleBackdropDismiss} />
-        <GlassSurface
-          variant="liquid"
-          radius={40}
-          intensity={34}
-          style={[styles.cardWrap, { width: cardWidth }]}
-        >
-          <View style={styles.cardInner}>
-            <View style={[styles.badgeCircle, { backgroundColor: badgeConfig.bg }]}>
-              <Ionicons name={badgeConfig.icon} size={26} color={badgeConfig.color} />
-            </View>
+        <WaterDropPopupView key={current.id} visible={Boolean(current)} triggerKey={current.id} from="center">
+          <GlassSurface
+            variant="liquid"
+            radius={40}
+            intensity={34}
+            style={[styles.cardWrap, { width: cardWidth }]}
+          >
+            <View style={styles.cardInner}>
+              <View style={[styles.badgeCircle, { backgroundColor: badgeConfig.bg }]}>
+                <Ionicons name={badgeConfig.icon} size={26} color={badgeConfig.color} />
+              </View>
 
-            <Text style={styles.title}>{current.title}</Text>
+              <Text style={styles.title}>{current.title}</Text>
 
-            {current.message ? (
-              <Text style={styles.message}>{current.message}</Text>
-            ) : null}
+              {current.message ? (
+                <Text style={styles.message}>{current.message}</Text>
+              ) : null}
 
-            <View
-              style={[
-                styles.actionsWrap,
-                isHorizontalTwoButtons ? styles.actionsRow : styles.actionsCol,
-              ]}
-            >
-              {current.buttons.map((btn, idx) => {
-                const isCancel = btn.style === 'cancel';
-                const isDestructive = btn.style === 'destructive';
-                const isPrimary =
-                  !isCancel &&
-                  !isDestructive &&
-                  (current.buttons.length === 1 || idx === current.buttons.length - 1);
+              <View
+                style={[
+                  styles.actionsWrap,
+                  isHorizontalTwoButtons ? styles.actionsRow : styles.actionsCol,
+                ]}
+              >
+                {current.buttons.map((btn, idx) => {
+                  const isCancel = btn.style === 'cancel';
+                  const isDestructive = btn.style === 'destructive';
+                  const isPrimary =
+                    !isCancel &&
+                    !isDestructive &&
+                    (current.buttons.length === 1 || idx === current.buttons.length - 1);
 
-                return (
-                  <BouncyButton
-                    key={`${current.id}-${idx}`}
-                    activeOpacity={0.82}
-                    onPress={() => handlePressButton(btn)}
-                    style={[
-                      styles.btnBase,
-                      isHorizontalTwoButtons && styles.btnFlex,
-                      isCancel && styles.btnCancel,
-                      isDestructive && styles.btnDestructive,
-                      isPrimary && styles.btnPrimary,
-                    ]}
-                  >
-                    <Text
-                      numberOfLines={2}
+                  return (
+                    <BouncyButton
+                      key={`${current.id}-${idx}`}
+                      activeOpacity={0.82}
+                      onPress={() => handlePressButton(btn)}
                       style={[
-                        styles.btnTxt,
-                        isCancel && styles.btnTxtCancel,
+                        styles.btnBase,
+                        isHorizontalTwoButtons && styles.btnFlex,
+                        isCancel && styles.btnCancel,
+                        isDestructive && styles.btnDestructive,
+                        isPrimary && styles.btnPrimary,
                       ]}
                     >
-                      {btn.text || 'OK'}
-                    </Text>
-                  </BouncyButton>
-                );
-              })}
+                      <Text
+                        numberOfLines={2}
+                        style={[
+                          styles.btnTxt,
+                          isCancel && styles.btnTxtCancel,
+                        ]}
+                      >
+                        {btn.text || 'OK'}
+                      </Text>
+                    </BouncyButton>
+                  );
+                })}
+              </View>
             </View>
-          </View>
-        </GlassSurface>
+          </GlassSurface>
+        </WaterDropPopupView>
       </View>
     </Modal>
   );

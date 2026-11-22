@@ -26,7 +26,7 @@ import * as ScreenOrientation from 'expo-screen-orientation';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { showAppAlert } from '../components/AppAlertModal';
 import { BouncyButton } from '../components/BouncyButton';
-import { GlassSurface } from '../components/GlassSurface';
+import { GlassSurface, WaterDropPopupView } from '../components/GlassSurface';
 import { NativeSubtitleOverlay } from '../components/NativeSubtitleOverlay';
 import { OfflineDownloadSheet } from '../components/OfflineDownloadSheet';
 import { PlayerEpisodeListModal } from '../components/PlayerEpisodeListModal';
@@ -560,7 +560,6 @@ export function PlayerModal({
   const crossfadeSeqRef = useRef(0);
   const crossfadePreRollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const crossfadeAudioIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const crossfadeToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [activeLayer, setActiveLayer] = useState<'A' | 'B'>('A');
   const activeLayerRef = useRef<'A' | 'B'>('A');
@@ -584,10 +583,6 @@ export function PlayerModal({
       if (crossfadeAudioIntervalRef.current) {
         clearInterval(crossfadeAudioIntervalRef.current);
         crossfadeAudioIntervalRef.current = null;
-      }
-      if (crossfadeToastTimerRef.current) {
-        clearTimeout(crossfadeToastTimerRef.current);
-        crossfadeToastTimerRef.current = null;
       }
       layerAOpacity.stopAnimation();
       layerBOpacity.stopAnimation();
@@ -778,7 +773,9 @@ export function PlayerModal({
     pulseId: number;
   } | null>(null);
   const seekRippleOpacity = useRef(new Animated.Value(0)).current;
-  const seekRippleScale = useRef(new Animated.Value(0.92)).current;
+  const seekRippleScaleX = useRef(new Animated.Value(0.74)).current;
+  const seekRippleScaleY = useRef(new Animated.Value(1.18)).current;
+  const seekRippleTranslateY = useRef(new Animated.Value(-12)).current;
   const holdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const holdActivatedRef = useRef(false);
 
@@ -2175,16 +2172,6 @@ export function PlayerModal({
             }
           }, 33);
         }, 220);
-
-        crossfadeToastTimerRef.current = setTimeout(() => {
-          crossfadeToastTimerRef.current = null;
-          if (crossfadeSeqRef.current !== myFadeSeq) return;
-          showToast(`Đang phát ${pkg.episode.episodes_name}`, 'Chuyển tập mượt mà', 'info', {
-            family: 'ionicons',
-            name: 'film-outline',
-            color: '#FF4D57',
-          });
-        }, 1250);
       }
 
       activeLayerRef.current = newLayer;
@@ -2957,10 +2944,14 @@ export function PlayerModal({
     seekComboRef.current.lastTapAt = 0;
     seekRippleOpacity.stopAnimation();
     seekRippleOpacity.setValue(0);
-    seekRippleScale.stopAnimation();
-    seekRippleScale.setValue(0.92);
+    seekRippleScaleX.stopAnimation();
+    seekRippleScaleX.setValue(0.74);
+    seekRippleScaleY.stopAnimation();
+    seekRippleScaleY.setValue(1.18);
+    seekRippleTranslateY.stopAnimation();
+    seekRippleTranslateY.setValue(-12);
     setSeekRipple(null);
-  }, [seekRippleOpacity, seekRippleScale]);
+  }, [seekRippleOpacity, seekRippleScaleX, seekRippleScaleY, seekRippleTranslateY]);
 
   useEffect(() => {
     return () => clearSeekInteractionTimers();
@@ -3418,46 +3409,145 @@ export function PlayerModal({
 
       setSeekRipple({ side, totalSec: nextTotal, pulseId: now });
       seekRippleOpacity.stopAnimation();
-      seekRippleScale.stopAnimation();
-      seekRippleScale.setValue(0.93);
-      Animated.parallel([
-        Animated.timing(seekRippleOpacity, {
-          toValue: 1,
-          duration: 120,
-          useNativeDriver: true,
-        }),
-        Animated.sequence([
-          Animated.timing(seekRippleScale, {
-            toValue: 1.04,
-            duration: 95,
-            easing: Easing.out(Easing.quad),
-            useNativeDriver: true,
-          }),
-          Animated.timing(seekRippleScale, {
+      seekRippleScaleX.stopAnimation();
+      seekRippleScaleY.stopAnimation();
+      seekRippleTranslateY.stopAnimation();
+
+      if (isContinuing) {
+        seekRippleScaleX.setValue(0.86);
+        seekRippleScaleY.setValue(1.14);
+        seekRippleTranslateY.setValue(-4);
+        Animated.parallel([
+          Animated.timing(seekRippleOpacity, {
             toValue: 1,
-            duration: 110,
-            easing: Easing.out(Easing.quad),
+            duration: 80,
             useNativeDriver: true,
           }),
-        ]),
-      ]).start();
+          Animated.spring(seekRippleTranslateY, {
+            toValue: 0,
+            stiffness: 210,
+            damping: 10,
+            mass: 1.0,
+            useNativeDriver: true,
+          }),
+          Animated.sequence([
+            Animated.timing(seekRippleScaleX, {
+              toValue: 1.12,
+              duration: 105,
+              easing: Easing.bezier(0.34, 1.56, 0.64, 1),
+              useNativeDriver: true,
+            }),
+            Animated.spring(seekRippleScaleX, {
+              toValue: 1,
+              stiffness: 205,
+              damping: 7.2,
+              mass: 1.02,
+              useNativeDriver: true,
+            }),
+          ]),
+          Animated.sequence([
+            Animated.timing(seekRippleScaleY, {
+              toValue: 0.89,
+              duration: 105,
+              easing: Easing.bezier(0.34, 1.56, 0.64, 1),
+              useNativeDriver: true,
+            }),
+            Animated.spring(seekRippleScaleY, {
+              toValue: 1,
+              stiffness: 205,
+              damping: 7.2,
+              mass: 1.02,
+              useNativeDriver: true,
+            }),
+          ]),
+        ]).start();
+      } else {
+        seekRippleScaleX.setValue(0.68);
+        seekRippleScaleY.setValue(1.22);
+        seekRippleTranslateY.setValue(-14);
+        Animated.parallel([
+          Animated.timing(seekRippleOpacity, {
+            toValue: 1,
+            duration: 160,
+            easing: Easing.out(Easing.cubic),
+            useNativeDriver: true,
+          }),
+          Animated.spring(seekRippleTranslateY, {
+            toValue: 0,
+            stiffness: 185,
+            damping: 11,
+            mass: 1.05,
+            useNativeDriver: true,
+          }),
+          Animated.sequence([
+            Animated.timing(seekRippleScaleX, {
+              toValue: 1.12,
+              duration: 130,
+              easing: Easing.bezier(0.34, 1.56, 0.64, 1),
+              useNativeDriver: true,
+            }),
+            Animated.spring(seekRippleScaleX, {
+              toValue: 1,
+              stiffness: 195,
+              damping: 7.5,
+              mass: 1.05,
+              useNativeDriver: true,
+            }),
+          ]),
+          Animated.sequence([
+            Animated.timing(seekRippleScaleY, {
+              toValue: 0.89,
+              duration: 130,
+              easing: Easing.bezier(0.34, 1.56, 0.64, 1),
+              useNativeDriver: true,
+            }),
+            Animated.spring(seekRippleScaleY, {
+              toValue: 1,
+              stiffness: 195,
+              damping: 7.5,
+              mass: 1.05,
+              useNativeDriver: true,
+            }),
+          ]),
+        ]).start();
+      }
 
       seekComboRef.current.hideTimer = setTimeout(() => {
         seekComboRef.current.hideTimer = null;
         seekComboRef.current.side = null;
         seekComboRef.current.totalSec = 0;
-        Animated.timing(seekRippleOpacity, {
-          toValue: 0,
-          duration: 220,
-          useNativeDriver: true,
-        }).start(({ finished }) => {
+        Animated.parallel([
+          Animated.timing(seekRippleOpacity, {
+            toValue: 0,
+            duration: 220,
+            useNativeDriver: true,
+          }),
+          Animated.timing(seekRippleScaleX, {
+            toValue: 0.86,
+            duration: 220,
+            easing: Easing.in(Easing.cubic),
+            useNativeDriver: true,
+          }),
+          Animated.timing(seekRippleScaleY, {
+            toValue: 1.08,
+            duration: 220,
+            easing: Easing.in(Easing.cubic),
+            useNativeDriver: true,
+          }),
+        ]).start(({ finished }) => {
           if (finished && seekComboRef.current.side === null) {
             setSeekRipple(null);
           }
         });
       }, 820);
     },
-    [seekToWithWarning, seekRippleOpacity, seekRippleScale]
+    [
+      seekToWithWarning,
+      seekRippleOpacity,
+      seekRippleScaleX,
+      seekRippleScaleY,
+      seekRippleTranslateY,
+    ]
   );
 
   // Progress bar PanResponder
@@ -3883,21 +3973,31 @@ export function PlayerModal({
             ]}
           >
             <Animated.View
-              style={[
-                styles.seekRipplePill,
-                { transform: [{ scale: seekRippleScale }] },
-              ]}
+              style={{
+                transform: [
+                  { translateY: seekRippleTranslateY },
+                  { scaleX: seekRippleScaleX },
+                  { scaleY: seekRippleScaleY },
+                ],
+              }}
             >
-              <Ionicons
-                name={seekRipple.side === 'left' ? 'play-back' : 'play-forward'}
-                size={22}
-                color="#FFF"
-              />
-              <Text style={styles.seekRippleText}>
-                {seekRipple.side === 'left'
-                  ? `-${seekRipple.totalSec} giây`
-                  : `+${seekRipple.totalSec} giây`}
-              </Text>
+              <GlassSurface
+                variant="liquid"
+                radius={40}
+                intensity={24}
+                style={styles.seekRipplePill}
+              >
+                <Ionicons
+                  name={seekRipple.side === 'left' ? 'play-back' : 'play-forward'}
+                  size={22}
+                  color="#FFF"
+                />
+                <Text style={styles.seekRippleText}>
+                  {seekRipple.side === 'left'
+                    ? `-${seekRipple.totalSec} giây`
+                    : `+${seekRipple.totalSec} giây`}
+                </Text>
+              </GlassSurface>
             </Animated.View>
           </Animated.View>
         ) : null}
@@ -3979,119 +4079,128 @@ export function PlayerModal({
                 </View>
               </View>
 
-              {/* Top-right 6-button Liquid Glass capsule */}
-              <GlassSurface variant="liquid" radius={40} intensity={28} style={styles.topRightCapsule}>
-                <BouncyButton
-                  pressScale={0.86}
-                  style={styles.topCapsuleBtn}
-                  onPress={() => {
-                    Haptics.selectionAsync();
-                    clearHudTimer();
-                    setServerModalOpen(true);
-                  }}
-                >
-                  <Feather name="server" size={21} color="#FFF" />
-                  {serverPreparing ? <View style={styles.prepDot} /> : null}
-                </BouncyButton>
-
-                {!isOfflineOnlyMode ? (
-                  <BouncyButton
-                    pressScale={0.86}
-                    style={[
-                      styles.topCapsuleBtn,
-                      isDownloadedNow && styles.topBtnGreen,
-                    ]}
-                    onPress={() => {
-                      Haptics.selectionAsync();
-                      clearHudTimer();
-                      setOfflineSheetOpen(true);
-                    }}
-                  >
-                    {isDownloadingNow ? (
-                      <DownloadingIconAnim />
-                    ) : (
-                      <Feather
-                        name="download"
-                        size={21}
-                        color={isDownloadedNow ? '#30D158' : '#FFF'}
-                      />
-                    )}
-                  </BouncyButton>
-                ) : null}
-
-                <BouncyButton
-                  pressScale={0.86}
-                  style={styles.topCapsuleBtn}
-                  onPress={() => {
-                    Haptics.selectionAsync();
-                    clearHudTimer();
-                    setSubSettingsOpen(true);
-                  }}
-                >
-                  <JwSubtitleIcon size={22} color="#FFF" />
-                </BouncyButton>
-
-                {settings.pipEnabled ? (
+              {/* Top-right 3 separated Liquid Glass capsules */}
+              <View style={styles.topRightCapsulesRow}>
+                {/* Capsule 1: Server, Download & Subtitle */}
+                <GlassSurface variant="liquid" radius={40} intensity={28} style={styles.topRightCapsule}>
                   <BouncyButton
                     pressScale={0.86}
                     style={styles.topCapsuleBtn}
-                    onPress={async () => {
+                    onPress={() => {
                       Haptics.selectionAsync();
-                      try {
-                        if (
-                          typeof isPictureInPictureSupported === 'function' &&
-                          !isPictureInPictureSupported()
-                        ) {
-                          showToast('Thiết bị chưa hỗ trợ thu nhỏ khung hình', undefined, 'warning', {
+                      clearHudTimer();
+                      setServerModalOpen(true);
+                    }}
+                  >
+                    <Feather name="server" size={21} color="#FFF" />
+                    {serverPreparing ? <View style={styles.prepDot} /> : null}
+                  </BouncyButton>
+
+                  {!isOfflineOnlyMode ? (
+                    <BouncyButton
+                      pressScale={0.86}
+                      style={[
+                        styles.topCapsuleBtn,
+                        isDownloadedNow && styles.topBtnGreen,
+                      ]}
+                      onPress={() => {
+                        Haptics.selectionAsync();
+                        clearHudTimer();
+                        setOfflineSheetOpen(true);
+                      }}
+                    >
+                      {isDownloadingNow ? (
+                        <DownloadingIconAnim />
+                      ) : (
+                        <Feather
+                          name="download"
+                          size={21}
+                          color={isDownloadedNow ? '#30D158' : '#FFF'}
+                        />
+                      )}
+                    </BouncyButton>
+                  ) : null}
+
+                  <BouncyButton
+                    pressScale={0.86}
+                    style={styles.topCapsuleBtn}
+                    onPress={() => {
+                      Haptics.selectionAsync();
+                      clearHudTimer();
+                      setSubSettingsOpen(true);
+                    }}
+                  >
+                    <JwSubtitleIcon size={22} color="#FFF" />
+                  </BouncyButton>
+                </GlassSurface>
+
+                {/* Capsule 2: PiP & DVA Cast */}
+                <GlassSurface variant="liquid" radius={40} intensity={28} style={styles.topRightCapsule}>
+                  {settings.pipEnabled ? (
+                    <BouncyButton
+                      pressScale={0.86}
+                      style={styles.topCapsuleBtn}
+                      onPress={async () => {
+                        Haptics.selectionAsync();
+                        try {
+                          if (
+                            typeof isPictureInPictureSupported === 'function' &&
+                            !isPictureInPictureSupported()
+                          ) {
+                            showToast('Thiết bị chưa hỗ trợ thu nhỏ khung hình', undefined, 'warning', {
+                              family: 'ionicons',
+                              name: 'albums-outline',
+                              color: '#FBBF24',
+                            });
+                            return;
+                          }
+                          const viewRef =
+                            activeLayerRef.current === 'A' ? viewARef.current : viewBRef.current;
+                          setIsInPip(true);
+                          await viewRef?.startPictureInPicture();
+                        } catch {
+                          setIsInPip(false);
+                          syncNativePipSubtitleTrack(getActivePlayer(), false);
+                          showToast('Không thể mở thu nhỏ khung hình lúc này', undefined, 'warning', {
                             family: 'ionicons',
                             name: 'albums-outline',
                             color: '#FBBF24',
                           });
-                          return;
                         }
-                        const viewRef =
-                          activeLayerRef.current === 'A' ? viewARef.current : viewBRef.current;
-                        setIsInPip(true);
-                        await viewRef?.startPictureInPicture();
-                      } catch {
-                        setIsInPip(false);
-                        syncNativePipSubtitleTrack(getActivePlayer(), false);
-                        showToast('Không thể mở thu nhỏ khung hình lúc này', undefined, 'warning', {
-                          family: 'ionicons',
-                          name: 'albums-outline',
-                          color: '#FBBF24',
-                        });
-                      }
+                      }}
+                    >
+                      <JwPipIcon color="#FFF" />
+                    </BouncyButton>
+                  ) : null}
+
+                  <BouncyButton
+                    pressScale={0.86}
+                    style={styles.topCapsuleBtn}
+                    onPress={() => {
+                      Haptics.selectionAsync();
+                      clearHudTimer();
+                      setCastPopupOpen(true);
                     }}
                   >
-                    <JwPipIcon color="#FFF" />
+                    <Feather name="cast" size={21} color="#FFF" />
                   </BouncyButton>
-                ) : null}
+                </GlassSurface>
 
-                <BouncyButton
-                  pressScale={0.86}
-                  style={styles.topCapsuleBtn}
-                  onPress={() => {
-                    Haptics.selectionAsync();
-                    clearHudTimer();
-                    setCastPopupOpen(true);
-                  }}
-                >
-                  <Feather name="cast" size={21} color="#FFF" />
-                </BouncyButton>
-
-                <BouncyButton
-                  pressScale={0.86}
-                  style={styles.topCapsuleBtn}
-                  onPress={() => {
-                    Haptics.selectionAsync();
-                    clearHudTimer();
-                    setGeneralSettingsOpen(true);
-                  }}
-                >
-                  <Feather name="settings" size={21} color="#FFF" />
-                </BouncyButton>
-              </GlassSurface>
+                {/* Capsule 3: Player Settings */}
+                <GlassSurface variant="liquid" radius={25} intensity={28} style={styles.topRightSingleCapsule}>
+                  <BouncyButton
+                    pressScale={0.86}
+                    style={styles.topCapsuleBtn}
+                    onPress={() => {
+                      Haptics.selectionAsync();
+                      clearHudTimer();
+                      setGeneralSettingsOpen(true);
+                    }}
+                  >
+                    <Feather name="settings" size={21} color="#FFF" />
+                  </BouncyButton>
+                </GlassSurface>
+              </View>
             </View>
 
             {/* Right-Edge Vertical Liquid Glass Capsule */}
@@ -4103,7 +4212,7 @@ export function PlayerModal({
             >
               <BouncyButton
                 pressScale={0.86}
-                style={[styles.sideBtn, isContrastActive && styles.sideBtnActiveRed]}
+                style={styles.sideBtn}
                 onPress={() => {
                   Haptics.selectionAsync();
                   const next = isContrastActive ? 'Mặc định' : 'Cao';
@@ -4117,12 +4226,16 @@ export function PlayerModal({
                   showHudWithTimer();
                 }}
               >
-                <Ionicons name="contrast" size={20} color="#FFF" />
+                <Ionicons
+                  name="contrast"
+                  size={20}
+                  color={isContrastActive ? '#FF3B4E' : '#FFFFFF'}
+                />
               </BouncyButton>
 
               <BouncyButton
                 pressScale={0.86}
-                style={[styles.sideBtn, settings.autoPlayNext && styles.sideBtnActiveRed]}
+                style={styles.sideBtn}
                 onPress={() => {
                   Haptics.selectionAsync();
                   const next = !settings.autoPlayNext;
@@ -4136,15 +4249,16 @@ export function PlayerModal({
                   showHudWithTimer();
                 }}
               >
-                <Ionicons name="play-skip-forward" size={19} color="#FFF" />
+                <Ionicons
+                  name="play-skip-forward"
+                  size={19}
+                  color={settings.autoPlayNext ? '#FF3B4E' : '#FFFFFF'}
+                />
               </BouncyButton>
 
               <BouncyButton
                 pressScale={0.86}
-                style={[
-                  styles.sideBtn,
-                  settings.videoFillMode === 'cover' && styles.sideBtnActiveRed,
-                ]}
+                style={styles.sideBtn}
                 onPress={() => {
                   Haptics.selectionAsync();
                   const nextMode = settings.videoFillMode === 'cover' ? 'contain' : 'cover';
@@ -4162,7 +4276,11 @@ export function PlayerModal({
                   showHudWithTimer();
                 }}
               >
-                <Ionicons name="scan-outline" size={19} color="#FFF" />
+                <Ionicons
+                  name="scan-outline"
+                  size={19}
+                  color={settings.videoFillMode === 'cover' ? '#FF3B4E' : '#FFFFFF'}
+                />
               </BouncyButton>
             </GlassSurface>
 
@@ -4543,102 +4661,106 @@ export function PlayerModal({
 
                 {/* Speed Popover */}
                 {speedMenuOpen ? (
-                  <GlassSurface variant="liquid" radius={30} intensity={34} style={styles.speedPopover}>
-                    {SPEED_OPTIONS.map((rate) => {
-                      const active = Math.abs(playbackRate - rate) < 0.01;
-                      return (
-                        <BouncyButton
-                          key={rate}
-                          bounciness="gentle"
-                          style={[styles.popoverItem, active && styles.popoverItemActive]}
-                          onPress={() => {
-                            Haptics.selectionAsync();
-                            setPlaybackRate(rate);
-                            try {
-                              getActivePlayer().playbackRate = rate;
-                            } catch {}
-                            setSpeedMenuOpen(false);
-                            showHudWithTimer();
-                          }}
-                        >
-                          <Text style={styles.popoverItemTxt}>
-                            {rate.toFixed(rate % 1 === 0 ? 1 : 2).replace(/\.00$/, '.0')}x
-                          </Text>
-                          {active ? <Ionicons name="checkmark" size={16} color="#FFF" /> : null}
-                        </BouncyButton>
-                      );
-                    })}
-                  </GlassSurface>
+                  <WaterDropPopupView from="bottom" style={styles.speedPopoverWrap}>
+                    <GlassSurface variant="liquid" radius={30} intensity={34} style={styles.speedPopover}>
+                      {SPEED_OPTIONS.map((rate) => {
+                        const active = Math.abs(playbackRate - rate) < 0.01;
+                        return (
+                          <BouncyButton
+                            key={rate}
+                            bounciness="gentle"
+                            style={[styles.popoverItem, active && styles.popoverItemActive]}
+                            onPress={() => {
+                              Haptics.selectionAsync();
+                              setPlaybackRate(rate);
+                              try {
+                                getActivePlayer().playbackRate = rate;
+                              } catch {}
+                              setSpeedMenuOpen(false);
+                              showHudWithTimer();
+                            }}
+                          >
+                            <Text style={styles.popoverItemTxt}>
+                              {rate.toFixed(rate % 1 === 0 ? 1 : 2).replace(/\.00$/, '.0')}x
+                            </Text>
+                            {active ? <Ionicons name="checkmark" size={16} color="#FFF" /> : null}
+                          </BouncyButton>
+                        );
+                      })}
+                    </GlassSurface>
+                  </WaterDropPopupView>
                 ) : null}
 
                 {/* More Options Popover — iOS Contextual Glass Sheet matching Image 2 */}
                 {moreMenuOpen ? (
-                  <View style={styles.morePopover}>
-                    <BlurView intensity={34} tint="systemUltraThinMaterialDark" style={StyleSheet.absoluteFill} />
-                    <View style={styles.morePopoverFill} />
+                  <WaterDropPopupView from="bottom" style={styles.morePopoverWrap}>
+                    <View style={styles.morePopover}>
+                      <BlurView intensity={34} tint="systemUltraThinMaterialDark" style={StyleSheet.absoluteFill} />
+                      <View style={styles.morePopoverFill} />
 
-                    {!isOfflineOnlyMode ? (
+                      {!isOfflineOnlyMode ? (
+                        <BouncyButton
+                          bounciness="gentle"
+                          activeOpacity={0.75}
+                          style={styles.morePopoverRow}
+                          onPress={() => {
+                            setMoreMenuOpen(false);
+                            setOfflineSheetOpen(true);
+                          }}
+                        >
+                          <View style={styles.morePopoverIconBadge}>
+                            <Feather name="download" size={18} color="#FFFFFF" />
+                          </View>
+                          <Text style={styles.morePopoverText}>Tải phim ngoại tuyến</Text>
+                        </BouncyButton>
+                      ) : null}
+
                       <BouncyButton
                         bounciness="gentle"
                         activeOpacity={0.75}
                         style={styles.morePopoverRow}
                         onPress={() => {
                           setMoreMenuOpen(false);
-                          setOfflineSheetOpen(true);
+                          setInfoPanel('info');
                         }}
                       >
                         <View style={styles.morePopoverIconBadge}>
-                          <Feather name="download" size={18} color="#FFFFFF" />
+                          <Feather name="info" size={18} color="#FFFFFF" />
                         </View>
-                        <Text style={styles.morePopoverText}>Tải phim ngoại tuyến</Text>
+                        <Text style={styles.morePopoverText}>Thông tin phim & Thành viên</Text>
                       </BouncyButton>
-                    ) : null}
 
-                    <BouncyButton
-                      bounciness="gentle"
-                      activeOpacity={0.75}
-                      style={styles.morePopoverRow}
-                      onPress={() => {
-                        setMoreMenuOpen(false);
-                        setInfoPanel('info');
-                      }}
-                    >
-                      <View style={styles.morePopoverIconBadge}>
-                        <Feather name="info" size={18} color="#FFFFFF" />
-                      </View>
-                      <Text style={styles.morePopoverText}>Thông tin phim & Thành viên</Text>
-                    </BouncyButton>
+                      <BouncyButton
+                        bounciness="gentle"
+                        activeOpacity={0.75}
+                        style={styles.morePopoverRow}
+                        onPress={() => {
+                          setMoreMenuOpen(false);
+                          setCastPopupOpen(true);
+                        }}
+                      >
+                        <View style={styles.morePopoverIconBadge}>
+                          <Feather name="tv" size={18} color="#FFFFFF" />
+                        </View>
+                        <Text style={styles.morePopoverText}>Chiếu lên TV</Text>
+                      </BouncyButton>
 
-                    <BouncyButton
-                      bounciness="gentle"
-                      activeOpacity={0.75}
-                      style={styles.morePopoverRow}
-                      onPress={() => {
-                        setMoreMenuOpen(false);
-                        setCastPopupOpen(true);
-                      }}
-                    >
-                      <View style={styles.morePopoverIconBadge}>
-                        <Feather name="tv" size={18} color="#FFFFFF" />
-                      </View>
-                      <Text style={styles.morePopoverText}>Chiếu lên TV</Text>
-                    </BouncyButton>
-
-                    <BouncyButton
-                      bounciness="gentle"
-                      activeOpacity={0.75}
-                      style={styles.morePopoverRow}
-                      onPress={() => {
-                        setMoreMenuOpen(false);
-                        setServerModalOpen(true);
-                      }}
-                    >
-                      <View style={styles.morePopoverIconBadge}>
-                        <Feather name="server" size={18} color="#FFFFFF" />
-                      </View>
-                      <Text style={styles.morePopoverText}>Máy chủ phát phim</Text>
-                    </BouncyButton>
-                  </View>
+                      <BouncyButton
+                        bounciness="gentle"
+                        activeOpacity={0.75}
+                        style={styles.morePopoverRow}
+                        onPress={() => {
+                          setMoreMenuOpen(false);
+                          setServerModalOpen(true);
+                        }}
+                      >
+                        <View style={styles.morePopoverIconBadge}>
+                          <Feather name="server" size={18} color="#FFFFFF" />
+                        </View>
+                        <Text style={styles.morePopoverText}>Máy chủ phát phim</Text>
+                      </BouncyButton>
+                    </View>
+                  </WaterDropPopupView>
                 ) : null}
               </View>
             </View>
@@ -5169,12 +5291,23 @@ const styles = StyleSheet.create({
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 3,
   },
+  topRightCapsulesRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   topRightCapsule: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 10,
+    paddingHorizontal: 8,
     paddingVertical: 5,
-    gap: 8,
+    gap: 6,
+  },
+  topRightSingleCapsule: {
+    width: 50,
+    height: 50,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   topCapsuleBtn: {
     width: 40,
@@ -5211,9 +5344,6 @@ const styles = StyleSheet.create({
     borderRadius: 19,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  sideBtnActiveRed: {
-    backgroundColor: 'rgba(229, 9, 20, 0.92)',
   },
   centerControlsRow: {
     position: 'absolute',
@@ -5400,30 +5530,22 @@ const styles = StyleSheet.create({
     bottom: 0,
     width: '36%',
     zIndex: 8,
-    backgroundColor: 'rgba(10, 14, 24, 0.42)',
+    backgroundColor: 'transparent',
     alignItems: 'center',
     justifyContent: 'center',
   },
   seekRippleLeft: {
     left: 0,
-    borderTopRightRadius: 180,
-    borderBottomRightRadius: 180,
   },
   seekRippleRight: {
     right: 0,
-    borderTopLeftRadius: 180,
-    borderBottomLeftRadius: 180,
   },
   seekRipplePill: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    paddingHorizontal: 18,
-    paddingVertical: 11,
-    borderRadius: 999,
-    backgroundColor: 'rgba(20, 26, 40, 0.72)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.2)',
+    paddingHorizontal: 22,
+    paddingVertical: 13,
   },
   seekRippleText: {
     color: '#FFFFFF',
@@ -5455,19 +5577,24 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
   },
-  speedPopover: {
+  speedPopoverWrap: {
     position: 'absolute',
     right: 128,
     bottom: 50,
+    zIndex: 35,
+  },
+  speedPopover: {
     padding: 8,
     gap: 4,
     minWidth: 112,
-    zIndex: 35,
   },
-  morePopover: {
+  morePopoverWrap: {
     position: 'absolute',
     right: 0,
     bottom: 52,
+    zIndex: 35,
+  },
+  morePopover: {
     paddingVertical: 8,
     paddingHorizontal: 10,
     gap: 2,
@@ -5476,7 +5603,6 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.18)',
-    zIndex: 35,
     boxShadow: GLASS_SHADOW,
     elevation: 18,
   },
