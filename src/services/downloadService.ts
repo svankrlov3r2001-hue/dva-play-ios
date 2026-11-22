@@ -10,10 +10,12 @@ import {
 } from '../types/models';
 import {
   fetchBatchWatchProgressApi,
+  fetchMovieDetailsApi,
   resolveStreamApi,
   saveWatchProgressApi,
 } from './api';
 import { buildLocalOfflineUrl, isNativePipProxySupported, setNativeBackgroundDownloadActive } from './localMediaServer';
+import { encodeSubtitlePathUrl } from './subtitleService';
 
 const OFFLINE_DIR = `${FileSystem.documentDirectory ?? ''}dva_offline/`;
 const INDEX_FILE = `${FileSystem.documentDirectory ?? ''}dva_offline_index.json`;
@@ -234,9 +236,9 @@ function constructSubtitleUrl(serverFileKey: string, lang: 'vn' | 'en'): string 
     movieName = cleanName.split(/[\.\s]T[ậâa]p/i)[0] || cleanName;
   }
   const langFolder = lang === 'vn' ? 'VN' : 'EN';
-  return (
+  return encodeSubtitlePathUrl(
     'https://sub.dangvietanh.com/dashboard?ssl=' +
-    `${category}/${movieName}/Subtitle/${langFolder}/${cleanName}.vtt&dtpd=0&vtpd=80&vtpdtt=0`
+      `${category}/${movieName}/Subtitle/${langFolder}/${cleanName}.vtt&dtpd=0&vtpd=80&vtpdtt=0`
   );
 }
 
@@ -308,36 +310,239 @@ function reanchorOfflineUri(uri: string | undefined): string {
   return uri;
 }
 
-async function repairMissingOfflinePosters(items: OfflineDownloadItem[]): Promise<void> {
-  if (!OFFLINE_DIR) return;
-  for (const item of items) {
-    if (item.status !== 'completed') continue;
-    const remoteImg = item.thumbnail_url || item.poster_url;
-    if (!remoteImg || !/^https?:\/\//i.test(remoteImg)) continue;
-    let needsRepair = !item.local_poster_uri;
-    if (!needsRepair && item.local_poster_uri) {
-      try {
-        const info = await FileSystem.getInfoAsync(item.local_poster_uri);
-        const sz = info.exists && 'size' in info ? Number(info.size || 0) : 0;
-        if (!info.exists || sz <= 500) {
-          needsRepair = true;
-        }
-      } catch {
-        needsRepair = true;
+function extractNormalizedTitleBase(raw?: string): string {
+  const beforeDash = String(raw || '').split(' - ')[0] || '';
+  return beforeDash
+    .toLowerCase()
+    .replace(/\b(19|20)\d{2}\b/g, ' ')
+    .replace(/[._\-+\s:/\\|()[\]]+/g, ' ')
+    .trim();
+}
+
+function extractServerTitleBase(item: OfflineDownloadItem): string {
+  const raw = item.server_movie_title || item.server_file_key || '';
+  if (!raw) return '';
+  const withoutExt = raw.replace(/\.(mp4|m3u8|vtt)$/i, '').replace(/_vi$/i, '');
+  const beforeEp = withoutExt.split(/[.\s_-]T[ậâa]p/i)[0] || withoutExt;
+  return beforeEp
+    .toLowerCase()
+    .replace(/\b(19|20)\d{2}\b/g, ' ')
+    .replace(/[._\-+\s]+/g, ' ')
+    .trim();
+}
+
+function shareSignificantToken(a: string, b: string): boolean {
+  if (!a || !b) return true;
+  const tokA = a.split(' ').filter((w) => w.length >= 2);
+  const tokB = new Set(b.split(' ').filter((w) => w.length >= 2));
+  if (tokA.length === 0 || tokB.size === 0) return true;
+  return tokA.some((w) => tokB.has(w));
+}
+
+async function sanitizeCorruptedOfflineItems(
+  items: OfflineDownloadItem[]
+): Promise<{ items: OfflineDownloadItem[]; mutated: boolean }> {
+  if (items.length <= 1) return { items, mutated: false };
+  let mutated = false;
+
+  // Map canonical server_movie_title bases -> known series group metadata (only when title agrees with serverBase)
+  const serverBaseToOwner = new Map<
+    string,
+    {
+      videos_id: number;
+      title: string;
+      poster_url: string;
+      thumbnail_url: string;
+      local_poster_uri?: string;
+    }
+  >();
+
+  for (const it of items) {
+    const sBase = extractServerTitleBase(it);
+    const tBase = extractNormalizedTitleBase(it.title);
+    if (!sBase || !tBase) continue;
+    if (shareSignificantToken(sBase, tBase) && !serverBaseToOwner.has(sBase)) {
+      serverBaseToOwner.set(sBase, {
+        videos_id: it.videos_id,
+        title: it.title,
+        poster_url: it.poster_url,
+        thumbnail_url: it.thumbnail_url,
+        local_poster_uri: it.local_poster_uri,
+      });
+    }
+  }
+
+  // Group by videos_id to detect heterogeneous server_movie_title contamination inside one videos_id
+  const byVideosId = new Map<number, OfflineDownloadItem[]>();
+  for (const it of items) {
+    if (!it.videos_id) continue;
+    const list = byVideosId.get(it.videos_id) || [];
+    list.push(it);
+    byVideosId.set(it.videos_id, list);
+  }
+
+  const dropIds = new Set<string>();
+  const foldersToDelete: string[] = [];
+  const nextItems = items.map((it) => ({ ...it }));
+
+  for (let i = 0; i < nextItems.length; i++) {
+    const it = nextItems[i];
+    const sBase = extractServerTitleBase(it);
+    const tBase = extractNormalizedTitleBase(it.title);
+    if (!sBase || !tBase) continue;
+
+    // Case 1: item belongs unambiguously to a different series present in offline storage
+    const owner = serverBaseToOwner.get(sBase);
+    if (
+      owner &&
+      owner.videos_id !== it.videos_id &&
+      !shareSignificantToken(sBase, tBase)
+    ) {
+      const duplicateInOwner = nextItems.some(
+        (other, idx) =>
+          idx !== i &&
+          !dropIds.has(other.id) &&
+          other.videos_id === owner.videos_id &&
+          other.stream_code &&
+          other.stream_code === it.stream_code
+      );
+      mutated = true;
+      if (duplicateInOwner) {
+        dropIds.add(it.id);
+        foldersToDelete.push(it.local_dir || `${OFFLINE_DIR}${it.id}/`);
+      } else {
+        it.videos_id = owner.videos_id;
+        it.title = owner.title;
+        if (!it.poster_url && owner.poster_url) it.poster_url = owner.poster_url;
+        if (!it.thumbnail_url && owner.thumbnail_url) it.thumbnail_url = owner.thumbnail_url;
+      }
+      continue;
+    }
+
+    // Case 2: single movie shares videos_id with leaked series episodes whose server_movie_title mismatches completely
+    const group = byVideosId.get(it.videos_id) || [];
+    if (group.length > 1 && it.episode_title) {
+      const matchingTitleSib = group.find((sib) => {
+        const sibS = extractServerTitleBase(sib);
+        const sibT = extractNormalizedTitleBase(sib.title);
+        return sib.id !== it.id && Boolean(sibS) && shareSignificantToken(sibS, sibT);
+      });
+      if (matchingTitleSib && !shareSignificantToken(sBase, tBase) && !it.poster_url && !it.thumbnail_url) {
+        mutated = true;
+        dropIds.add(it.id);
+        foldersToDelete.push(it.local_dir || `${OFFLINE_DIR}${it.id}/`);
       }
     }
-    if (!needsRepair) continue;
+  }
+
+  for (const dir of foldersToDelete) {
+    if (dir) {
+      await FileSystem.deleteAsync(dir, { idempotent: true }).catch(() => {});
+    }
+  }
+
+  const filtered = dropIds.size > 0 ? nextItems.filter((it) => !dropIds.has(it.id)) : nextItems;
+  return { items: filtered, mutated };
+}
+
+async function isValidPosterFile(uri?: string): Promise<boolean> {
+  if (!uri) return false;
+  try {
+    const info = await FileSystem.getInfoAsync(uri);
+    const sz = info.exists && 'size' in info ? Number(info.size || 0) : 0;
+    return Boolean(info.exists && sz > 500);
+  } catch {
+    return false;
+  }
+}
+
+async function repairMissingOfflinePosters(items: OfflineDownloadItem[]): Promise<void> {
+  if (!OFFLINE_DIR) return;
+
+  const validLocalByVideo = new Map<number, string>();
+  const remoteByVideo = new Map<number, { poster: string; thumb: string }>();
+
+  for (const it of items) {
+    if (!it.videos_id) continue;
+    const remoteThumb = it.thumbnail_url || it.poster_url;
+    if (remoteThumb && /^https?:\/\//i.test(remoteThumb) && !remoteByVideo.has(it.videos_id)) {
+      remoteByVideo.set(it.videos_id, {
+        poster: it.poster_url || remoteThumb,
+        thumb: it.thumbnail_url || remoteThumb,
+      });
+    }
+    if (it.local_poster_uri && !validLocalByVideo.has(it.videos_id)) {
+      if (await isValidPosterFile(it.local_poster_uri)) {
+        validLocalByVideo.set(it.videos_id, it.local_poster_uri);
+      }
+    }
+  }
+
+  const fetchedDetailsAttempted = new Set<number>();
+
+  for (const item of items) {
+    if (item.status !== 'completed') continue;
+    const hasLocal = await isValidPosterFile(item.local_poster_uri);
+    if (hasLocal) continue;
+
     const itemDir = `${OFFLINE_DIR}${item.id}/`;
     const posterDest = `${itemDir}poster.jpg`;
+    const patch: Partial<OfflineDownloadItem> = {};
+
+    // 1. Copy immediately from any sibling episode of the same movie
+    const sibLocal = item.videos_id ? validLocalByVideo.get(item.videos_id) : undefined;
+    if (sibLocal && sibLocal !== posterDest) {
+      try {
+        await ensureDir(itemDir);
+        await FileSystem.copyAsync({ from: sibLocal, to: posterDest });
+        if (await isValidPosterFile(posterDest)) {
+          patch.local_poster_uri = posterDest;
+          const sibRemote = item.videos_id ? remoteByVideo.get(item.videos_id) : undefined;
+          if (!item.poster_url && sibRemote?.poster) patch.poster_url = sibRemote.poster;
+          if (!item.thumbnail_url && sibRemote?.thumb) patch.thumbnail_url = sibRemote.thumb;
+          updateItemInMemory(item.id, patch, true);
+          continue;
+        }
+      } catch {}
+    }
+
+    // 2. Download from own or sibling remote URL, or fetch movie details once if both missing
+    let remoteImg =
+      item.thumbnail_url ||
+      item.poster_url ||
+      (item.videos_id ? remoteByVideo.get(item.videos_id)?.thumb : '') ||
+      '';
+
+    if ((!remoteImg || !/^https?:\/\//i.test(remoteImg)) && item.videos_id > 0 && !fetchedDetailsAttempted.has(item.videos_id)) {
+      fetchedDetailsAttempted.add(item.videos_id);
+      try {
+        const detailRes = await fetchMovieDetailsApi(item.videos_id);
+        const mv = detailRes?.movie;
+        if (mv?.thumbnail_url || mv?.poster_url) {
+          remoteImg = mv.thumbnail_url || mv.poster_url;
+          remoteByVideo.set(item.videos_id, {
+            poster: mv.poster_url || remoteImg,
+            thumb: mv.thumbnail_url || remoteImg,
+          });
+          if (!item.poster_url && mv.poster_url) patch.poster_url = mv.poster_url;
+          if (!item.thumbnail_url && mv.thumbnail_url) patch.thumbnail_url = mv.thumbnail_url;
+        }
+      } catch {}
+    }
+
+    if (!remoteImg || !/^https?:\/\//i.test(remoteImg)) continue;
+
     try {
       await ensureDir(itemDir);
       const dl = await FileSystem.downloadAsync(remoteImg, posterDest, {
         sessionType: FileSystem.FileSystemSessionType.FOREGROUND,
       });
-      const pInfo = await FileSystem.getInfoAsync(posterDest);
-      const pSz = pInfo.exists && 'size' in pInfo ? Number(pInfo.size || 0) : 0;
-      if (dl && dl.status < 400 && pInfo.exists && pSz > 500) {
-        updateItemInMemory(item.id, { local_poster_uri: posterDest }, true);
+      if (dl && dl.status < 400 && (await isValidPosterFile(posterDest))) {
+        patch.local_poster_uri = posterDest;
+        if (item.videos_id && !validLocalByVideo.has(item.videos_id)) {
+          validLocalByVideo.set(item.videos_id, posterDest);
+        }
+        updateItemInMemory(item.id, patch, true);
       } else {
         await FileSystem.deleteAsync(posterDest, { idempotent: true }).catch(() => {});
       }
@@ -427,6 +632,11 @@ export async function loadOfflineDownloads(): Promise<OfflineDownloadItem[]> {
     }
   } catch {
     cachedItems = [];
+  }
+  const cleaned = await sanitizeCorruptedOfflineItems(cachedItems);
+  cachedItems = cleaned.items;
+  if (cleaned.mutated) {
+    indexMutated = true;
   }
   initialized = true;
   if (indexMutated) {
@@ -1251,7 +1461,12 @@ async function downloadSubtitlesAndPoster(
   item: OfflineDownloadItem,
   resolvedData: StreamResolvedData | null,
   serverFileKey: string
-): Promise<{ subtitles: OfflineSubtitleTrack[]; localPosterUri?: string }> {
+): Promise<{
+  subtitles: OfflineSubtitleTrack[];
+  localPosterUri?: string;
+  resolvedPosterUrl?: string;
+  resolvedThumbnailUrl?: string;
+}> {
   const itemDir = `${OFFLINE_DIR}${item.id}/`;
   await ensureDir(itemDir);
 
@@ -1304,17 +1519,34 @@ async function downloadSubtitlesAndPoster(
     }
   }
 
+  const sibling = cachedItems.find(
+    (s) => s.id !== item.id && s.videos_id === item.videos_id && (s.thumbnail_url || s.poster_url || s.local_poster_uri)
+  );
+  let resolvedPosterUrl =
+    item.poster_url || resolvedData?.movie?.poster_url || sibling?.poster_url || '';
+  let resolvedThumbnailUrl =
+    item.thumbnail_url || resolvedData?.movie?.thumbnail_url || sibling?.thumbnail_url || resolvedPosterUrl;
+
+  if (!resolvedThumbnailUrl && !resolvedPosterUrl && item.videos_id > 0) {
+    try {
+      const detailRes = await fetchMovieDetailsApi(item.videos_id);
+      const mv = detailRes?.movie;
+      if (mv?.poster_url || mv?.thumbnail_url) {
+        resolvedPosterUrl = mv.poster_url || mv.thumbnail_url || '';
+        resolvedThumbnailUrl = mv.thumbnail_url || mv.poster_url || '';
+      }
+    } catch {}
+  }
+
   let localPosterUri: string | undefined;
-  const imgUrl = item.thumbnail_url || item.poster_url;
+  const imgUrl = resolvedThumbnailUrl || resolvedPosterUrl;
+  const posterDest = `${itemDir}poster.jpg`;
   if (imgUrl && /^https?:\/\//i.test(imgUrl)) {
-    const posterDest = `${itemDir}poster.jpg`;
     try {
       const pRes = await FileSystem.downloadAsync(imgUrl, posterDest, {
         sessionType: FileSystem.FileSystemSessionType.FOREGROUND,
       });
-      const pInfo = await FileSystem.getInfoAsync(posterDest);
-      const pSz = pInfo.exists && 'size' in pInfo ? Number(pInfo.size || 0) : 0;
-      if (pRes && pRes.status < 400 && pInfo.exists && pSz > 500) {
+      if (pRes && pRes.status < 400 && (await isValidPosterFile(posterDest))) {
         localPosterUri = posterDest;
       } else {
         await FileSystem.deleteAsync(posterDest, { idempotent: true }).catch(() => {});
@@ -1324,7 +1556,16 @@ async function downloadSubtitlesAndPoster(
     }
   }
 
-  return { subtitles, localPosterUri };
+  if (!localPosterUri && sibling?.local_poster_uri && (await isValidPosterFile(sibling.local_poster_uri))) {
+    try {
+      await FileSystem.copyAsync({ from: sibling.local_poster_uri, to: posterDest });
+      if (await isValidPosterFile(posterDest)) {
+        localPosterUri = posterDest;
+      }
+    } catch {}
+  }
+
+  return { subtitles, localPosterUri, resolvedPosterUrl, resolvedThumbnailUrl };
 }
 
 async function processSingleItem(id: string): Promise<void> {
@@ -1484,11 +1725,8 @@ async function processSingleItem(id: string): Promise<void> {
       status_text: 'Đang tải phụ đề & ảnh bìa ngoại tuyến...',
     });
 
-    const { subtitles, localPosterUri } = await downloadSubtitlesAndPoster(
-      item,
-      resolvedData,
-      serverFileKey
-    );
+    const { subtitles, localPosterUri, resolvedPosterUrl, resolvedThumbnailUrl } =
+      await downloadSubtitlesAndPoster(item, resolvedData, serverFileKey);
 
     const latestItem = cachedItems.find((x) => x.id === id) || item;
     const finalized: OfflineDownloadItem = {
@@ -1498,6 +1736,8 @@ async function processSingleItem(id: string): Promise<void> {
       local_uri: completedMedia.localUri,
       local_dir: completedMedia.localDir,
       relative_entry: completedMedia.relativeEntry,
+      poster_url: resolvedPosterUrl || latestItem.poster_url,
+      thumbnail_url: resolvedThumbnailUrl || latestItem.thumbnail_url,
       local_poster_uri: localPosterUri || latestItem.local_poster_uri,
       subtitles,
       size_bytes: completedMedia.sizeBytes,
@@ -2099,7 +2339,10 @@ export function findCompletedOfflineItem(query: {
 
   if (query.streamCode) {
     const byCode = completed.find(
-      (i) => i.stream_code && i.stream_code === query.streamCode
+      (i) =>
+        i.stream_code &&
+        i.stream_code === query.streamCode &&
+        (!query.videosId || !i.videos_id || i.videos_id === query.videosId)
     );
     if (byCode) return byCode;
   }
@@ -2107,9 +2350,11 @@ export function findCompletedOfflineItem(query: {
     const targetNorm = normalizeOfflineMatchKey(query.serverFileKey);
     const byKey = completed.find(
       (i) =>
-        normalizeOfflineMatchKey(i.server_file_key) === targetNorm ||
-        normalizeOfflineMatchKey(i.title + (i.episode_title ? `.Tập.${extractEpisodeNumberFromName(i.episode_title)}` : '')) ===
-          targetNorm
+        (!query.videosId || !i.videos_id || i.videos_id === query.videosId) &&
+        (normalizeOfflineMatchKey(i.server_file_key) === targetNorm ||
+          normalizeOfflineMatchKey(
+            i.title + (i.episode_title ? `.Tập.${extractEpisodeNumberFromName(i.episode_title)}` : '')
+          ) === targetNorm)
     );
     if (byKey) return byKey;
   }
@@ -2118,6 +2363,12 @@ export function findCompletedOfflineItem(query: {
       (i) => i.videos_id === query.videosId && i.episode_id === query.episodeId
     );
     if (byEp) return byEp;
+  }
+  if (query.videosId && !query.episodeId && !query.streamCode) {
+    const bySingleMovie = completed.find(
+      (i) => i.videos_id === query.videosId && !i.episode_id && !i.episode_title
+    );
+    if (bySingleMovie) return bySingleMovie;
   }
   return null;
 }

@@ -34,6 +34,14 @@ import {
   resumeOfflineDownload,
   subscribeOfflineDownloads,
 } from '../services/downloadService';
+import {
+  getLastKnownOnline,
+  isNetworkError,
+  probeConnectivity,
+  reportNetworkFailure,
+  startNetworkMonitor,
+  subscribeNetworkStatus,
+} from '../services/networkService';
 import { MovieItem, OfflineDownloadItem } from '../types/models';
 
 const DEFAULT_POSTER_ASSET = require('../../assets/default-poster2.png');
@@ -98,6 +106,7 @@ interface LibraryScreenProps {
   onPlayOffline: (item: OfflineDownloadItem, seriesEpisodes?: OfflineDownloadItem[]) => void;
   offlineOnlyMode?: boolean;
   onReconnectOnline?: () => void;
+  watchProgressRevision?: number;
 }
 
 interface OfflineSeriesGroup {
@@ -124,6 +133,7 @@ export function LibraryScreen({
   onPlayOffline,
   offlineOnlyMode = false,
   onReconnectOnline,
+  watchProgressRevision = 0,
 }: LibraryScreenProps) {
   const insets = useSafeAreaInsets();
   const { settings } = useSettings();
@@ -140,26 +150,34 @@ export function LibraryScreen({
   const [openedSeriesId, setOpenedSeriesId] = useState<number | null>(null);
   const [loading, setLoading] = useState(!offlineOnlyMode);
   const [refreshing, setRefreshing] = useState(false);
+  const [networkRestored, setNetworkRestored] = useState(false);
 
   const activeTab = offlineOnlyMode ? 'offline' : tab;
 
   const loadLibrary = useCallback(
-    async (isRefresh = false) => {
+    async (isRefresh = false, silent = false) => {
       if (offlineOnlyMode) {
         setLoading(false);
         setRefreshing(false);
         return;
       }
-      if (isRefresh) setRefreshing(true);
-      else setLoading(true);
+      if (!silent) {
+        if (isRefresh) setRefreshing(true);
+        else setLoading(true);
+      }
       try {
         const res = await fetchLibraryApi();
         setWishlist(res.wishlist || []);
         setWatched(res.watched || []);
-      } catch {
+      } catch (err) {
+        if (isNetworkError(err)) {
+          void reportNetworkFailure();
+        }
       } finally {
-        setLoading(false);
-        setRefreshing(false);
+        if (!silent) {
+          setLoading(false);
+          setRefreshing(false);
+        }
       }
     },
     [offlineOnlyMode]
@@ -172,6 +190,29 @@ export function LibraryScreen({
       .catch(() => setOfflineItems([]));
     return subscribeOfflineDownloads(setOfflineItems);
   }, [loadLibrary]);
+
+  useEffect(() => {
+    if (watchProgressRevision > 0 && !offlineOnlyMode) {
+      void loadLibrary(false, true);
+    }
+  }, [watchProgressRevision, offlineOnlyMode, loadLibrary]);
+
+  useEffect(() => {
+    if (!offlineOnlyMode) {
+      setNetworkRestored(false);
+      return;
+    }
+    setNetworkRestored(getLastKnownOnline());
+    const unsub = subscribeNetworkStatus((online) => {
+      setNetworkRestored(online);
+    });
+    const stopMonitor = startNetworkMonitor(4000);
+    void probeConnectivity(2400).then((ok) => setNetworkRestored(ok));
+    return () => {
+      unsub();
+      stopMonitor();
+    };
+  }, [offlineOnlyMode]);
 
   const handleRemoveWatched = (item: MovieItem) => {
     Haptics.selectionAsync();
@@ -315,90 +356,115 @@ export function LibraryScreen({
       : 0
   );
 
-  const renderOfflineEpisodeRow = (
+  const renderOfflineEpisodeGridCard = (
     item: OfflineDownloadItem,
-    seriesList?: OfflineDownloadItem[]
+    group: OfflineSeriesGroup
   ) => {
     const resumePct =
       item.duration_sec && item.duration_sec > 0 && item.resume_sec
         ? Math.min(100, Math.round((item.resume_sec / item.duration_sec) * 100))
         : 0;
+    const playableGroup = group.episodes.filter((e) => e.status === 'completed');
+    const isCompleted = item.status === 'completed';
     const isHls =
       item.media_format === 'hls' || item.local_uri.toLowerCase().includes('.m3u8');
-    const playableGroup = seriesList
-      ? seriesList.filter((e) => e.status === 'completed')
-      : undefined;
+    const statusDotColor = isCompleted
+      ? '#30D158'
+      : item.status === 'paused'
+        ? '#FF9F0A'
+        : '#FF453A';
+    const epNum = item.episode_number || extractEpisodeNumberFromName(item.episode_title);
+    const leftBadgeText =
+      item.episode_title || (epNum > 0 ? `Tập ${String(epNum).padStart(2, '0')}` : 'Tập phim');
+    const rightBadgeText = formatBytes(item.size_bytes);
+    const subLabel = isCompleted
+      ? formatBytes(item.size_bytes)
+      : item.status === 'paused'
+        ? `Tạm dừng ${item.progress}%`
+        : 'Lỗi tải • Chạm thử lại';
 
     return (
-      <GlassSurface intensity={28} radius={RADII.md} style={styles.offlineCard}>
-        <OfflinePosterImage
-          localUri={item.local_poster_uri}
-          remoteUri={item.thumbnail_url || item.poster_url}
-          offlineOnlyMode={offlineOnlyMode}
-          style={styles.offlineThumb}
-        />
-        <View style={{ flex: 1 }}>
-          <View style={styles.titleFormatRow}>
-            <Text style={styles.offlineTitle} numberOfLines={1}>
-              {item.episode_title && seriesList ? item.episode_title : item.title}
-            </Text>
+      <BouncyButton
+        bounciness="gentle"
+        activeOpacity={0.86}
+        onPress={() => {
+          Haptics.selectionAsync();
+          if (isCompleted) {
+            onPlayOffline(item, playableGroup);
+          } else {
+            void restartOfflineDownload(item.id);
+          }
+        }}
+        onLongPress={() => {
+          if (isCompleted && !isHls) {
+            Haptics.selectionAsync();
+            void exportOfflineToFiles(item.local_uri).catch((err) => {
+              showAppAlert('Thông báo', err?.message || 'Không thể chia sẻ tệp.');
+            });
+          }
+        }}
+        style={{ width: gridCardWidth, marginBottom: 16 }}
+      >
+        <View style={[styles.posterCardBox, { height: Math.round(gridCardWidth * 1.48) }]}>
+          <OfflinePosterImage
+            localUri={item.local_poster_uri || group.localThumb}
+            remoteUri={item.thumbnail_url || item.poster_url || group.remoteThumb}
+            offlineOnlyMode={offlineOnlyMode}
+            style={styles.posterFill}
+          />
+          <LinearGradient
+            colors={['transparent', 'rgba(7,9,15,0.82)']}
+            style={styles.posterBottomScrim}
+          />
+
+          <View style={styles.posterStatusPill}>
+            <View style={[styles.posterStatusDot, { backgroundColor: statusDotColor }]} />
           </View>
-          {item.episode_title && !seriesList ? (
-            <Text style={styles.offlineSub} numberOfLines={1}>
-              {item.episode_title}
-            </Text>
-          ) : null}
-          <Text style={styles.offlineMeta} numberOfLines={1}>
-            {item.status === 'completed'
-              ? `Sẵn sàng ngoại tuyến • ${formatBytes(item.size_bytes)}`
-              : item.status === 'paused'
-                ? `Tạm dừng ${item.progress}% • ${formatBytes(item.size_bytes)}`
-                : item.error_message || 'Tải thất bại'}
-          </Text>
-          {item.status === 'completed' && resumePct > 0 ? (
-            <View style={styles.dlTrack}>
-              <View style={[styles.dlFill, { width: `${resumePct}%` }]} />
+
+          <BouncyButton
+            onPress={() => handleDeleteOffline(item)}
+            hitSlop={6}
+            style={styles.gridRemoveBtn}
+            accessibilityLabel="Xóa tập ngoại tuyến"
+          >
+            <Ionicons name="close" size={14} color="#FFFFFF" />
+          </BouncyButton>
+
+          <View style={[styles.floatingSplitBadgesCenter, resumePct > 0 && { bottom: 12 }]}>
+            <View style={styles.splitSubHalf}>
+              <Text style={styles.splitPillText} numberOfLines={1}>
+                {leftBadgeText}
+              </Text>
+            </View>
+            <LinearGradient
+              colors={['#e50914', '#d50055']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.splitEpHalf}
+            >
+              <Text style={styles.splitPillText}>{rightBadgeText}</Text>
+            </LinearGradient>
+          </View>
+
+          {resumePct > 0 ? (
+            <View style={styles.posterProgTrack}>
+              <LinearGradient
+                colors={['#e50914', '#d50055']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={[styles.posterProgFill, { width: `${resumePct}%` }]}
+              />
             </View>
           ) : null}
         </View>
-        <View style={styles.offlineActions}>
-          {item.status === 'completed' ? (
-            <>
-              <BouncyButton
-                style={styles.playCircle}
-                onPress={() => onPlayOffline(item, playableGroup)}
-              >
-                <Ionicons name="play" size={16} color="#FFF" />
-              </BouncyButton>
-              {!isHls ? (
-                <BouncyButton
-                  style={styles.actionCircle}
-                  onPress={() =>
-                    exportOfflineToFiles(item.local_uri).catch((err) => {
-                      showAppAlert('Thông báo', err?.message || 'Không thể chia sẻ tệp.');
-                    })
-                  }
-                >
-                  <Ionicons name="share-outline" size={16} color="#FFF" />
-                </BouncyButton>
-              ) : null}
-            </>
-          ) : (
-            <BouncyButton
-              style={styles.actionCircle}
-              onPress={() => void restartOfflineDownload(item.id)}
-            >
-              <Ionicons name="refresh" size={16} color="#5AC8FA" />
-            </BouncyButton>
-          )}
-          <BouncyButton
-            style={styles.actionCircle}
-            onPress={() => handleDeleteOffline(item)}
-          >
-            <Ionicons name="trash-outline" size={16} color="#FCA5A5" />
-          </BouncyButton>
-        </View>
-      </GlassSurface>
+
+        <Text style={styles.posterTitle} numberOfLines={1}>
+          {leftBadgeText}
+        </Text>
+        <Text style={styles.posterSub} numberOfLines={1}>
+          {subLabel}
+        </Text>
+      </BouncyButton>
     );
   };
 
@@ -647,17 +713,28 @@ export function LibraryScreen({
       {offlineOnlyMode ? (
         <GlassSurface intensity={28} radius={18} style={styles.offlineModeBanner}>
           <View style={styles.offlineBannerLeft}>
-            <Ionicons name="cloud-offline-outline" size={18} color="#FBBF24" />
+            <Ionicons
+              name={networkRestored ? 'wifi' : 'cloud-offline-outline'}
+              size={18}
+              color={networkRestored ? '#34D399' : '#FBBF24'}
+            />
             <View style={{ flex: 1 }}>
-              <Text style={styles.offlineBannerTitle}>Không có kết nối mạng</Text>
+              <Text style={styles.offlineBannerTitle}>
+                {networkRestored ? 'Đã kết nối lại mạng' : 'Không có kết nối mạng'}
+              </Text>
               <Text style={styles.offlineBannerSub}>
-                Chỉ hiển thị các phim &amp; tập đã tải sẵn trên máy
+                {networkRestored
+                  ? 'Kết nối mạng đã sẵn sàng, bấm Kết nối lại để tiếp tục'
+                  : 'Chỉ hiển thị các phim & tập đã tải sẵn trên máy'}
               </Text>
             </View>
           </View>
           {onReconnectOnline ? (
             <BouncyButton
-              style={styles.reconnectBtn}
+              style={[
+                styles.reconnectBtn,
+                networkRestored && styles.reconnectBtnRestored,
+              ]}
               onPress={() => {
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                 onReconnectOnline();
@@ -697,9 +774,14 @@ export function LibraryScreen({
       {activeTab === 'offline' ? (
         openedSeriesGroup ? (
           <FlatList
-            key={`library-offline-series-${openedSeriesGroup.videos_id}`}
+            key={`library-offline-series-grid-${openedSeriesGroup.videos_id}`}
             data={openedSeriesGroup.episodes}
+            numColumns={3}
+            initialNumToRender={9}
+            maxToRenderPerBatch={6}
+            windowSize={5}
             keyExtractor={(ep, idx) => `ep_${ep.id}_${idx}`}
+            columnWrapperStyle={styles.gridRow}
             contentContainerStyle={{
               paddingHorizontal: 16,
               paddingTop: 12,
@@ -707,7 +789,7 @@ export function LibraryScreen({
             }}
             ListHeaderComponent={renderOfflineHeader}
             renderItem={({ item: ep }) =>
-              renderOfflineEpisodeRow(ep, openedSeriesGroup.episodes)
+              renderOfflineEpisodeGridCard(ep, openedSeriesGroup)
             }
           />
         ) : (
@@ -871,6 +953,9 @@ const styles = StyleSheet.create({
     paddingVertical: 7,
     borderRadius: 999,
     backgroundColor: COLORS.accent,
+  },
+  reconnectBtnRestored: {
+    backgroundColor: '#10B981',
   },
   reconnectTxt: {
     color: '#FFF',

@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
   Animated,
   AppState,
   Easing,
@@ -14,6 +13,7 @@ import {
 } from 'react-native';
 import { Feather, Ionicons } from '@expo/vector-icons';
 import { BlurView } from 'expo-blur';
+import { LinearGradient } from 'expo-linear-gradient';
 import {
   isPictureInPictureSupported,
   SubtitleTrack,
@@ -38,15 +38,20 @@ import {
 import { PlayerOverlayPanels, PlayerPanelType } from '../components/PlayerOverlayPanels';
 import { PlayerServerPanelModal } from '../components/PlayerServerPanelModal';
 import { PlayerSubtitleSettingsModal } from '../components/PlayerSubtitleSettingsModal';
-import { PlayerLandscapeSkeleton } from '../components/SkeletonLoaders';
+import { PlayerLandscapeSkeleton, useShimmerProgress } from '../components/SkeletonLoaders';
 import {
   WaterDropToastBanner,
+  WaterDropToastIcon,
   WaterDropToastPayload,
 } from '../components/WaterDropToastBanner';
 import { CastModal, CastMoviePayload } from './CastModal';
 import { COLORS, GLASS_SHADOW } from '../constants/config';
 import { useAuth } from '../context/AuthContext';
 import { useSettings } from '../context/SettingsContext';
+import {
+  clearActivePlaybackSession,
+  saveActivePlaybackSession,
+} from '../services/activeSessionService';
 import {
   fetchMovieDetailsApi,
   fetchWatchProgressApi,
@@ -73,6 +78,11 @@ import {
   getCachedOfflineMediaServerPort,
   restartOfflineMediaServer,
 } from '../services/localMediaServer';
+import {
+  probeConnectivity,
+  startNetworkMonitor,
+  subscribeNetworkStatus,
+} from '../services/networkService';
 import {
   applyCheckFileToServers,
   BackupServerId,
@@ -111,6 +121,7 @@ export interface PlayerLaunchParams {
   episodes?: EpisodeItem[];
   posterUrl?: string;
   thumbnailUrl?: string;
+  initialResumeSec?: number;
   offlineUri?: string;
   offlineItem?: OfflineDownloadItem;
   offlineEpisodes?: OfflineDownloadItem[];
@@ -122,6 +133,8 @@ interface PlayerModalProps {
   onClose: () => void;
   onSwitchEpisode?: (ep: EpisodeItem, epIndex: number) => void;
   onSwitchOfflineItem?: (item: OfflineDownloadItem) => void;
+  onEnterOfflineMode?: () => void;
+  onWatchProgressSaved?: () => void;
 }
 
 interface PreloadedNextPackage {
@@ -141,6 +154,7 @@ interface PreloadedNextPackage {
   endCreditsSec: number;
   subHighRaw: string;
   offlineItem: OfflineDownloadItem | null;
+  servers: ServerRuntimeState[];
 }
 
 const SPEED_OPTIONS = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
@@ -311,12 +325,209 @@ function JwPipIcon({ color = '#FFF' }: { color?: string }) {
   );
 }
 
+function computeSafeResumeSec(
+  rawSec: number,
+  dur: number,
+  endCredits: number
+): { sec: number; rewound: boolean } {
+  if (dur <= 60 || rawSec <= 0) {
+    return { sec: Math.max(0, rawSec), rewound: false };
+  }
+  const triggerSec = endCredits > 15 && dur > endCredits ? dur - endCredits : dur - 15;
+  if (rawSec >= Math.max(10, triggerSec - 15)) {
+    const rewoundSec = Math.max(0, triggerSec - 120);
+    return { sec: rewoundSec, rewound: rewoundSec < rawSec - 10 };
+  }
+  return { sec: rawSec, rewound: false };
+}
+
+/**
+ * Animated buffering play indicator with Skeleton shimmer sweep & breathing pulse (scale up/down).
+ */
+function BufferingSkeletonCenterButton() {
+  const shimmer = useShimmerProgress(true);
+  const pulse = useRef(new Animated.Value(0.9)).current;
+
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, {
+          toValue: 1.13,
+          duration: 620,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulse, {
+          toValue: 0.87,
+          duration: 620,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [pulse]);
+
+  const sweepX = shimmer.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-78, 78],
+  });
+
+  return (
+    <Animated.View style={{ transform: [{ scale: pulse }] }}>
+      <GlassSurface
+        variant="liquid"
+        radius={26}
+        intensity={28}
+        style={[playerSkStyles.centerSkeletonBox]}
+      >
+        <View style={playerSkStyles.skeletonCircleInner}>
+          <Animated.View
+            pointerEvents="none"
+            style={[playerSkStyles.skeletonShimmerWrap, { transform: [{ translateX: sweepX }] }]}
+          >
+            <LinearGradient
+              colors={['transparent', 'rgba(255,255,255,0.42)', 'transparent']}
+              start={{ x: 0, y: 0.2 }}
+              end={{ x: 1, y: 0.8 }}
+              style={StyleSheet.absoluteFill}
+            />
+          </Animated.View>
+          <Ionicons name="play" size={26} color="rgba(255,255,255,0.55)" style={{ marginLeft: 3 }} />
+        </View>
+      </GlassSurface>
+    </Animated.View>
+  );
+}
+
+/**
+ * Animated download button icon showing continuous downward drop motion into tray + glowing pulse.
+ */
+function DownloadingIconAnim() {
+  const arrowY = useRef(new Animated.Value(-4)).current;
+  const ringScale = useRef(new Animated.Value(0.88)).current;
+  const ringOpacity = useRef(new Animated.Value(0.7)).current;
+
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.parallel([
+        Animated.sequence([
+          Animated.timing(arrowY, {
+            toValue: 3.5,
+            duration: 650,
+            easing: Easing.inOut(Easing.quad),
+            useNativeDriver: true,
+          }),
+          Animated.timing(arrowY, {
+            toValue: -4,
+            duration: 500,
+            easing: Easing.out(Easing.quad),
+            useNativeDriver: true,
+          }),
+        ]),
+        Animated.sequence([
+          Animated.timing(ringScale, {
+            toValue: 1.15,
+            duration: 700,
+            easing: Easing.out(Easing.ease),
+            useNativeDriver: true,
+          }),
+          Animated.timing(ringScale, {
+            toValue: 0.88,
+            duration: 450,
+            useNativeDriver: true,
+          }),
+        ]),
+        Animated.sequence([
+          Animated.timing(ringOpacity, {
+            toValue: 0.25,
+            duration: 700,
+            useNativeDriver: true,
+          }),
+          Animated.timing(ringOpacity, {
+            toValue: 0.75,
+            duration: 450,
+            useNativeDriver: true,
+          }),
+        ]),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [arrowY, ringScale, ringOpacity]);
+
+  return (
+    <View style={playerSkStyles.dlAnimWrap}>
+      <Animated.View
+        pointerEvents="none"
+        style={[
+          playerSkStyles.dlHaloRing,
+          { opacity: ringOpacity, transform: [{ scale: ringScale }] },
+        ]}
+      />
+      <Animated.View style={{ transform: [{ translateY: arrowY }] }}>
+        <Feather name="arrow-down" size={16} color="#30D158" />
+      </Animated.View>
+      <View style={playerSkStyles.dlTrayBar} />
+    </View>
+  );
+}
+
+const playerSkStyles = StyleSheet.create({
+  centerSkeletonBox: {
+    width: 78,
+    height: 78,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  skeletonCircleInner: {
+    width: 54,
+    height: 54,
+    borderRadius: 27,
+    backgroundColor: 'rgba(255, 255, 255, 0.14)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  skeletonShimmerWrap: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    width: 56,
+  },
+  dlAnimWrap: {
+    width: 24,
+    height: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dlHaloRing: {
+    position: 'absolute',
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    borderWidth: 1.5,
+    borderColor: '#30D158',
+  },
+  dlTrayBar: {
+    position: 'absolute',
+    bottom: 2,
+    width: 14,
+    height: 2,
+    borderRadius: 1,
+    backgroundColor: '#30D158',
+  },
+});
+
 export function PlayerModal({
   visible,
   params,
   onClose,
   onSwitchEpisode,
   onSwitchOfflineItem,
+  onEnterOfflineMode,
+  onWatchProgressSaved,
 }: PlayerModalProps) {
   const insets = useSafeAreaInsets();
   const { width: winWidth, height: winHeight } = useWindowDimensions();
@@ -474,7 +685,19 @@ export function PlayerModal({
   const loadSeqRef = useRef(0);
   const checkFilePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastServerProgressPushRef = useRef(0);
+  const lastActiveSessionWriteRef = useRef(0);
   const lastAutoQueuedSigRef = useRef('');
+  const detailEpisodesVideosIdRef = useRef<number>(0);
+  const lastLoadedVideosIdRef = useRef<number>(0);
+  const userExplicitlyPausedRef = useRef(false);
+  const fgStallTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activeStreamCodeRef = useRef('');
+  activeStreamCodeRef.current = activeStreamCode;
+  const vnSubUrlRef = useRef('');
+  vnSubUrlRef.current = vnSubUrl;
+  const enSubUrlRef = useRef('');
+  enSubUrlRef.current = enSubUrl;
+  const rewoundToastPendingRef = useRef(false);
   const lastTapStageRef = useRef<{ time: number; side: 'left' | 'right' | 'center' }>({
     time: 0,
     side: 'center',
@@ -505,7 +728,9 @@ export function PlayerModal({
     (
       title: string,
       subtitle?: string,
-      tone: WaterDropToastPayload['tone'] = 'default'
+      tone: WaterDropToastPayload['tone'] = 'default',
+      icon?: WaterDropToastIcon,
+      durationSec = 3
     ) => {
       let resolvedTitle = 'Đặng Việt Anh';
       let resolvedSub = subtitle;
@@ -520,10 +745,11 @@ export function PlayerModal({
         title: resolvedTitle,
         subtitle: resolvedSub,
         tone,
-        durationSec: 3,
+        durationSec,
+        icon,
       });
       if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-      toastTimerRef.current = setTimeout(() => setToastPayload(null), 3000);
+      toastTimerRef.current = setTimeout(() => setToastPayload(null), Math.max(1000, durationSec * 1000));
     },
     []
   );
@@ -646,7 +872,11 @@ export function PlayerModal({
   }, [resolved?.next_episode, effectiveEpisodes, activeStreamCode]);
 
   const matchedOfflineItem = useMemo(() => {
-    if (params?.offlineItem && params.offlineItem.stream_code === activeStreamCode) {
+    if (
+      params?.offlineItem &&
+      params.offlineItem.stream_code === activeStreamCode &&
+      (!params.videosId || !params.offlineItem.videos_id || params.offlineItem.videos_id === params.videosId)
+    ) {
       return params.offlineItem;
     }
     return findCompletedOfflineItem({
@@ -660,10 +890,18 @@ export function PlayerModal({
     return (
       offlineItems.find(
         (i) =>
-          (activeStreamCode && i.stream_code === activeStreamCode) ||
+          (activeStreamCode &&
+            i.stream_code === activeStreamCode &&
+            (!params?.videosId || !i.videos_id || i.videos_id === params.videosId)) ||
           (params?.videosId &&
+            params.episodeId &&
             i.videos_id === params.videosId &&
-            i.episode_id === (params.episodeId || 0))
+            i.episode_id === params.episodeId) ||
+          (params?.videosId &&
+            !params.episodeId &&
+            !activeStreamCode &&
+            i.videos_id === params.videosId &&
+            !i.episode_title)
       ) || null
     );
   }, [offlineItems, activeStreamCode, params?.videosId, params?.episodeId]);
@@ -702,22 +940,30 @@ export function PlayerModal({
     []
   );
 
-  // Persist current watch progress to backend + bidirectional offline sync
+  // Persist current watch progress to backend + bidirectional offline sync (returns Promise)
   const persistCurrentProgress = useCallback(
-    (forceFlush = false) => {
+    async (forceFlush = false): Promise<void> => {
       if (!params || !activeStreamCode) return;
       const pos = Math.floor(currentTimeRef.current || 0);
       const dur = Math.floor(durationRef.current || 0);
       if (pos < 3) return;
 
+      const jobs: Promise<unknown>[] = [];
+
       if (matchedOfflineItem?.id) {
-        void saveOfflineResumePosition(matchedOfflineItem.id, pos, dur, {
-          flushDisk: forceFlush,
-        }).then(() => {
-          if (forceFlush && matchedOfflineItem?.id) {
-            void syncOfflineItemProgressToServer(matchedOfflineItem.id);
-          }
-        });
+        const offId = matchedOfflineItem.id;
+        jobs.push(
+          saveOfflineResumePosition(offId, pos, dur, {
+            flushDisk: forceFlush,
+          })
+            .then(() => {
+              if (forceFlush) {
+                return syncOfflineItemProgressToServer(offId);
+              }
+              return undefined;
+            })
+            .catch(() => {})
+        );
       }
 
       if (!isOfflineOnlyMode && params.videosId > 0) {
@@ -728,26 +974,88 @@ export function PlayerModal({
           params.seasonId,
           params.episodeId
         );
-        saveWatchProgressApi({
-          videos_id: params.videosId,
-          stream_code: activeStreamCode,
-          position_sec: pos,
-          duration_sec: dur,
-          episode_number: episodeNumber,
-          season_id: seasonId,
-          title: params.title,
-        }).catch(() => {});
-        void syncOnlineProgressToOffline({
-          streamCode: activeStreamCode,
-          videosId: params.videosId,
-          episodeId: params.episodeId,
-          positionSec: pos,
-          durationSec: dur,
-          flushDisk: forceFlush,
-        });
+        jobs.push(
+          saveWatchProgressApi({
+            videos_id: params.videosId,
+            stream_code: activeStreamCode,
+            position_sec: pos,
+            duration_sec: dur,
+            episode_number: episodeNumber,
+            season_id: seasonId,
+            title: params.title,
+          })
+            .then(() => {
+              onWatchProgressSaved?.();
+            })
+            .catch(() => {})
+        );
+        jobs.push(
+          syncOnlineProgressToOffline({
+            streamCode: activeStreamCode,
+            videosId: params.videosId,
+            episodeId: params.episodeId,
+            positionSec: pos,
+            durationSec: dur,
+            flushDisk: forceFlush,
+          }).catch(() => {})
+        );
       }
+
+      await Promise.all(jobs);
     },
-    [params, activeStreamCode, matchedOfflineItem?.id, isOfflineOnlyMode, effectiveEpisodes]
+    [params, activeStreamCode, matchedOfflineItem?.id, isOfflineOnlyMode, effectiveEpisodes, onWatchProgressSaved]
+  );
+
+  const flushActivePlaybackSessionNow = useCallback(
+    (forceSave = false) => {
+      if (
+        !visible ||
+        !params ||
+        !activeStreamCodeRef.current ||
+        !settingsRef.current.autoResumeOnCrash ||
+        userExplicitlyPausedRef.current
+      ) {
+        return;
+      }
+      const now = Date.now();
+      if (!forceSave && now - lastActiveSessionWriteRef.current < 1800) {
+        return;
+      }
+      lastActiveSessionWriteRef.current = now;
+      const { episodeNumber, seasonId } = resolveEpisodeMetaFromParams(
+        effectiveEpisodes,
+        activeStreamCodeRef.current,
+        params.episodeNumber,
+        params.seasonId,
+        params.episodeId
+      );
+      void saveActivePlaybackSession({
+        active: true,
+        updatedAt: now,
+        videosId: params.videosId,
+        streamCode: activeStreamCodeRef.current,
+        episodeId: params.episodeId,
+        episodeNumber,
+        seasonId,
+        title: resolvedRef.current?.title || params.title,
+        episodeTitle: activeEpTitle || resolvedRef.current?.episode_title || params.episodeTitle,
+        posterUrl: moviePosterMeta.poster || params.posterUrl,
+        thumbnailUrl: moviePosterMeta.thumb || params.thumbnailUrl,
+        positionSec: Math.max(0, Math.floor(currentTimeRef.current || 0)),
+        durationSec: Math.max(0, Math.floor(durationRef.current || 0)),
+        wasOfflineMode: isOfflineOnlyMode,
+        offlineItemId: matchedOfflineItem?.id,
+      });
+    },
+    [
+      visible,
+      params,
+      effectiveEpisodes,
+      activeEpTitle,
+      moviePosterMeta,
+      isOfflineOnlyMode,
+      matchedOfflineItem?.id,
+    ]
   );
 
   // Periodic watch progress save every 10s
@@ -758,7 +1066,7 @@ export function PlayerModal({
         const now = Date.now();
         if (now - lastServerProgressPushRef.current >= 9500) {
           lastServerProgressPushRef.current = now;
-          persistCurrentProgress(false);
+          void persistCurrentProgress(false);
         }
       }
     }, 5000);
@@ -829,6 +1137,127 @@ export function PlayerModal({
     [ensureLiveLocalPort, getActivePlayer, getInactivePlayer, playbackRate]
   );
 
+  // Start or restart polling for Phiên 11 / Phiên 36 readiness
+  const startCheckFilePolling = useCallback(
+    (pollOpts: {
+      mySeq: number;
+      sfk: string;
+      targetStartSec: number;
+      hasGgdDirect: boolean;
+      vnUrl: string;
+      enUrl: string;
+      movieTitle: string;
+    }) => {
+      const { mySeq, sfk, targetStartSec, hasGgdDirect, vnUrl, enUrl, movieTitle } = pollOpts;
+      if (!sfk) return;
+      if (checkFilePollRef.current) {
+        clearInterval(checkFilePollRef.current);
+        checkFilePollRef.current = null;
+      }
+
+      checkFilePollRef.current = setInterval(async () => {
+        if (loadSeqRef.current !== mySeq) return;
+        const pollRes = await checkServerFileStatus(sfk);
+        if (loadSeqRef.current !== mySeq) return;
+
+        let updated: ServerRuntimeState[] = [];
+        setServers((prev) => {
+          updated = applyCheckFileToServers(prev, sfk, pollRes);
+          return updated;
+        });
+
+        if (pollRes.status === 'success') {
+          if (checkFilePollRef.current) {
+            clearInterval(checkFilePollRef.current);
+            checkFilePollRef.current = null;
+          }
+        }
+
+        const curId = activeServerIdRef.current;
+        const lockedId = manualLockedServerRef.current;
+        const curSrv = updated.find((s) => s.id === curId);
+
+        if (!curId || !curSrv || !isServerPlayable(curSrv)) {
+          const firstPlayable = selectOptimalServer(updated, {
+            preferOffline: settingsRef.current.preferOfflineWhenOnline,
+            hasGgdDirect,
+          });
+          if (firstPlayable) {
+            await playServerOnActiveLayer(firstPlayable, {
+              seekToSec: Math.max(targetStartSec, currentTimeRef.current),
+              serverFileKey: sfk,
+              vnUrl,
+              enUrl,
+              title: movieTitle,
+            });
+          }
+          return;
+        }
+
+        if (
+          (curId === '11' || curId === '36') &&
+          ((pollRes.status === 'success' && curSrv.previewTag !== '') ||
+            (pollRes.preview_30p &&
+              pollRes.total_seconds >= 3600 &&
+              curSrv.previewTag === '10p'))
+        ) {
+          const upgradedMedia = buildServer11Or36MediaUrl(curId, sfk, pollRes);
+          if (upgradedMedia.url && upgradedMedia.url !== curSrv.streamUrl) {
+            await playServerOnActiveLayer(
+              {
+                ...curSrv,
+                streamUrl: upgradedMedia.url,
+                format: upgradedMedia.format,
+                previewTag: upgradedMedia.previewTag,
+              },
+              {
+                seekToSec: currentTimeRef.current,
+                serverFileKey: sfk,
+                vnUrl,
+                enUrl,
+                title: movieTitle,
+              }
+            );
+            if (pollRes.status === 'success') {
+              showToast(`${curSrv.label}: Đã nâng cấp luồng đầy đủ 100%`, undefined, 'success', {
+                family: 'ionicons',
+                name: 'server-outline',
+                color: '#34D399',
+              });
+            }
+          }
+        } else if (
+          settingsRef.current.autoOptimalServer &&
+          !lockedId &&
+          curId !== '99' &&
+          pollRes.status === 'success' &&
+          curId !== '11' &&
+          curId !== '36'
+        ) {
+          const better = selectOptimalServer(updated, {
+            preferOffline: settingsRef.current.preferOfflineWhenOnline,
+            hasGgdDirect,
+          });
+          if (better && better.id !== curId && (better.pingMs ?? 9999) + 40 < (curSrv.pingMs ?? 9999)) {
+            await playServerOnActiveLayer(better, {
+              seekToSec: currentTimeRef.current,
+              serverFileKey: sfk,
+              vnUrl,
+              enUrl,
+              title: movieTitle,
+            });
+            showToast(`Đã chuyển sang ${better.label} (${better.pingMs || 0} ms)`, undefined, 'info', {
+              family: 'ionicons',
+              name: 'server-outline',
+              color: '#38BDF8',
+            });
+          }
+        }
+      }, 3200);
+    },
+    [playServerOnActiveLayer, showToast]
+  );
+
   // Core episode loader (online + offline unified)
   const loadEpisodeByCode = useCallback(
     async (
@@ -838,6 +1267,8 @@ export function PlayerModal({
       if (!params || !streamCodeToLoad) return;
       const mySeq = ++loadSeqRef.current;
       offlineRetryAttemptedRef.current = false;
+      rewoundToastPendingRef.current = false;
+      userExplicitlyPausedRef.current = false;
 
       if (checkFilePollRef.current) {
         clearInterval(checkFilePollRef.current);
@@ -856,7 +1287,9 @@ export function PlayerModal({
       setFirstFrameReady(false);
       setIsBuffering(true);
       setCurrentTime(0);
+      currentTimeRef.current = 0;
       setDuration(0);
+      durationRef.current = 0;
       setBufferedPos(0);
       setActiveStreamCode(streamCodeToLoad);
       if (opts?.episodeTitleHint) setActiveEpTitle(opts.episodeTitleHint);
@@ -879,7 +1312,7 @@ export function PlayerModal({
           episodeId: params.episodeId,
         });
 
-      // Pure offline mode when opened from Offline Library without network dependency
+      // Offline-first branch when opened from Offline Library (resolves non-99 statuses accurately without hanging on "Đang kiểm tra")
       if (isOfflineOnlyMode && localOffline) {
         const synthEps: EpisodeItem[] = (params.offlineEpisodes || []).map((it, idx) => ({
           episodes_id: it.episode_id || idx + 1,
@@ -957,10 +1390,31 @@ export function PlayerModal({
         setVnSubUrl(dual.vnUrl);
         setEnSubUrl(dual.enUrl);
 
-        let initialPos = localOffline.resume_sec || 0;
+        let initialPos = Math.max(localOffline.resume_sec || 0, params.initialResumeSec || 0);
+        if (localOffline.duration_sec && localOffline.duration_sec > 60) {
+          const safe = computeSafeResumeSec(
+            initialPos,
+            localOffline.duration_sec,
+            synthResolved.end_credits_sec || 0
+          );
+          if (safe.rewound) {
+            initialPos = safe.sec;
+            rewoundToastPendingRef.current = true;
+            showToast(
+              'Đã tự động lùi lại 2 phút',
+              'Phát từ vị trí trước đoạn chuyển tập',
+              'info',
+              { family: 'ionicons', name: 'play-back-circle-outline', color: '#38BDF8' }
+            );
+          }
+        }
         if (initialPos <= 2 && settingsRef.current.autoSkipIntro && synthResolved.skip_intro_sec > 0) {
           initialPos = synthResolved.skip_intro_sec;
-          showToast('Đã bỏ qua đoạn giới thiệu');
+          showToast('Đã bỏ qua đoạn giới thiệu', undefined, 'info', {
+            family: 'ionicons',
+            name: 'play-skip-forward-outline',
+            color: '#38BDF8',
+          });
         }
         const offSrv = srvList.find((s) => s.id === '99');
         if (offSrv) {
@@ -972,6 +1426,65 @@ export function PlayerModal({
             title: localOffline.title,
           });
         }
+
+        // Background status resolution so Phiên 11/36/40/3 never remain stuck on "Đang kiểm tra..."
+        void (async () => {
+          const isOnline = await probeConnectivity(2400);
+          if (loadSeqRef.current !== mySeq) return;
+          if (!isOnline) {
+            setServers((prev) =>
+              prev.map((s) =>
+                s.id === '99'
+                  ? s
+                  : {
+                      ...s,
+                      status: 'error',
+                      pingMs: null,
+                      pingFailed: true,
+                      progressLabel: 'Mất kết nối',
+                    }
+              )
+            );
+            return;
+          }
+
+          let sfkBg = localOffline.server_file_key || '';
+          let onlineRes: StreamResolvedData | null = null;
+          if (!sfkBg && params.videosId > 0) {
+            onlineRes = await resolveStreamApi(streamCodeToLoad, params.videosId).catch(() => null);
+            if (loadSeqRef.current !== mySeq) return;
+            if (onlineRes?.server_file_key) {
+              sfkBg = onlineRes.server_file_key;
+            }
+          }
+          const [pings, cfRes, ggdRes] = await Promise.all([
+            measureAllServerPings(true),
+            sfkBg ? checkServerFileStatus(sfkBg) : Promise.resolve(null),
+            sfkBg
+              ? checkGgdriverApi(sfkBg, onlineRes?.server_movie_title || localOffline.server_movie_title)
+              : Promise.resolve({ ggdriver_1: false, ggdriver_2: false, ggdriver_3: false }),
+          ]);
+          if (loadSeqRef.current !== mySeq) return;
+          const mergedResolved: StreamResolvedData = {
+            ...synthResolved,
+            ...(onlineRes || {}),
+            server_file_key: sfkBg,
+          };
+          setResolved((prev) => (prev && prev.stream_code === streamCodeToLoad ? mergedResolved : prev));
+          let updatedList = buildInitialServerStates({
+            serverFileKey: sfkBg,
+            offlineItem: localOffline,
+            localServerPort: localServerPortRef.current || livePort,
+            resolved: mergedResolved,
+            ggd: ggdRes,
+            pings,
+            erroredIds: erroredServersRef.current,
+          });
+          if (cfRes && sfkBg) {
+            updatedList = applyCheckFileToServers(updatedList, sfkBg, cfRes);
+          }
+          setServers(updatedList);
+        })();
         return;
       }
 
@@ -998,6 +1511,7 @@ export function PlayerModal({
           });
         }
         if (resData.episodes && resData.episodes.length > 0) {
+          detailEpisodesVideosIdRef.current = resData.movie?.videos_id || params.videosId;
           setDetailEpisodes(resData.episodes);
         }
 
@@ -1062,21 +1576,25 @@ export function PlayerModal({
           hasGgdDirect,
         });
 
-        // Compute best resume position across server + local offline
+        // Compute best resume position across server + local offline + auto-resume initialResumeSec
         const serverResumeSec =
           serverProgRes &&
           serverProgRes.resume_seconds > (resData.resume_seconds || 0)
             ? serverProgRes.resume_seconds
             : resData.resume_seconds || 0;
         const offlineResumeSec = localOffline?.resume_sec || 0;
-        let targetStartSec = Math.max(serverResumeSec, offlineResumeSec);
+        let targetStartSec = Math.max(serverResumeSec, offlineResumeSec, params.initialResumeSec || 0);
         if (
           targetStartSec <= 3 &&
           settingsRef.current.autoSkipIntro &&
           resData.skip_intro_sec > 0
         ) {
           targetStartSec = resData.skip_intro_sec;
-          showToast('Đã bỏ qua đoạn giới thiệu');
+          showToast('Đã bỏ qua đoạn giới thiệu', undefined, 'info', {
+            family: 'ionicons',
+            name: 'play-skip-forward-outline',
+            color: '#38BDF8',
+          });
         }
 
         if (chosen) {
@@ -1101,99 +1619,24 @@ export function PlayerModal({
 
         // Poll Phiên 11 / Phiên 36 progress while preparing so user sees live % & auto-upgrades to 100%
         if (sfk && checkFileRes && checkFileRes.status !== 'success') {
-          checkFilePollRef.current = setInterval(async () => {
-            if (loadSeqRef.current !== mySeq) return;
-            const pollRes = await checkServerFileStatus(sfk);
-            if (loadSeqRef.current !== mySeq) return;
-
-            let updated: ServerRuntimeState[] = [];
-            setServers((prev) => {
-              updated = applyCheckFileToServers(prev, sfk, pollRes);
-              return updated;
-            });
-
-            if (pollRes.status === 'success') {
-              if (checkFilePollRef.current) {
-                clearInterval(checkFilePollRef.current);
-                checkFilePollRef.current = null;
-              }
-            }
-
-            // Auto-switch/upgrade logic if allowed & not manually locked
-            const curId = activeServerIdRef.current;
-            const lockedId = manualLockedServerRef.current;
-            const curSrv = updated.find((s) => s.id === curId);
-
-            if (!curId || !curSrv || !isServerPlayable(curSrv)) {
-              const firstPlayable = selectOptimalServer(updated, {
-                preferOffline: settingsRef.current.preferOfflineWhenOnline,
-                hasGgdDirect,
-              });
-              if (firstPlayable) {
-                await playServerOnActiveLayer(firstPlayable, {
-                  seekToSec: Math.max(targetStartSec, currentTimeRef.current),
-                  serverFileKey: sfk,
-                  vnUrl: effectiveVnUrl,
-                  enUrl: effectiveEnUrl,
-                  title: resData.title || params.title,
-                });
-              }
-              return;
-            }
-
-            // If playing preview on 11/36 (or waiting on locked 11/36) and preview expanded or 100% hit:
-            if (
-              (curId === '11' || curId === '36') &&
-              ((pollRes.status === 'success' && curSrv.previewTag !== '') ||
-                (pollRes.preview_30p &&
-                  pollRes.total_seconds >= 3600 &&
-                  curSrv.previewTag === '10p'))
-            ) {
-              const upgradedMedia = buildServer11Or36MediaUrl(curId, sfk, pollRes);
-              if (upgradedMedia.url && upgradedMedia.url !== curSrv.streamUrl) {
-                await playServerOnActiveLayer(
-                  { ...curSrv, streamUrl: upgradedMedia.url, format: upgradedMedia.format, previewTag: upgradedMedia.previewTag },
-                  {
-                    seekToSec: currentTimeRef.current,
-                    serverFileKey: sfk,
-                    vnUrl: effectiveVnUrl,
-                    enUrl: effectiveEnUrl,
-                    title: resData.title || params.title,
-                  }
-                );
-                if (pollRes.status === 'success') {
-                  showToast(`${curSrv.label}: Đã nâng cấp luồng đầy đủ 100%`);
-                }
-              }
-            } else if (
-              settingsRef.current.autoOptimalServer &&
-              !lockedId &&
-              curId !== '99' &&
-              pollRes.status === 'success' &&
-              curId !== '11' &&
-              curId !== '36'
-            ) {
-              const better = selectOptimalServer(updated, {
-                preferOffline: settingsRef.current.preferOfflineWhenOnline,
-                hasGgdDirect,
-              });
-              if (better && better.id !== curId && (better.pingMs ?? 9999) + 40 < (curSrv.pingMs ?? 9999)) {
-                await playServerOnActiveLayer(better, {
-                  seekToSec: currentTimeRef.current,
-                  serverFileKey: sfk,
-                  vnUrl: effectiveVnUrl,
-                  enUrl: effectiveEnUrl,
-                  title: resData.title || params.title,
-                });
-                showToast(`Đã chuyển sang ${better.label} (${better.pingMs || 0} ms)`);
-              }
-            }
-          }, 3200);
+          startCheckFilePolling({
+            mySeq,
+            sfk,
+            targetStartSec,
+            hasGgdDirect,
+            vnUrl: effectiveVnUrl,
+            enUrl: effectiveEnUrl,
+            movieTitle: resData.title || params.title,
+          });
         }
       } catch {
         setFirstFrameReady(true);
         setIsBuffering(false);
-        showAppAlert('Lỗi kết nối', 'Không thể tải dữ liệu phát phim lúc này.');
+        if (onEnterOfflineMode) {
+          onEnterOfflineMode();
+        } else {
+          showAppAlert('Lỗi kết nối', 'Không thể tải dữ liệu phát phim lúc này.');
+        }
       }
     },
     [
@@ -1203,7 +1646,9 @@ export function PlayerModal({
       playerA,
       playerB,
       playServerOnActiveLayer,
+      startCheckFilePolling,
       showToast,
+      onEnterOfflineMode,
     ]
   );
 
@@ -1276,6 +1721,21 @@ export function PlayerModal({
           endCreditsSec: nextEndCredits,
           subHighRaw: nextResolved?.sub_high || '',
           offlineItem: localNextOff,
+          servers: buildInitialServerStates({
+            serverFileKey: sfkHint || nextResolved?.server_file_key || '',
+            offlineItem: localNextOff,
+            localServerPort: livePort,
+            resolved: nextResolved || undefined,
+          }).map((s) =>
+            s.id === '99'
+              ? s
+              : {
+                  ...s,
+                  status: 'error',
+                  pingFailed: true,
+                  progressLabel: 'Chưa kiểm tra',
+                }
+          ),
         };
         preloadedNextRef.current = pkg;
         const inactive = getInactivePlayer();
@@ -1360,6 +1820,7 @@ export function PlayerModal({
         endCreditsSec: nextResolved.end_credits_sec || 0,
         subHighRaw: nextResolved.sub_high || '',
         offlineItem: null,
+        servers: nextServers,
       };
       preloadedNextRef.current = pkg;
 
@@ -1442,13 +1903,16 @@ export function PlayerModal({
       setEnCues(pkg.enCues);
       setVnSubUrl(pkg.vnUrl);
       setEnSubUrl(pkg.enUrl);
+      setServers(pkg.servers);
       setActiveServerId(pkg.serverId);
       activeServerIdRef.current = pkg.serverId;
       activeMediaUrlRef.current = pkg.streamUrl;
       preloadedNextRef.current = null;
       nextAutoSwitchTriggeredRef.current = false;
+      userExplicitlyPausedRef.current = false;
       setPreloadState('idle');
       setCurrentTime(pkg.skipIntroSec || 0);
+      currentTimeRef.current = pkg.skipIntroSec || 0;
       setDuration(promotedPlayer.duration || 0);
       setFirstFrameReady(true);
       setIsBuffering(false);
@@ -1459,7 +1923,11 @@ export function PlayerModal({
       } else if (onSwitchEpisode) {
         onSwitchEpisode(pkg.episode, pkg.episodeIndex);
       }
-      showToast(`Đang phát ${pkg.episode.episodes_name}`);
+      showToast(`Đang phát ${pkg.episode.episodes_name}`, undefined, 'info', {
+        family: 'ionicons',
+        name: 'film-outline',
+        color: '#FF4D57',
+      });
       return;
     }
 
@@ -1496,8 +1964,12 @@ export function PlayerModal({
       currentTimeRef.current = pos;
       setBufferedPos(buf);
 
+      if (pos > 2 && !userExplicitlyPausedRef.current) {
+        flushActivePlaybackSessionNow(false);
+      }
+
       const dur = durationRef.current;
-      if (dur <= 0) return;
+      if (dur <= 0 || !initialSeekPendingRef.current.done) return;
       const endCredits = resolvedRef.current?.end_credits_sec || 0;
 
       // Trigger Layer 2 preload at T - endCredits - 120s
@@ -1528,7 +2000,7 @@ export function PlayerModal({
         }
       }
     },
-    [currentNextEpisode, preloadNextEpisodeToInactiveLayer, triggerSwitchToNextEpisode]
+    [currentNextEpisode, flushActivePlaybackSessionNow, preloadNextEpisodeToInactiveLayer, triggerSwitchToNextEpisode]
   );
 
   // Shared failure recovery for both Player A & Player B (eliminates duplication & self-heals offline socket)
@@ -1610,7 +2082,12 @@ export function PlayerModal({
         ),
       });
       if (failover) {
-        showToast(`Chuyển sang ${failover.label}`, 'Đang tự động khôi phục nguồn phát', 'warning');
+        showToast(
+          `Chuyển sang ${failover.label}`,
+          'Đang tự động khôi phục nguồn phát',
+          'warning',
+          { family: 'ionicons', name: 'server-outline', color: '#FBBF24' }
+        );
         await playServerOnActiveLayer(failover, {
           seekToSec: currentTimeRef.current,
           serverFileKey: resolvedRef.current?.server_file_key || '',
@@ -1655,9 +2132,17 @@ export function PlayerModal({
       if (isInPipRef.current) {
         syncNativePipSubtitleTrack(getActivePlayer(), true);
       }
-      showToast('Đã nạp lại phụ đề', 'Phụ đề mới đã được tải và đồng bộ', 'success');
+      showToast('Đã nạp lại phụ đề', 'Phụ đề mới đã được tải và đồng bộ', 'success', {
+        family: 'ionicons',
+        name: 'chatbox-ellipses-outline',
+        color: '#34D399',
+      });
     } catch {
-      showToast('Không thể nạp lại phụ đề', 'Vui lòng thử lại sau giây lát', 'warning');
+      showToast('Không thể nạp lại phụ đề', 'Vui lòng thử lại sau giây lát', 'warning', {
+        family: 'ionicons',
+        name: 'chatbox-ellipses-outline',
+        color: '#FBBF24',
+      });
     } finally {
       setIsReloadingSubtitles(false);
     }
@@ -1699,12 +2184,22 @@ export function PlayerModal({
         const dur = playerA.duration || 0;
         if (dur > 0) setDuration(dur);
         if (!initialSeekPendingRef.current.done && initialSeekPendingRef.current.sec > 0) {
+          const endCreds = resolvedRef.current?.end_credits_sec || 0;
+          const safe = computeSafeResumeSec(initialSeekPendingRef.current.sec, dur, endCreds);
           initialSeekPendingRef.current.done = true;
           try {
-            playerA.currentTime = initialSeekPendingRef.current.sec;
+            playerA.currentTime = safe.sec;
           } catch {}
+          if (safe.rewound && !rewoundToastPendingRef.current) {
+            rewoundToastPendingRef.current = true;
+            showToast(
+              'Đã tự động lùi lại 2 phút',
+              'Phát từ vị trí trước đoạn chuyển tập',
+              'info',
+              { family: 'ionicons', name: 'play-back-circle-outline', color: '#38BDF8' }
+            );
+          }
         }
-        syncNativePipSubtitleTrack(playerA, isInPipRef.current);
       } else if (st === 'error') {
         void handleActivePlayerError();
       }
@@ -1713,6 +2208,10 @@ export function PlayerModal({
     const pSub = playerA.addListener('playingChange', (ev) => {
       if (activeLayerRef.current !== 'A') return;
       setIsPlaying(ev.isPlaying);
+      if (ev.isPlaying) {
+        userExplicitlyPausedRef.current = false;
+        flushActivePlaybackSessionNow(true);
+      }
       if (ev.isPlaying && !hasAutoHiddenInitialHudRef.current && !userInteractedHudRef.current) {
         hasAutoHiddenInitialHudRef.current = true;
         scheduleHudAutoHide(450);
@@ -1729,6 +2228,8 @@ export function PlayerModal({
     const eSub = playerA.addListener('playToEnd', () => {
       if (activeLayerRef.current !== 'A') return;
       if (sleepTimerValue === 'end_of_episode') {
+        userExplicitlyPausedRef.current = true;
+        void clearActivePlaybackSession();
         setSleepTimerValue(null);
         setSleepSecondsLeft(null);
         showAppAlert('Hẹn giờ ngủ', 'Đã phát hết tập phim và tự động dừng.');
@@ -1736,6 +2237,9 @@ export function PlayerModal({
       }
       if (settingsRef.current.autoPlayNext && currentNextEpisode) {
         triggerSwitchToNextEpisode();
+      } else {
+        userExplicitlyPausedRef.current = true;
+        void clearActivePlaybackSession();
       }
     });
 
@@ -1751,8 +2255,9 @@ export function PlayerModal({
     currentNextEpisode,
     handleActivePlayerError,
     handleLayerTimeUpdate,
+    flushActivePlaybackSessionNow,
     scheduleHudAutoHide,
-    syncNativePipSubtitleTrack,
+    showToast,
     triggerSwitchToNextEpisode,
   ]);
 
@@ -1785,12 +2290,22 @@ export function PlayerModal({
         const dur = playerB.duration || 0;
         if (dur > 0) setDuration(dur);
         if (!initialSeekPendingRef.current.done && initialSeekPendingRef.current.sec > 0) {
+          const endCreds = resolvedRef.current?.end_credits_sec || 0;
+          const safe = computeSafeResumeSec(initialSeekPendingRef.current.sec, dur, endCreds);
           initialSeekPendingRef.current.done = true;
           try {
-            playerB.currentTime = initialSeekPendingRef.current.sec;
+            playerB.currentTime = safe.sec;
           } catch {}
+          if (safe.rewound && !rewoundToastPendingRef.current) {
+            rewoundToastPendingRef.current = true;
+            showToast(
+              'Đã tự động lùi lại 2 phút',
+              'Phát từ vị trí trước đoạn chuyển tập',
+              'info',
+              { family: 'ionicons', name: 'play-back-circle-outline', color: '#38BDF8' }
+            );
+          }
         }
-        syncNativePipSubtitleTrack(playerB, isInPipRef.current);
       } else if (st === 'error') {
         void handleActivePlayerError();
       }
@@ -1799,6 +2314,10 @@ export function PlayerModal({
     const pSub = playerB.addListener('playingChange', (ev) => {
       if (activeLayerRef.current !== 'B') return;
       setIsPlaying(ev.isPlaying);
+      if (ev.isPlaying) {
+        userExplicitlyPausedRef.current = false;
+        flushActivePlaybackSessionNow(true);
+      }
       if (ev.isPlaying && !hasAutoHiddenInitialHudRef.current && !userInteractedHudRef.current) {
         hasAutoHiddenInitialHudRef.current = true;
         scheduleHudAutoHide(450);
@@ -1815,6 +2334,8 @@ export function PlayerModal({
     const eSub = playerB.addListener('playToEnd', () => {
       if (activeLayerRef.current !== 'B') return;
       if (sleepTimerValue === 'end_of_episode') {
+        userExplicitlyPausedRef.current = true;
+        void clearActivePlaybackSession();
         setSleepTimerValue(null);
         setSleepSecondsLeft(null);
         showAppAlert('Hẹn giờ ngủ', 'Đã phát hết tập phim và tự động dừng.');
@@ -1822,6 +2343,9 @@ export function PlayerModal({
       }
       if (settingsRef.current.autoPlayNext && currentNextEpisode) {
         triggerSwitchToNextEpisode();
+      } else {
+        userExplicitlyPausedRef.current = true;
+        void clearActivePlaybackSession();
       }
     });
 
@@ -1837,8 +2361,9 @@ export function PlayerModal({
     currentNextEpisode,
     handleActivePlayerError,
     handleLayerTimeUpdate,
+    flushActivePlaybackSessionNow,
     scheduleHudAutoHide,
-    syncNativePipSubtitleTrack,
+    showToast,
     triggerSwitchToNextEpisode,
   ]);
 
@@ -1866,6 +2391,8 @@ export function PlayerModal({
       return;
     }
     if (sleepSecondsLeft <= 0) {
+      userExplicitlyPausedRef.current = true;
+      void clearActivePlaybackSession();
       try {
         getActivePlayer().pause();
       } catch {}
@@ -1904,39 +2431,278 @@ export function PlayerModal({
     }
   }, [visible, isLocked, getActivePlayer]);
 
+  // Background -> Foreground loopback socket health check & stall recovery watchdog
+  const recoverForegroundPlaybackIfNeeded = useCallback(
+    async (forceReload = false) => {
+      if (!visible || isLockedRef.current || isInPipRef.current) return;
+      const p = getActivePlayer();
+      const curId = activeServerIdRef.current;
+      const curUrl = activeMediaUrlRef.current;
+      const usesLoopback =
+        curId === '99' || /^https?:\/\/127\.0\.0\.1:\d+/i.test(curUrl);
+
+      if (usesLoopback) {
+        let portOk = !forceReload;
+        const oldPortMatch = curUrl.match(/^https?:\/\/127\.0\.0\.1:(\d+)/i);
+        const oldPort = oldPortMatch ? parseInt(oldPortMatch[1], 10) : 0;
+        let freshPort = await ensureLiveLocalPort(forceReload);
+        if (portOk && oldPort > 0 && freshPort !== oldPort) {
+          portOk = false;
+        }
+        if (portOk && freshPort > 0) {
+          try {
+            const ctrl = new AbortController();
+            const t = setTimeout(() => ctrl.abort(), 900);
+            const pingRes = await fetch(`http://127.0.0.1:${freshPort}/hls-pip/ping`, {
+              signal: ctrl.signal,
+            });
+            clearTimeout(t);
+            if (!pingRes.ok) portOk = false;
+          } catch {
+            portOk = false;
+          }
+        }
+        if (!portOk || forceReload) {
+          if (portOk === false && !forceReload) {
+            freshPort = await ensureLiveLocalPort(true);
+          }
+          const curSrv = serversRef.current.find((s) => s.id === curId);
+          if (curSrv) {
+            const offlineTarget =
+              curId === '99'
+                ? matchedOfflineItem ||
+                  findCompletedOfflineItem({
+                    streamCode: activeStreamCodeRef.current,
+                    videosId: params?.videosId,
+                    episodeId: params?.episodeId,
+                  })
+                : null;
+            const rebuilt =
+              curId === '99' && offlineTarget && freshPort > 0
+                ? buildOfflineServerUrl(offlineTarget, freshPort)
+                : {
+                    url: curSrv.streamUrl.replace(
+                      /^https?:\/\/127\.0\.0\.1:\d+/i,
+                      `http://127.0.0.1:${freshPort}`
+                    ),
+                    format: curSrv.format,
+                  };
+            const healedSrv: ServerRuntimeState = {
+              ...curSrv,
+              streamUrl: rebuilt.url,
+              format: rebuilt.format,
+              status: 'ready',
+              errored: false,
+            };
+            setServers((prev) => prev.map((s) => (s.id === healedSrv.id ? healedSrv : s)));
+            await playServerOnActiveLayer(healedSrv, {
+              seekToSec: currentTimeRef.current,
+              serverFileKey: resolvedRef.current?.server_file_key || '',
+              vnUrl: vnSubUrlRef.current,
+              enUrl: enSubUrlRef.current,
+              title: resolvedRef.current?.title || params?.title || '',
+            });
+            return;
+          }
+        }
+      } else if (forceReload && curId) {
+        const curSrv = serversRef.current.find((s) => s.id === curId);
+        if (curSrv) {
+          await playServerOnActiveLayer(curSrv, {
+            seekToSec: currentTimeRef.current,
+            serverFileKey: resolvedRef.current?.server_file_key || '',
+            vnUrl: vnSubUrlRef.current,
+            enUrl: enSubUrlRef.current,
+            title: resolvedRef.current?.title || params?.title || '',
+          });
+          return;
+        }
+      }
+
+      if (!p.playing && !userExplicitlyPausedRef.current) {
+        try {
+          p.play();
+        } catch {}
+      }
+    },
+    [
+      visible,
+      getActivePlayer,
+      ensureLiveLocalPort,
+      matchedOfflineItem,
+      params?.videosId,
+      params?.episodeId,
+      params?.title,
+      playServerOnActiveLayer,
+    ]
+  );
+
   useEffect(() => {
     if (!visible) return;
     const sub = AppState.addEventListener('change', (nextState) => {
       const p = getActivePlayer();
       if (nextState === 'background' || nextState === 'inactive') {
-        if (preBackgroundPlayingRef.current === null) {
-          preBackgroundPlayingRef.current = Boolean(p.playing);
+        if (fgStallTimerRef.current) {
+          clearTimeout(fgStallTimerRef.current);
+          fgStallTimerRef.current = null;
         }
-        persistCurrentProgress(true);
+        if (preBackgroundPlayingRef.current === null) {
+          preBackgroundPlayingRef.current = Boolean(p.playing) && !userExplicitlyPausedRef.current;
+        }
+        if (!userExplicitlyPausedRef.current) {
+          flushActivePlaybackSessionNow(true);
+        }
+        void persistCurrentProgress(true);
       } else if (nextState === 'active') {
         const prevPlay = preBackgroundPlayingRef.current;
         preBackgroundPlayingRef.current = null;
-        if (!isLockedRef.current && prevPlay && !isInPipRef.current && !p.playing) {
-          try {
-            p.play();
-          } catch {}
+        if (isLockedRef.current || isInPipRef.current) return;
+
+        void recoverForegroundPlaybackIfNeeded(false);
+        if (prevPlay || !userExplicitlyPausedRef.current) {
+          const snapshotPos = currentTimeRef.current;
+          if (fgStallTimerRef.current) clearTimeout(fgStallTimerRef.current);
+          fgStallTimerRef.current = setTimeout(() => {
+            fgStallTimerRef.current = null;
+            if (
+              !visible ||
+              isLockedRef.current ||
+              userExplicitlyPausedRef.current ||
+              isInPipRef.current
+            ) {
+              return;
+            }
+            const advanced = Math.abs(currentTimeRef.current - snapshotPos);
+            if (advanced < 0.35 && (!p.playing || p.status === 'loading')) {
+              void recoverForegroundPlaybackIfNeeded(true);
+            }
+          }, 3600);
         }
       }
     });
-    return () => sub.remove();
-  }, [visible, getActivePlayer, persistCurrentProgress]);
+    return () => {
+      sub.remove();
+      if (fgStallTimerRef.current) {
+        clearTimeout(fgStallTimerRef.current);
+        fgStallTimerRef.current = null;
+      }
+    };
+  }, [
+    visible,
+    getActivePlayer,
+    flushActivePlaybackSessionNow,
+    persistCurrentProgress,
+    recoverForegroundPlaybackIfNeeded,
+  ]);
 
-  // Launch / episode-change effect
+  // Network loss inside Player (Item 3):
+  // - If active server is '99' (offline file): show toast "Mất kết nối" for 3s and keep playing!
+  // - If active server is online (!= '99'): exit player cleanly & switch to Kho Phim Ngoại Tuyến.
   useEffect(() => {
-    if (!visible || !params) {
+    if (!visible) return;
+    const stopMon = startNetworkMonitor(5000);
+    const unsub = subscribeNetworkStatus((online) => {
+      if (online) return;
+      setServers((prev) =>
+        prev.map((s) =>
+          s.id === '99'
+            ? s
+            : {
+                ...s,
+                status: 'error',
+                pingMs: null,
+                pingFailed: true,
+                progressLabel: 'Mất kết nối',
+              }
+        )
+      );
+      if (activeServerIdRef.current === '99') {
+        showToast('Mất kết nối', 'Đang tiếp tục phát từ bộ nhớ máy', 'warning', {
+          family: 'ionicons',
+          name: 'cloud-offline-outline',
+          color: '#FBBF24',
+        });
+      } else if (onEnterOfflineMode) {
+        userExplicitlyPausedRef.current = true;
+        void persistCurrentProgress(false);
+        void clearActivePlaybackSession();
+        try {
+          playerA.pause();
+          playerB.pause();
+        } catch {}
+        onEnterOfflineMode();
+      }
+    });
+    return () => {
+      stopMon();
+      unsub();
+    };
+  }, [visible, onEnterOfflineMode, persistCurrentProgress, playerA, playerB, showToast]);
+
+  // Launch / episode-change effect with full teardown on close or movie switch
+  const resetPlayerStateCleanly = useCallback(
+    (preservePosterForParams?: PlayerLaunchParams | null) => {
+      loadSeqRef.current += 1;
       if (checkFilePollRef.current) {
         clearInterval(checkFilePollRef.current);
         checkFilePollRef.current = null;
+      }
+      if (fgStallTimerRef.current) {
+        clearTimeout(fgStallTimerRef.current);
+        fgStallTimerRef.current = null;
       }
       try {
         playerA.pause();
         playerB.pause();
       } catch {}
+      playerA.replaceAsync(null).catch(() => {});
+      playerB.replaceAsync(null).catch(() => {});
+
+      manualLockedServerRef.current = null;
+      erroredServersRef.current = new Set();
+      pipProxyBrokenRef.current = false;
+      activeMediaUrlRef.current = '';
+      preloadedNextRef.current = null;
+      skipNextReloadCodeRef.current = null;
+      lastAutoQueuedSigRef.current = '';
+      detailEpisodesVideosIdRef.current = 0;
+      userExplicitlyPausedRef.current = false;
+
+      activeLayerRef.current = 'A';
+      setActiveLayer('A');
+      layerAOpacity.setValue(1);
+      layerBOpacity.setValue(0);
+
+      setResolved(null);
+      setDetailEpisodes([]);
+      setServers([]);
+      setActiveServerId(null);
+      activeServerIdRef.current = null;
+      setActiveStreamCode('');
+      setActiveEpTitle('');
+      setVnCues([]);
+      setEnCues([]);
+      setVnSubUrl('');
+      setEnSubUrl('');
+      setMoviePosterMeta({
+        poster: preservePosterForParams?.posterUrl || '',
+        thumb: preservePosterForParams?.thumbnailUrl || '',
+      });
+      setFirstFrameReady(false);
+      setIsBuffering(true);
+      setCurrentTime(0);
+      currentTimeRef.current = 0;
+      setDuration(0);
+      durationRef.current = 0;
+      setBufferedPos(0);
+    },
+    [playerA, playerB, layerAOpacity, layerBOpacity]
+  );
+
+  useEffect(() => {
+    if (!visible || !params) {
+      lastLoadedVideosIdRef.current = 0;
+      resetPlayerStateCleanly(null);
       setServerModalOpen(false);
       setEpisodeModalOpen(false);
       setSubSettingsOpen(false);
@@ -1946,7 +2712,6 @@ export function PlayerModal({
       setInfoPanel(null);
       setSpeedMenuOpen(false);
       setMoreMenuOpen(false);
-      setFirstFrameReady(false);
       isInPipRef.current = false;
       clearPipRestoreTimer();
       return;
@@ -1957,6 +2722,13 @@ export function PlayerModal({
       return;
     }
 
+    const switchingDifferentMovie =
+      lastLoadedVideosIdRef.current !== 0 && lastLoadedVideosIdRef.current !== params.videosId;
+    if (switchingDifferentMovie) {
+      resetPlayerStateCleanly(params);
+    }
+    lastLoadedVideosIdRef.current = params.videosId;
+
     if (!isOfflineOnlyMode) {
       void flushPendingOfflineProgressToServer();
     }
@@ -1965,20 +2737,25 @@ export function PlayerModal({
       poster: params.posterUrl || '',
       thumb: params.thumbnailUrl || '',
     });
+    const targetVideosId = params.videosId;
     if (params.episodes && params.episodes.length > 0) {
+      detailEpisodesVideosIdRef.current = targetVideosId;
       setDetailEpisodes(params.episodes);
-    } else if (!isOfflineOnlyMode && params.videosId > 0) {
-      fetchMovieDetailsApi(params.videosId)
+    } else if (!isOfflineOnlyMode && targetVideosId > 0) {
+      fetchMovieDetailsApi(targetVideosId)
         .then((res) => {
-          if (!res?.movie) return;
+          if (!res?.movie || res.movie.videos_id !== targetVideosId || lastLoadedVideosIdRef.current !== targetVideosId) {
+            return;
+          }
           const allEps =
             res.movie.episodes && res.movie.episodes.length > 0
               ? res.movie.episodes
               : res.movie.seasons?.[0]?.episodes || [];
+          detailEpisodesVideosIdRef.current = res.movie.videos_id;
           setDetailEpisodes(allEps);
           setMoviePosterMeta({
-            poster: res.movie.poster_url || '',
-            thumb: res.movie.thumbnail_url || '',
+            poster: res.movie.poster_url || params.posterUrl || '',
+            thumb: res.movie.thumbnail_url || params.thumbnailUrl || '',
           });
           setInWishlist(Boolean(res.movie.in_wishlist));
         })
@@ -1994,26 +2771,43 @@ export function PlayerModal({
     params?.streamCode,
     params?.videosId,
     isOfflineOnlyMode,
-    playerA,
-    playerB,
     clearPipRestoreTimer,
     loadEpisodeByCode,
+    resetPlayerStateCleanly,
   ]);
 
   // Auto-download current / next episodes when enabled in settings
+  // Strictly guarded against stale resolved/detailEpisodes from previous movies (Item 6)
   useEffect(() => {
     if (!visible || isOfflineOnlyMode || !params?.videosId || !activeStreamCode) return;
+    if (!resolved || resolved.stream_code !== activeStreamCode || activeStreamCode !== params.streamCode) {
+      return;
+    }
+    if (resolved.movie?.videos_id && resolved.movie.videos_id !== params.videosId) {
+      return;
+    }
     const wantCurrent = settings.autoDownloadCurrentOnWatch;
-    const nextCount = Math.max(0, settings.autoDownloadNextCount || 0);
-    if (!wantCurrent && nextCount === 0) return;
+    const rawNextCount = Math.max(0, settings.autoDownloadNextCount || 0);
+    if (!wantCurrent && rawNextCount === 0) return;
 
-    const sig = `${params.videosId}|${activeStreamCode}|${wantCurrent ? 1 : 0}|${nextCount}|${effectiveEpisodes.length}`;
+    const trustedEpisodes =
+      resolved.episodes && resolved.episodes.length > 0
+        ? resolved.episodes
+        : detailEpisodesVideosIdRef.current === params.videosId
+          ? detailEpisodes
+          : params.episodes || [];
+
+    const isSeriesMovie =
+      resolved.movie?.is_tvseries === 1 || trustedEpisodes.length > 1;
+    const nextCount = isSeriesMovie ? rawNextCount : 0;
+
+    const sig = `${params.videosId}|${activeStreamCode}|${wantCurrent ? 1 : 0}|${nextCount}|${trustedEpisodes.length}`;
     if (lastAutoQueuedSigRef.current === sig) return;
     lastAutoQueuedSigRef.current = sig;
 
     const targets =
-      effectiveEpisodes.length > 0
-        ? getCurrentAndNextEpisodes(effectiveEpisodes, activeStreamCode, nextCount)
+      trustedEpisodes.length > 0 && isSeriesMovie
+        ? getCurrentAndNextEpisodes(trustedEpisodes, activeStreamCode, nextCount)
         : [
             {
               episodes_id: params.episodeId || 0,
@@ -2029,18 +2823,25 @@ export function PlayerModal({
     const filtered = wantCurrent ? targets : targets.filter((t) => t.stream_code !== activeStreamCode);
     if (filtered.length === 0) return;
 
+    const bestPoster =
+      moviePosterMeta.poster || resolved.movie?.poster_url || params.posterUrl || moviePosterMeta.thumb || '';
+    const bestThumb =
+      moviePosterMeta.thumb || resolved.movie?.thumbnail_url || params.thumbnailUrl || bestPoster;
+
     const requests: OfflineEnqueueParams[] = filtered.map((ep) => {
       const isCur = ep.stream_code === activeStreamCode;
       return {
         videos_id: params.videosId,
         episode_id: ep.episodes_id || 0,
         stream_code: ep.stream_code,
-        title: params.title,
-        episode_title: ep.episodes_name || (isCur ? activeEpTitle : undefined),
-        server_movie_title: resolved?.server_movie_title || undefined,
-        server_file_key: isCur ? resolved?.server_file_key || undefined : undefined,
-        poster_url: moviePosterMeta.poster || moviePosterMeta.thumb || '',
-        thumbnail_url: moviePosterMeta.thumb || moviePosterMeta.poster || '',
+        title: resolved.title || params.title,
+        episode_title: isSeriesMovie
+          ? ep.episodes_name || (isCur ? activeEpTitle : undefined)
+          : undefined,
+        server_movie_title: resolved.server_movie_title || undefined,
+        server_file_key: isCur ? resolved.server_file_key || undefined : undefined,
+        poster_url: bestPoster,
+        thumbnail_url: bestThumb,
         preferred_format: settings.offlineDownloadFormat,
         concurrency: settings.offlineDownloadConcurrency,
       };
@@ -2052,9 +2853,8 @@ export function PlayerModal({
     params,
     activeStreamCode,
     activeEpTitle,
-    resolved?.server_movie_title,
-    resolved?.server_file_key,
-    effectiveEpisodes,
+    resolved,
+    detailEpisodes,
     moviePosterMeta,
     settings.autoDownloadCurrentOnWatch,
     settings.autoDownloadNextCount,
@@ -2110,27 +2910,37 @@ export function PlayerModal({
 
   // Close cleanup
   const handleClose = useCallback(() => {
-    persistCurrentProgress(true);
-    clearHudTimer();
-    if (checkFilePollRef.current) {
-      clearInterval(checkFilePollRef.current);
-      checkFilePollRef.current = null;
-    }
-    if (seekReturnTimerRef.current) clearTimeout(seekReturnTimerRef.current);
-    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-    try {
-      playerA.pause();
-      playerB.pause();
-    } catch {}
-    setServerModalOpen(false);
-    setEpisodeModalOpen(false);
-    setSubSettingsOpen(false);
-    setGeneralSettingsOpen(false);
-    setOfflineSheetOpen(false);
-    setCastPopupOpen(false);
-    setInfoPanel(null);
-    onClose();
-  }, [persistCurrentProgress, clearHudTimer, playerA, playerB, onClose]);
+    void (async () => {
+      userExplicitlyPausedRef.current = true;
+      void clearActivePlaybackSession();
+      clearHudTimer();
+      if (checkFilePollRef.current) {
+        clearInterval(checkFilePollRef.current);
+        checkFilePollRef.current = null;
+      }
+      if (seekReturnTimerRef.current) clearTimeout(seekReturnTimerRef.current);
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+      try {
+        playerA.pause();
+        playerB.pause();
+      } catch {}
+      setServerModalOpen(false);
+      setEpisodeModalOpen(false);
+      setSubSettingsOpen(false);
+      setGeneralSettingsOpen(false);
+      setOfflineSheetOpen(false);
+      setCastPopupOpen(false);
+      setInfoPanel(null);
+      try {
+        await Promise.race([
+          persistCurrentProgress(true),
+          new Promise<void>((r) => setTimeout(r, 900)),
+        ]);
+      } catch {}
+      onWatchProgressSaved?.();
+      onClose();
+    })();
+  }, [persistCurrentProgress, clearHudTimer, playerA, playerB, onWatchProgressSaved, onClose]);
 
   const seekToWithWarning = useCallback(
     (targetSec: number) => {
@@ -2280,6 +3090,55 @@ export function PlayerModal({
         ? 'en'
         : 'vi';
 
+  const pipSubCuesJson = useMemo(() => {
+    if (!settings.subShowVi && !settings.subShowEn) return '';
+    const delay = settings.subDelaySec || 0;
+    const extend = settings.subExtendSec || 0;
+    const vi = settings.subShowVi ? vnCues : [];
+    const en = settings.subShowEn ? enCues : [];
+    if (vi.length === 0 && en.length === 0) return '';
+    const primary = settings.subReverse && en.length > 0 ? en : vi.length > 0 ? vi : en;
+    const secondary = primary === vi ? en : vi;
+    const rows: { s: number; e: number; t: string }[] = [];
+    let secIdx = 0;
+    for (let i = 0; i < primary.length; i++) {
+      const c = primary[i];
+      const s = Math.max(0, Number((c.start + delay).toFixed(2)));
+      const e = Math.max(s + 0.25, Number((c.end + delay + extend).toFixed(2)));
+      let text = c.text.trim();
+      if (secondary.length > 0) {
+        while (secIdx < secondary.length && secondary[secIdx].end < c.start - 0.6) {
+          secIdx++;
+        }
+        if (secIdx < secondary.length) {
+          const m = secondary[secIdx];
+          if (m.start <= c.end + 0.6 && m.end >= c.start - 0.6) {
+            const secTxt = m.text.trim();
+            if (secTxt && secTxt !== text) {
+              text = `${text}\n${secTxt}`;
+            }
+          }
+        }
+      }
+      if (text) rows.push({ s, e, t: text });
+    }
+    if (rows.length === 0) return '';
+    rows.sort((a, b) => a.s - b.s);
+    try {
+      return JSON.stringify(rows);
+    } catch {
+      return '';
+    }
+  }, [
+    settings.subShowVi,
+    settings.subShowEn,
+    settings.subReverse,
+    settings.subDelaySec,
+    settings.subExtendSec,
+    vnCues,
+    enCues,
+  ]);
+
   const holdToastPayload: WaterDropToastPayload | null = holdBoostActive
     ? {
         id: -1,
@@ -2287,6 +3146,7 @@ export function PlayerModal({
         subtitle: 'Thả tay để trở lại tốc độ phát bình thường',
         tone: 'info',
         durationSec: 0,
+        icon: { family: 'ionicons', name: 'flash', color: '#FBBF24' },
       }
     : toastPayload;
 
@@ -2312,12 +3172,14 @@ export function PlayerModal({
             nativeControls={false}
             allowsPictureInPicture={activeLayer === 'A' && settings.pipEnabled}
             startsPictureInPictureAutomatically={activeLayer === 'A' && settings.pipEnabled}
-            {...({ contrastEnhance: isContrastActive, pipSubLang: pipSubLangProp } as any)}
+            {...({
+              contrastEnhance: isContrastActive,
+              pipSubLang: pipSubLangProp,
+              pipSubCuesJson,
+            } as any)}
             onPictureInPictureStart={() => {
               if (activeLayerRef.current !== 'A') return;
               setIsInPip(true);
-              syncNativePipSubtitleTrack(playerA, true);
-              setTimeout(() => syncNativePipSubtitleTrack(playerA, true), 150);
               clearPipRestoreTimer();
             }}
             onPictureInPictureStop={() => {
@@ -2348,12 +3210,14 @@ export function PlayerModal({
             nativeControls={false}
             allowsPictureInPicture={activeLayer === 'B' && settings.pipEnabled}
             startsPictureInPictureAutomatically={activeLayer === 'B' && settings.pipEnabled}
-            {...({ contrastEnhance: isContrastActive, pipSubLang: pipSubLangProp } as any)}
+            {...({
+              contrastEnhance: isContrastActive,
+              pipSubLang: pipSubLangProp,
+              pipSubCuesJson,
+            } as any)}
             onPictureInPictureStart={() => {
               if (activeLayerRef.current !== 'B') return;
               setIsInPip(true);
-              syncNativePipSubtitleTrack(playerB, true);
-              setTimeout(() => syncNativePipSubtitleTrack(playerB, true), 150);
               clearPipRestoreTimer();
             }}
             onPictureInPictureStop={() => {
@@ -2420,7 +3284,16 @@ export function PlayerModal({
               const delta = side === 'left' ? -10 : 10;
               seekToWithWarning(currentTimeRef.current + delta);
               Haptics.selectionAsync();
-              showToast(delta < 0 ? 'Tua lùi 10 giây' : 'Tua tới 10 giây');
+              showToast(
+                delta < 0 ? 'Tua lùi 10 giây' : 'Tua tới 10 giây',
+                undefined,
+                'info',
+                {
+                  family: 'ionicons',
+                  name: delta < 0 ? 'play-back' : 'play-forward',
+                  color: '#FFFFFF',
+                }
+              );
               return;
             }
             lastTapStageRef.current = { time: now, side };
@@ -2451,7 +3324,7 @@ export function PlayerModal({
         <WaterDropToastBanner
           toast={holdToastPayload}
           topOffset={Math.max(insets.top, 8) + 8}
-          maxWidth={Math.min(Math.round(winWidth * 0.78), 410)}
+          maxWidth={Math.min(winWidth - 40, 480)}
         />
 
         {/* Floating Next-Episode Countdown Pill */}
@@ -2540,7 +3413,7 @@ export function PlayerModal({
                     }}
                   >
                     {isDownloadingNow ? (
-                      <ActivityIndicator size="small" color="#30D158" />
+                      <DownloadingIconAnim />
                     ) : (
                       <Feather
                         name="download"
@@ -2574,18 +3447,25 @@ export function PlayerModal({
                           typeof isPictureInPictureSupported === 'function' &&
                           !isPictureInPictureSupported()
                         ) {
-                          showToast('Thiết bị chưa hỗ trợ thu nhỏ khung hình');
+                          showToast('Thiết bị chưa hỗ trợ thu nhỏ khung hình', undefined, 'warning', {
+                            family: 'ionicons',
+                            name: 'albums-outline',
+                            color: '#FBBF24',
+                          });
                           return;
                         }
                         const viewRef =
                           activeLayerRef.current === 'A' ? viewARef.current : viewBRef.current;
                         setIsInPip(true);
-                        syncNativePipSubtitleTrack(getActivePlayer(), true);
                         await viewRef?.startPictureInPicture();
                       } catch {
                         setIsInPip(false);
                         syncNativePipSubtitleTrack(getActivePlayer(), false);
-                        showToast('Không thể mở thu nhỏ khung hình lúc này');
+                        showToast('Không thể mở thu nhỏ khung hình lúc này', undefined, 'warning', {
+                          family: 'ionicons',
+                          name: 'albums-outline',
+                          color: '#FBBF24',
+                        });
                       }
                     }}
                   >
@@ -2633,7 +3513,12 @@ export function PlayerModal({
                   Haptics.selectionAsync();
                   const next = isContrastActive ? 'Mặc định' : 'Cao';
                   void updateSetting('contrastLevel', next);
-                  showToast(isContrastActive ? 'Tương phản: Mặc định' : 'Đã bật Tăng độ tương phản');
+                  showToast(
+                    isContrastActive ? 'Tương phản: Mặc định' : 'Đã bật Tăng độ tương phản',
+                    undefined,
+                    'info',
+                    { family: 'ionicons', name: 'contrast', color: '#F472B6' }
+                  );
                   showHudWithTimer();
                 }}
               >
@@ -2647,7 +3532,12 @@ export function PlayerModal({
                   Haptics.selectionAsync();
                   const next = !settings.autoPlayNext;
                   void updateSetting('autoPlayNext', next);
-                  showToast(next ? 'Đã bật Tự động chuyển tập' : 'Đã tắt Tự động chuyển tập');
+                  showToast(
+                    next ? 'Đã bật Tự động chuyển tập' : 'Đã tắt Tự động chuyển tập',
+                    undefined,
+                    'info',
+                    { family: 'ionicons', name: 'play-skip-forward', color: '#34D399' }
+                  );
                   showHudWithTimer();
                 }}
               >
@@ -2664,7 +3554,16 @@ export function PlayerModal({
                   Haptics.selectionAsync();
                   const nextMode = settings.videoFillMode === 'cover' ? 'contain' : 'cover';
                   void updateSetting('videoFillMode', nextMode);
-                  showToast(nextMode === 'cover' ? 'Tràn viền màn hình' : 'Tỷ lệ màn hình gốc');
+                  showToast(
+                    nextMode === 'cover' ? 'Tràn viền màn hình' : 'Tỷ lệ màn hình gốc',
+                    undefined,
+                    'info',
+                    {
+                      family: 'ionicons',
+                      name: nextMode === 'cover' ? 'scan-outline' : 'contract-outline',
+                      color: '#60A5FA',
+                    }
+                  );
                   showHudWithTimer();
                 }}
               >
@@ -2703,28 +3602,34 @@ export function PlayerModal({
                   userInteractedHudRef.current = true;
                   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                   const p = getActivePlayer();
-                  if (p.playing) p.pause();
-                  else p.play();
+                  if (p.playing) {
+                    userExplicitlyPausedRef.current = true;
+                    void clearActivePlaybackSession();
+                    p.pause();
+                  } else {
+                    userExplicitlyPausedRef.current = false;
+                    p.play();
+                  }
                   showHudWithTimer();
                 }}
               >
-                <GlassSurface
-                  variant="liquid"
-                  radius={26}
-                  intensity={26}
-                  style={styles.centerPlayBox}
-                >
-                  {isBuffering ? (
-                    <ActivityIndicator size="large" color="#FFF" />
-                  ) : (
+                {isBuffering ? (
+                  <BufferingSkeletonCenterButton />
+                ) : (
+                  <GlassSurface
+                    variant="liquid"
+                    radius={26}
+                    intensity={26}
+                    style={styles.centerPlayBox}
+                  >
                     <Ionicons
                       name={isPlaying ? 'pause' : 'play'}
                       size={40}
                       color="#FFF"
                       style={!isPlaying ? { marginLeft: 3 } : undefined}
                     />
-                  )}
-                </GlassSurface>
+                  </GlassSurface>
+                )}
               </BouncyButton>
 
               <BouncyButton
@@ -2756,7 +3661,11 @@ export function PlayerModal({
                     onPress={() => {
                       Haptics.selectionAsync();
                       seekToWithWarning(skipIntroSec);
-                      showToast('Đã bỏ qua giới thiệu');
+                      showToast('Đã bỏ qua giới thiệu', undefined, 'info', {
+                        family: 'ionicons',
+                        name: 'play-skip-forward-outline',
+                        color: '#38BDF8',
+                      });
                     }}
                   >
                     <GlassSurface variant="liquid" radius={40} intensity={28} style={styles.quickChip}>
@@ -2922,7 +3831,16 @@ export function PlayerModal({
                           setInWishlist(Boolean(r.in_wishlist));
                         } catch {}
                       }
-                      showToast(!prev ? 'Đã thêm vào danh sách của tôi' : 'Đã xóa khỏi danh sách');
+                      showToast(
+                        !prev ? 'Đã thêm vào danh sách của tôi' : 'Đã xóa khỏi danh sách',
+                        undefined,
+                        !prev ? 'success' : 'info',
+                        {
+                          family: 'ionicons',
+                          name: !prev ? 'bookmark' : 'bookmark-outline',
+                          color: '#F43F5E',
+                        }
+                      );
                       showHudWithTimer();
                     }}
                   >
@@ -3188,14 +4106,47 @@ export function PlayerModal({
                     enUrl: enSubUrl,
                     title: displayTitle,
                   });
-                  showToast(`Đã chọn ${target.label}`, 'Đang phát từ bộ nhớ thiết bị', 'success');
+                  showToast(`Đã chọn ${target.label}`, 'Đang phát từ bộ nhớ thiết bị', 'success', {
+                    family: 'ionicons',
+                    name: 'phone-portrait-outline',
+                    color: '#34D399',
+                  });
                 }
                 return;
               }
 
               if ((id === '11' || id === '36') && sfk && !target.streamUrl) {
+                setServers((prev) =>
+                  prev.map((s) =>
+                    s.id === id
+                      ? {
+                          ...s,
+                          status: 'downloading',
+                          progressLabel: 'Đang chuẩn bị...',
+                          errored: false,
+                        }
+                      : s
+                  )
+                );
                 void triggerServerPrepare(sfk);
-                showToast(`Đang chuẩn bị ${target.label}...`);
+                startCheckFilePolling({
+                  mySeq: loadSeqRef.current,
+                  sfk,
+                  targetStartSec: currentTimeRef.current,
+                  hasGgdDirect: Boolean(
+                    resolvedRef.current?.ggdriver_1 ||
+                      resolvedRef.current?.ggdriver_2 ||
+                      resolvedRef.current?.ggdriver_3
+                  ),
+                  vnUrl: vnSubUrl,
+                  enUrl: enSubUrl,
+                  movieTitle: displayTitle,
+                });
+                showToast(`Đang chuẩn bị ${target.label}...`, undefined, 'info', {
+                  family: 'ionicons',
+                  name: 'cloud-download-outline',
+                  color: '#38BDF8',
+                });
                 setServerModalOpen(false);
                 return;
               }
@@ -3214,24 +4165,87 @@ export function PlayerModal({
                   enUrl: enSubUrl,
                   title: displayTitle,
                 });
-                showToast(`Đã chọn ${target.label}`);
+                showToast(`Đã chọn ${target.label}`, undefined, 'info', {
+                  family: 'ionicons',
+                  name: 'server-outline',
+                  color: '#60A5FA',
+                });
               }
             })();
           }}
           onRefreshPings={async () => {
             setPingRefreshing(true);
             try {
-              const p = await measureAllServerPings(Boolean(matchedOfflineItem));
-              setServers((prev) =>
-                prev.map((s) => {
+              const sfk = resolvedRef.current?.server_file_key || '';
+              const online = await probeConnectivity(2000).catch(() => false);
+              const [p, checkRes, ggdRes] = await Promise.all([
+                measureAllServerPings(Boolean(matchedOfflineItem)),
+                online && sfk ? checkServerFileStatus(sfk) : Promise.resolve(null),
+                online && sfk
+                  ? checkGgdriverApi(sfk, resolvedRef.current?.server_movie_title)
+                  : Promise.resolve(null),
+              ]);
+              const hasAnyGgd = Boolean(
+                ggdRes && (ggdRes.ggdriver_1 || ggdRes.ggdriver_2 || ggdRes.ggdriver_3)
+              );
+              setServers((prev) => {
+                let next = prev.map((s) => {
                   if (s.id === '99') return { ...s, pingMs: p.ping99, pingFailed: false };
                   if (s.id === '11') return { ...s, pingMs: p.ping11, pingFailed: p.ping11 === null };
                   if (s.id === '36') return { ...s, pingMs: p.ping36, pingFailed: p.ping36 === null };
-                  if (s.id === '40') return { ...s, pingMs: p.ping40, pingFailed: false };
-                  if (s.id === '3') return { ...s, pingMs: p.ping3, pingFailed: false };
+                  if (s.id === '40') {
+                    const readyNow = online && (hasAnyGgd || Boolean(s.streamUrl));
+                    return {
+                      ...s,
+                      pingMs: p.ping40,
+                      pingFailed: !online,
+                      status:
+                        !online && s.status === 'checking'
+                          ? ('error' as const)
+                          : readyNow && s.status === 'checking'
+                            ? ('ready' as const)
+                            : s.status,
+                      progressLabel:
+                        !online && s.status === 'checking'
+                          ? 'Mất kết nối'
+                          : readyNow && s.status === 'checking'
+                            ? 'Sẵn sàng'
+                            : s.progressLabel,
+                    };
+                  }
+                  if (s.id === '3') {
+                    const readyNow = online && Boolean(s.streamUrl);
+                    return {
+                      ...s,
+                      pingMs: p.ping3,
+                      pingFailed: !online,
+                      status:
+                        !online && s.status === 'checking'
+                          ? ('error' as const)
+                          : readyNow && s.status === 'checking'
+                            ? ('ready' as const)
+                            : s.status,
+                      progressLabel:
+                        !online && s.status === 'checking'
+                          ? 'Mất kết nối'
+                          : readyNow && s.status === 'checking'
+                            ? 'Sẵn sàng'
+                            : s.progressLabel,
+                    };
+                  }
                   return s;
-                })
-              );
+                });
+                if (checkRes) {
+                  next = applyCheckFileToServers(next, sfk, checkRes);
+                } else if (!online) {
+                  next = next.map((s) =>
+                    s.id !== '99' && s.status === 'checking'
+                      ? { ...s, status: 'error' as const, progressLabel: 'Mất kết nối' }
+                      : s
+                  );
+                }
+                return next;
+              });
             } finally {
               setPingRefreshing(false);
             }
@@ -3301,15 +4315,20 @@ export function PlayerModal({
           sleepSecondsLeft={sleepSecondsLeft}
           onSelectSleepTimer={(val) => {
             setSleepTimerValue(val);
+            const sleepIcon: WaterDropToastIcon = {
+              family: 'ionicons',
+              name: 'moon-outline',
+              color: '#A78BFA',
+            };
             if (typeof val === 'number') {
               setSleepSecondsLeft(val * 60);
-              showToast(`Hẹn tắt sau ${val} phút`);
+              showToast(`Hẹn tắt sau ${val} phút`, undefined, 'info', sleepIcon);
             } else if (val === 'end_of_episode') {
               setSleepSecondsLeft(null);
-              showToast('Hẹn tắt khi hết tập phim');
+              showToast('Hẹn tắt khi hết tập phim', undefined, 'info', sleepIcon);
             } else {
               setSleepSecondsLeft(null);
-              showToast('Đã tắt hẹn giờ ngủ');
+              showToast('Đã tắt hẹn giờ ngủ', undefined, 'info', sleepIcon);
             }
           }}
           onReloadPlayer={() => {

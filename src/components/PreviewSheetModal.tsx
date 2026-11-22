@@ -17,6 +17,7 @@ import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS } from '../constants/config';
 import { fetchPopupInfoApi, toggleWishlistApi } from '../services/api';
+import { isNetworkError, reportNetworkFailure } from '../services/networkService';
 import { MovieItem, PopupInfo } from '../types/models';
 import { AmbientAppBackground } from './AmbientAppBackground';
 import { BouncyButton } from './BouncyButton';
@@ -30,7 +31,14 @@ interface PreviewSheetModalProps {
   initialMovie?: MovieItem | null;
   obscuredByPlayer?: boolean;
   onClose: () => void;
-  onPlay: (params: { videosId: number; streamCode: string; episodeId?: number; title: string }) => void;
+  onPlay: (params: {
+    videosId: number;
+    streamCode: string;
+    episodeId?: number;
+    title: string;
+    posterUrl?: string;
+    thumbnailUrl?: string;
+  }) => void;
   onOpenDetail: (videosId: number) => void;
 }
 
@@ -122,8 +130,11 @@ export function PreviewSheetModal({
         if (cancelled) return;
         setInfo(res);
         setInWishlist(Boolean(res.in_wishlist));
-      } catch {
-        // Keep modal resilient even if request fails
+      } catch (err) {
+        if (!cancelled && isNetworkError(err)) {
+          onClose();
+          void reportNetworkFailure();
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -380,6 +391,7 @@ export function PreviewSheetModal({
                       activeOpacity={0.88}
                       style={styles.playBtn}
                       onPress={() => {
+                        if (!info || info.videos_id !== videosId) return;
                         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
                         try {
                           player.pause();
@@ -390,6 +402,8 @@ export function PreviewSheetModal({
                           streamCode: info.movies_url_getlink,
                           episodeId: info.episode_id,
                           title: info.title,
+                          posterUrl: info.image_poster_image || initialMovie?.poster_url || '',
+                          thumbnailUrl: info.image_video_thumb || initialMovie?.thumbnail_url || '',
                         });
                       }}
                     >

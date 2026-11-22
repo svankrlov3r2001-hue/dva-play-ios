@@ -622,37 +622,74 @@ private func dvaNormalizeHlsVtt(_ rawText: String, mpegtsPts: UInt64) -> String 
   }
   s = s.replacingOccurrences(of: "\\r\\n", with: "\\n").replacingOccurrences(of: "\\r", with: "\\n")
   let rawLines = s.components(separatedBy: "\\n")
-  var bodyLines: [String] = []
-  var started = false
+  var blocks: [[String]] = []
+  var curBlock: [String] = []
+
   for line in rawLines {
     let trimmed = line.trimmingCharacters(in: .whitespaces)
-    if !started {
-      if trimmed.isEmpty || trimmed.uppercased().hasPrefix("WEBVTT") || trimmed.uppercased().hasPrefix("X-TIMESTAMP-MAP") {
-        if trimmed.uppercased().hasPrefix("WEBVTT") {
-          started = true
-        }
-        continue
+    if trimmed.isEmpty {
+      if !curBlock.isEmpty {
+        blocks.append(curBlock)
+        curBlock = []
       }
-      started = true
+    } else {
+      curBlock.append(line)
     }
-    if trimmed.uppercased().hasPrefix("X-TIMESTAMP-MAP") {
+  }
+  if !curBlock.isEmpty {
+    blocks.append(curBlock)
+  }
+
+  var cueStrings: [String] = []
+  for blk in blocks {
+    let firstUpper = (blk.first ?? "").trimmingCharacters(in: .whitespaces).uppercased()
+    if firstUpper.hasPrefix("WEBVTT") || firstUpper.hasPrefix("STYLE") || firstUpper.hasPrefix("REGION") || firstUpper.hasPrefix("NOTE") || firstUpper.hasPrefix("X-TIMESTAMP-MAP") {
       continue
     }
-    bodyLines.append(dvaSanitizeVttCueLine(line))
+    var timingIdx: Int? = nil
+    for (idx, l) in blk.enumerated() {
+      if l.contains("-->") {
+        timingIdx = idx
+        break
+      }
+    }
+    guard let tIdx = timingIdx else { continue }
+    let timingLine = dvaSanitizeVttCueLine(blk[tIdx])
+    let textLines = blk[(tIdx + 1)...].map { dvaSanitizeVttCueLine($0) }.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+    guard !textLines.isEmpty else { continue }
+    cueStrings.append(([timingLine] + textLines).joined(separator: "\\n"))
   }
-  while let first = bodyLines.first, first.trimmingCharacters(in: .whitespaces).isEmpty {
-    bodyLines.removeFirst()
-  }
+
   var out = "WEBVTT\\nX-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:\\(mpegtsPts)\\n\\n"
-  out += bodyLines.joined(separator: "\\n")
-  if !out.hasSuffix("\\n") {
-    out += "\\n"
+  if !cueStrings.isEmpty {
+    out += cueStrings.joined(separator: "\\n\\n") + "\\n"
   }
   return out
 }
 
+private func dvaMakeSafeURL(_ raw: String) -> URL? {
+  let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard !trimmed.isEmpty else { return nil }
+  if let direct = URL(string: trimmed) {
+    return direct
+  }
+  var allowed = CharacterSet.urlQueryAllowed
+  allowed.insert(charactersIn: ":/?#[]@!$&'()*+,;=%")
+  if let encoded = trimmed.addingPercentEncoding(withAllowedCharacters: allowed),
+     let url = URL(string: encoded) {
+    return url
+  }
+  return nil
+}
+
 private func dvaResolveRelativeUrl(_ ref: String, base: URL) -> String {
-  return URL(string: ref, relativeTo: base)?.absoluteURL.absoluteString ?? ref
+  if let resolved = URL(string: ref, relativeTo: base)?.absoluteURL.absoluteString {
+    return resolved
+  }
+  if let encoded = dvaMakeSafeURL(ref)?.absoluteString {
+    return encoded
+  }
+  return ref
 }
 
 private func dvaPercentEncodeQueryVal(_ val: String) -> String {
@@ -662,7 +699,7 @@ private func dvaPercentEncodeQueryVal(_ val: String) -> String {
 }
 
 private func dvaFetchRemoteSync(urlStr: String, rangeBytes: String? = nil, timeoutSec: TimeInterval = 5.0) -> (status: Int, finalUrl: String?, data: Data?) {
-  guard let url = URL(string: urlStr) else {
+  guard let url = dvaMakeSafeURL(urlStr) else {
     return (0, nil, nil)
   }
   let config = URLSessionConfiguration.ephemeral
@@ -804,7 +841,7 @@ private func dvaServeOfflinePipMaster(clientFd: Int32, itemDirURL: URL, method: 
   if let segRel = inspected.firstSeg, !segRel.contains("..") {
     let segURL = itemDirURL.appendingPathComponent(segRel).standardizedFileURL
     if let fh = FileHandle(forReadingAtPath: segURL.path) {
-      let headData = (try? fh.read(upToCount: 32768)) ?? Data()
+      let headData = (try? fh.read(upToCount: 65536)) ?? Data()
       try? fh.close()
       if let foundPts = dvaExtractFirstTsPts(headData) {
         pts = foundPts
@@ -845,6 +882,76 @@ private func dvaRewriteHlsAttributeUri(_ line: String, baseURL: URL) -> String {
   return String(line[..<uriRange.upperBound]) + absUri + String(line[endQuote...])
 }
 
+private let dvaPipVttCacheLock = NSLock()
+private var dvaPipVttCache: [String: (ts: TimeInterval, body: String)] = [:]
+
+private func dvaResolveAndNormalizeOnlineVtt(vttStr: String, probeUrl: String) -> String {
+  let cacheKey = "\\(vttStr)|\\(probeUrl)"
+  let now = Date().timeIntervalSince1970
+
+  dvaPipVttCacheLock.lock()
+  if let cached = dvaPipVttCache[cacheKey], (now - cached.ts) < 1800.0 {
+    dvaPipVttCacheLock.unlock()
+    return cached.body
+  }
+  dvaPipVttCacheLock.unlock()
+
+  var pts: UInt64 = 0
+  if !probeUrl.isEmpty {
+    var segToProbe = probeUrl
+    if segToProbe.lowercased().contains(".m3u8") {
+      let subPl = dvaFetchRemoteSync(urlStr: segToProbe, timeoutSec: 3.5)
+      if let pData = subPl.data, let pTxt = String(data: pData, encoding: .utf8), pTxt.contains("#EXTM3U") {
+        let subBase = subPl.finalUrl.flatMap { dvaMakeSafeURL($0) } ?? dvaMakeSafeURL(segToProbe)
+        let insp = dvaInspectMediaPlaylistDurationAndFirstSeg(pTxt)
+        if let s = insp.firstSeg, let b = subBase {
+          segToProbe = dvaResolveRelativeUrl(s, base: b)
+        }
+      }
+    }
+    if segToProbe.lowercased().contains(".ts") || segToProbe.lowercased().contains(".seg") || !segToProbe.lowercased().contains(".m3u8") {
+      let segRes = dvaFetchRemoteSync(urlStr: segToProbe, rangeBytes: "bytes=0-65535", timeoutSec: 3.5)
+      if let segData = segRes.data, let foundPts = dvaExtractFirstTsPts(segData) {
+        pts = foundPts
+      }
+    }
+  }
+
+  var vttText = ""
+  var fetchedOk = false
+  if !vttStr.isEmpty {
+    let vRes = dvaFetchRemoteSync(urlStr: vttStr, timeoutSec: 5.0)
+    if vRes.status >= 200 && vRes.status < 400, let vData = vRes.data, let txt = String(data: vData, encoding: .utf8) {
+      if txt.contains("-->") || txt.uppercased().contains("WEBVTT") {
+        vttText = txt
+        fetchedOk = true
+      }
+    }
+  }
+  let normalizedVtt = dvaNormalizeHlsVtt(vttText, mpegtsPts: pts)
+  if fetchedOk {
+    dvaPipVttCacheLock.lock()
+    if dvaPipVttCache.count >= 20, let oldestKey = dvaPipVttCache.min(by: { $0.value.ts < $1.value.ts })?.key {
+      dvaPipVttCache.removeValue(forKey: oldestKey)
+    }
+    dvaPipVttCache[cacheKey] = (ts: Date().timeIntervalSince1970, body: normalizedVtt)
+    dvaPipVttCacheLock.unlock()
+  }
+  return normalizedVtt
+}
+
+private func dvaWarmOnlineVttCacheAsync(vnUrl: String, enUrl: String, probeUrl: String) {
+  guard !vnUrl.isEmpty || !enUrl.isEmpty else { return }
+  DispatchQueue.global(qos: .utility).async {
+    if !vnUrl.isEmpty {
+      _ = dvaResolveAndNormalizeOnlineVtt(vttStr: vnUrl, probeUrl: probeUrl)
+    }
+    if !enUrl.isEmpty {
+      _ = dvaResolveAndNormalizeOnlineVtt(vttStr: enUrl, probeUrl: probeUrl)
+    }
+  }
+}
+
 private func dvaHandleOnlineHlsPip(clientFd: Int32, subPath: String, rawTarget: String, method: String) {
   if subPath == "/hls-pip/ping" {
     dvaSendHttpText(
@@ -860,7 +967,7 @@ private func dvaHandleOnlineHlsPip(clientFd: Int32, subPath: String, rawTarget: 
   let query = dvaParseQueryParams(rawTarget)
 
   if subPath == "/hls-pip/master.m3u8" {
-    guard let srcStr = query["src"], let srcURL = URL(string: srcStr) else {
+    guard let srcStr = query["src"], let srcURL = dvaMakeSafeURL(srcStr) else {
       dvaSendHttpText(clientFd: clientFd, statusLine: "400 Bad Request", body: "Missing src")
       return
     }
@@ -880,7 +987,7 @@ private func dvaHandleOnlineHlsPip(clientFd: Int32, subPath: String, rawTarget: 
       return
     }
 
-    let baseURL = fetched.finalUrl.flatMap { URL(string: $0) } ?? srcURL
+    let baseURL = fetched.finalUrl.flatMap { dvaMakeSafeURL($0) } ?? srcURL
     let normText = m3u8Text.replacingOccurrences(of: "\\r\\n", with: "\\n").replacingOccurrences(of: "\\r", with: "\\n")
 
     if normText.contains("#EXT-X-STREAM-INF") {
@@ -956,6 +1063,10 @@ private func dvaHandleOnlineHlsPip(clientFd: Int32, subPath: String, rawTarget: 
         outLines.append(contentsOf: makeSubHeaderLines(firstVariantUri))
       }
 
+      if method != "HEAD" {
+        dvaWarmOnlineVttCacheAsync(vnUrl: vnUrl, enUrl: enUrl, probeUrl: firstVariantUri ?? "")
+      }
+
       dvaSendHttpText(
         clientFd: clientFd,
         statusLine: "200 OK",
@@ -999,6 +1110,10 @@ private func dvaHandleOnlineHlsPip(clientFd: Int32, subPath: String, rawTarget: 
     outLines.append(mediaPlaylistTarget)
     outLines.append("")
 
+    if method != "HEAD" {
+      dvaWarmOnlineVttCacheAsync(vnUrl: vnUrl, enUrl: enUrl, probeUrl: probeSegAbs)
+    }
+
     dvaSendHttpText(
       clientFd: clientFd,
       statusLine: "200 OK",
@@ -1033,38 +1148,8 @@ private func dvaHandleOnlineHlsPip(clientFd: Int32, subPath: String, rawTarget: 
 
   if subPath == "/hls-pip/sub.vtt" {
     let vttStr = query["vtt"] ?? ""
-    var pts: UInt64 = 0
     let probeUrl = query["probe"] ?? ""
-    if !probeUrl.isEmpty {
-      var segToProbe = probeUrl
-      if segToProbe.lowercased().contains(".m3u8") {
-        let subPl = dvaFetchRemoteSync(urlStr: segToProbe, timeoutSec: 3.5)
-        if let pData = subPl.data, let pTxt = String(data: pData, encoding: .utf8), pTxt.contains("#EXTM3U") {
-          let subBase = subPl.finalUrl.flatMap { URL(string: $0) } ?? URL(string: segToProbe)
-          let insp = dvaInspectMediaPlaylistDurationAndFirstSeg(pTxt)
-          if let s = insp.firstSeg, let b = subBase {
-            segToProbe = dvaResolveRelativeUrl(s, base: b)
-          }
-        }
-      }
-      if segToProbe.lowercased().contains(".ts") || segToProbe.lowercased().contains(".seg") || !segToProbe.lowercased().contains(".m3u8") {
-        let segRes = dvaFetchRemoteSync(urlStr: segToProbe, rangeBytes: "bytes=0-32767", timeoutSec: 3.5)
-        if let segData = segRes.data, let foundPts = dvaExtractFirstTsPts(segData) {
-          pts = foundPts
-        }
-      }
-    }
-
-    var vttText = ""
-    if !vttStr.isEmpty {
-      let vRes = dvaFetchRemoteSync(urlStr: vttStr, timeoutSec: 5.0)
-      if vRes.status >= 200 && vRes.status < 400, let vData = vRes.data, let txt = String(data: vData, encoding: .utf8) {
-        if txt.contains("-->") || txt.uppercased().contains("WEBVTT") {
-          vttText = txt
-        }
-      }
-    }
-    let normalizedVtt = dvaNormalizeHlsVtt(vttText, mpegtsPts: pts)
+    let normalizedVtt = dvaResolveAndNormalizeOnlineVtt(vttStr: vttStr, probeUrl: probeUrl)
     dvaSendHttpText(
       clientFd: clientFd,
       statusLine: "200 OK",
@@ -2222,6 +2307,12 @@ function applyExpoVideoModulePatch(sourceText) {
         #if !os(tvOS)
         view.pipSubLang = lang ?? "vi"
         #endif
+      }
+
+      Prop("pipSubCuesJson") { (view, json: String?) in
+        #if !os(tvOS)
+        view.pipSubCuesJson = json ?? ""
+        #endif
       }`
   );
 }
@@ -2290,7 +2381,9 @@ function applyExpoVideoViewPatch(sourceText) {
 import AVFoundation
 import AVKit
 import CoreImage
+import CoreMedia
 import ExpoModulesCore
+import UIKit
 #if canImport(MetalKit)
 import MetalKit
 #endif`
@@ -2561,6 +2654,183 @@ private final class DvaVideoContrastOverlayView: MTKView {
 }
 #endif
 
+#if !os(tvOS)
+private struct DvaPipCueItem: Decodable {
+  let s: Double
+  let e: Double
+  let t: String
+}
+
+private final class DvaPipSubtitleRenderer {
+  private let lock = NSLock()
+  private var cues: [DvaPipCueItem] = []
+  private var lastJsonHash: Int = 0
+  private var lastHasCues: Bool = false
+  private var cachedKey: String = ""
+  private var cachedImage: CIImage?
+
+  var hasCues: Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    return lastHasCues
+  }
+
+  func load(json: String) {
+    let trimmed = json.trimmingCharacters(in: .whitespacesAndNewlines)
+    let h = trimmed.hashValue
+    lock.lock()
+    if h == lastJsonHash && ((!trimmed.isEmpty && lastHasCues) || (trimmed.isEmpty && !lastHasCues)) {
+      lock.unlock()
+      return
+    }
+    lock.unlock()
+
+    if trimmed.isEmpty {
+      lock.lock()
+      cues = []
+      lastJsonHash = h
+      lastHasCues = false
+      cachedKey = ""
+      cachedImage = nil
+      lock.unlock()
+      return
+    }
+
+    guard let data = trimmed.data(using: .utf8),
+          let decoded = try? JSONDecoder().decode([DvaPipCueItem].self, from: data) else {
+      return
+    }
+    let sorted = decoded.filter { !$0.t.isEmpty && $0.e > $0.s }.sorted { $0.s < $1.s }
+    lock.lock()
+    cues = sorted
+    lastJsonHash = h
+    lastHasCues = !sorted.isEmpty
+    cachedKey = ""
+    cachedImage = nil
+    lock.unlock()
+  }
+
+  func clearCache() {
+    lock.lock()
+    cachedKey = ""
+    cachedImage = nil
+    lock.unlock()
+  }
+
+  private func activeText(at seconds: Double) -> String? {
+    lock.lock()
+    let list = cues
+    lock.unlock()
+    guard !list.isEmpty else { return nil }
+
+    var lo = 0
+    var hi = list.count - 1
+    while lo <= hi {
+      let mid = (lo + hi) >> 1
+      if list[mid].e < seconds {
+        lo = mid + 1
+      } else {
+        hi = mid - 1
+      }
+    }
+    var lines: [String] = []
+    var idx = lo
+    while idx < list.count && list[idx].s <= seconds {
+      if list[idx].e >= seconds {
+        lines.append(list[idx].t)
+        if lines.count >= 2 { break }
+      }
+      idx += 1
+    }
+    guard !lines.isEmpty else { return nil }
+    return lines.joined(separator: "\\n")
+  }
+
+  func overlayImage(forTime seconds: Double, extent: CGRect) -> CIImage? {
+    guard extent.width > 16, extent.height > 16, let text = activeText(at: seconds) else {
+      return nil
+    }
+    let w = Int(round(extent.width))
+    let h = Int(round(extent.height))
+    let key = "\\(text)|\\(w)x\\(h)"
+
+    lock.lock()
+    if cachedKey == key, let img = cachedImage {
+      lock.unlock()
+      return img
+    }
+    lock.unlock()
+
+    let stripHeight = min(extent.height * 0.45, max(84.0, ceil(extent.height * 0.25)))
+    let canvasSize = CGSize(width: extent.width, height: stripHeight)
+    let fontSize = min(72.0, max(24.0, extent.height * 0.056))
+    let font = UIFont.systemFont(ofSize: fontSize, weight: .bold)
+
+    let paragraph = NSMutableParagraphStyle()
+    paragraph.alignment = .center
+    paragraph.lineBreakMode = .byWordWrapping
+    paragraph.lineSpacing = max(2.0, fontSize * 0.12)
+
+    let attrs: [NSAttributedString.Key: Any] = [
+      .font: font,
+      .foregroundColor: UIColor.white,
+      .strokeColor: UIColor.black,
+      .strokeWidth: -4.2,
+      .paragraphStyle: paragraph
+    ]
+    let attrStr = NSAttributedString(string: text, attributes: attrs)
+    let maxTextWidth = max(40.0, extent.width * 0.88)
+    let textBounds = attrStr.boundingRect(
+      with: CGSize(width: maxTextWidth, height: stripHeight - 16.0),
+      options: [.usesLineFragmentOrigin, .usesFontLeading],
+      context: nil
+    )
+
+    let padX = fontSize * 0.55
+    let padY = fontSize * 0.26
+    let boxW = min(extent.width * 0.94, ceil(textBounds.width) + padX * 2.0)
+    let boxH = min(stripHeight - 10.0, ceil(textBounds.height) + padY * 2.0)
+    let bottomMargin = max(14.0, extent.height * 0.042)
+    let boxRect = CGRect(
+      x: (extent.width - boxW) * 0.5,
+      y: max(4.0, stripHeight - boxH - bottomMargin),
+      width: boxW,
+      height: boxH
+    )
+
+    let format = UIGraphicsImageRendererFormat()
+    format.scale = 1.0
+    format.opaque = false
+    let uiImg = UIGraphicsImageRenderer(size: canvasSize, format: format).image { ctx in
+      let cg = ctx.cgContext
+      cg.setFillColor(UIColor(white: 0.0, alpha: 0.58).cgColor)
+      let bgPath = UIBezierPath(roundedRect: boxRect, cornerRadius: max(8.0, fontSize * 0.32))
+      cg.addPath(bgPath.cgPath)
+      cg.fillPath()
+
+      let drawRect = CGRect(
+        x: boxRect.minX + padX * 0.5,
+        y: boxRect.minY + (boxRect.height - textBounds.height) * 0.5,
+        width: boxRect.width - padX,
+        height: textBounds.height + 4.0
+      )
+      attrStr.draw(with: drawRect, options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
+    }
+
+    guard let rawCi = CIImage(image: uiImg) else {
+      return nil
+    }
+    let positioned = rawCi.transformed(by: CGAffineTransform(translationX: extent.minX, y: extent.minY))
+
+    lock.lock()
+    cachedKey = key
+    cachedImage = positioned
+    lock.unlock()
+    return positioned
+  }
+}
+#endif
+
 public final class VideoView: ExpoView, AVPlayerViewControllerDelegate {`
   );
 
@@ -2587,11 +2857,17 @@ public final class VideoView: ExpoView, AVPlayerViewControllerDelegate {`
 
   #if !os(tvOS)
   private var dvaIsInPip: Bool = false
+  private let dvaPipSubRenderer = DvaPipSubtitleRenderer()
   var pipSubLang: String = "vi" {
     didSet {
       if oldValue != pipSubLang && dvaIsInPip {
         dvaApplyPipSubtitleSelection(enable: true)
       }
+    }
+  }
+  var pipSubCuesJson: String = "" {
+    didSet {
+      dvaPipSubRenderer.load(json: pipSubCuesJson)
     }
   }
 
@@ -2622,6 +2898,21 @@ public final class VideoView: ExpoView, AVPlayerViewControllerDelegate {`
     return options.first
   }
 
+  private func dvaBuildPipTextStyleRules() -> [AVTextStyleRule]? {
+    let fg: [CGFloat] = [1.0, 1.0, 1.0, 1.0]
+    let bg: [CGFloat] = [0.46, 0.0, 0.0, 0.0]
+    let attrs: [String: Any] = [
+      kCMTextMarkupAttribute_ForegroundColorARGB as String: fg,
+      kCMTextMarkupAttribute_BackgroundColorARGB as String: bg,
+      kCMTextMarkupAttribute_CharacterEdgeStyle as String: kCMTextMarkupCharacterEdgeStyle_DropShadow as String,
+      kCMTextMarkupAttribute_RelativeFontSize as String: 100
+    ]
+    if let rule = AVTextStyleRule(textMarkupAttributes: attrs) {
+      return [rule]
+    }
+    return nil
+  }
+
   private func dvaApplySelectionGroup(
     _ group: AVMediaSelectionGroup,
     to item: AVPlayerItem,
@@ -2631,12 +2922,52 @@ public final class VideoView: ExpoView, AVPlayerViewControllerDelegate {`
     let pref = self.pipSubLang.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     if !enable || pref == "off" {
       item.select(nil, in: group)
+      item.textStyleRules = nil
       avPlayer.appliesMediaSelectionCriteriaAutomatically = true
       return
     }
     avPlayer.appliesMediaSelectionCriteriaAutomatically = false
+    item.textStyleRules = dvaBuildPipTextStyleRules()
     if let chosen = dvaPickBestLegibleOption(from: group.options, preferredLang: pref) {
       item.select(chosen, in: group)
+    }
+  }
+
+  private func dvaIsHlsAsset(_ asset: AVAsset) -> Bool {
+    guard let urlAsset = asset as? AVURLAsset else { return false }
+    let s = urlAsset.url.absoluteString.lowercased()
+    return s.contains(".m3u8") || s.contains("/hls-pip/") || s.contains("pip_master.m3u8")
+  }
+
+  private func dvaAttachProgressivePipSubtitles(to item: AVPlayerItem, avPlayer: AVPlayer) {
+    let pref = self.pipSubLang.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    guard pref != "off", !dvaIsHlsAsset(item.asset), dvaPipSubRenderer.hasCues else {
+      return
+    }
+    let renderer = self.dvaPipSubRenderer
+    if #available(iOS 16.0, *) {
+      Task { @MainActor [weak self] in
+        guard let self, self.dvaIsInPip else { return }
+        if let composition = try? await AVVideoComposition.videoComposition(
+          with: item.asset,
+          applyingCIFiltersWithHandler: { request in
+            let src = request.sourceImage
+            let sec = request.compositionTime.seconds
+            if let subImg = renderer.overlayImage(forTime: sec, extent: src.extent) {
+              request.finish(with: subImg.composited(over: src), context: nil)
+            } else {
+              request.finish(with: src, context: nil)
+            }
+          }
+        ) {
+          guard self.dvaIsInPip,
+                self.pipSubLang.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "off",
+                avPlayer.currentItem === item else {
+            return
+          }
+          item.videoComposition = composition
+        }
+      }
     }
   }
 
@@ -2644,23 +2975,41 @@ public final class VideoView: ExpoView, AVPlayerViewControllerDelegate {`
     guard let avPlayer = self.player?.ref, let item = avPlayer.currentItem else {
       return
     }
-    if let syncGroup = item.asset.mediaSelectionGroup(forMediaCharacteristic: .legible), !syncGroup.options.isEmpty {
-      dvaApplySelectionGroup(syncGroup, to: item, avPlayer: avPlayer, enable: enable)
+    if !enable {
+      if let syncGroup = item.asset.mediaSelectionGroup(forMediaCharacteristic: .legible) {
+        dvaApplySelectionGroup(syncGroup, to: item, avPlayer: avPlayer, enable: false)
+      }
+      item.textStyleRules = nil
+      item.videoComposition = nil
+      dvaPipSubRenderer.clearCache()
       return
+    }
+
+    let isHls = dvaIsHlsAsset(item.asset)
+    if let syncGroup = item.asset.mediaSelectionGroup(forMediaCharacteristic: .legible), !syncGroup.options.isEmpty {
+      item.videoComposition = nil
+      dvaApplySelectionGroup(syncGroup, to: item, avPlayer: avPlayer, enable: true)
+      return
+    }
+    if !isHls {
+      dvaAttachProgressivePipSubtitles(to: item, avPlayer: avPlayer)
     }
     if #available(iOS 15.0, *) {
       Task { @MainActor [weak self] in
         guard let self,
               let currentAvPlayer = self.player?.ref,
-              let currentItem = currentAvPlayer.currentItem,
-              let group = try? await currentItem.asset.loadMediaSelectionGroup(for: .legible),
-              !group.options.isEmpty else {
+              let currentItem = currentAvPlayer.currentItem else {
           return
         }
-        if enable && !self.dvaIsInPip {
-          return
+        guard self.dvaIsInPip else { return }
+        let group = try? await currentItem.asset.loadMediaSelectionGroup(for: .legible)
+        guard self.dvaIsInPip, self.player?.ref.currentItem === currentItem else { return }
+        if let group, !group.options.isEmpty {
+          currentItem.videoComposition = nil
+          self.dvaApplySelectionGroup(group, to: currentItem, avPlayer: currentAvPlayer, enable: true)
+        } else if !self.dvaIsHlsAsset(currentItem.asset) && currentItem.videoComposition == nil {
+          self.dvaAttachProgressivePipSubtitles(to: currentItem, avPlayer: currentAvPlayer)
         }
-        self.dvaApplySelectionGroup(group, to: currentItem, avPlayer: currentAvPlayer, enable: enable)
       }
     }
   }
@@ -2732,7 +3081,11 @@ public final class VideoView: ExpoView, AVPlayerViewControllerDelegate {`
     contrastOverlayView?.isInPictureInPicture = true
     #endif
     dvaApplyPipSubtitleSelection(enable: true)
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+      guard let self, self.dvaIsInPip else { return }
+      self.dvaApplyPipSubtitleSelection(enable: true)
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
       guard let self, self.dvaIsInPip else { return }
       self.dvaApplyPipSubtitleSelection(enable: true)
     }

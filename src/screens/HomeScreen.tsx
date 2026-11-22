@@ -37,6 +37,7 @@ import {
   fetchNotificationsApi,
   toggleWishlistApi,
 } from '../services/api';
+import { isNetworkError, reportNetworkFailure } from '../services/networkService';
 import { FilterOption, HomeSection, MovieItem } from '../types/models';
 
 const HEADER_TABS = [
@@ -103,6 +104,8 @@ interface HomeScreenProps {
   onOpenQuickLoginQr: () => void;
   onOpenAccount: () => void;
   onNavigateExplore?: () => void;
+  isFocused?: boolean;
+  watchProgressRevision?: number;
 }
 
 export function HomeScreen({
@@ -113,6 +116,8 @@ export function HomeScreen({
   onOpenQuickLoginQr,
   onOpenAccount,
   onNavigateExplore,
+  isFocused = true,
+  watchProgressRevision = 0,
 }: HomeScreenProps) {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
@@ -182,23 +187,27 @@ export function HomeScreen({
   }, []);
 
   const loadData = useCallback(
-    async (targetMode: string, genreId: string = '', isRefresh = false) => {
+    async (targetMode: string, genreId: string = '', isRefresh = false, silent = false) => {
       const reqId = ++requestSeqRef.current;
       const startedAt = Date.now();
-      if (isRefresh) setRefreshing(true);
-      else setLoading(true);
+      if (!silent) {
+        if (isRefresh) setRefreshing(true);
+        else setLoading(true);
+      }
 
       try {
         const res = await fetchHomeHubApi(targetMode, genreId);
         if (reqId !== requestSeqRef.current) return;
         const nextSections = res.sections || [];
-        sectionOffsetsRef.current = {};
-        scrollYRef.current = 0;
-        const initialRevealed: Record<string, boolean> = {};
-        if (nextSections[0]?.id) {
-          initialRevealed[nextSections[0].id] = true;
+        if (!silent) {
+          sectionOffsetsRef.current = {};
+          scrollYRef.current = 0;
+          const initialRevealed: Record<string, boolean> = {};
+          if (nextSections[0]?.id) {
+            initialRevealed[nextSections[0].id] = true;
+          }
+          setRevealedSectionIds(initialRevealed);
         }
-        setRevealedSectionIds(initialRevealed);
         setHeroList(res.hero || []);
         setSections(nextSections);
         if (res.genres && res.genres.length > 0) {
@@ -206,12 +215,17 @@ export function HomeScreen({
         }
       } catch (err: any) {
         if (reqId !== requestSeqRef.current) return;
-        if (!isRefresh) {
+        if (isNetworkError(err)) {
+          void reportNetworkFailure();
+        } else if (!isRefresh && !silent) {
           showAppAlert('Lỗi kết nối', err?.message || 'Không thể tải trang chủ.');
         }
       } finally {
         if (reqId !== requestSeqRef.current) return;
-        if (isRefresh) {
+        if (silent) {
+          setLoading(false);
+          setRefreshing(false);
+        } else if (isRefresh) {
           setRefreshing(false);
           setLoading(false);
         } else {
@@ -259,6 +273,12 @@ export function HomeScreen({
   useEffect(() => {
     loadData(mode, selectedGenreId);
   }, [mode, selectedGenreId, loadData]);
+
+  useEffect(() => {
+    if (watchProgressRevision > 0) {
+      void loadData(mode, selectedGenreId, false, true);
+    }
+  }, [watchProgressRevision, mode, selectedGenreId, loadData]);
 
   const handleToggleWishlist = async (item: MovieItem) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -345,7 +365,7 @@ export function HomeScreen({
     <View style={styles.container}>
       {/* Floating Apple Glass Header matching dva_play/templates/header.php */}
       <View style={[styles.floatingHeader, { top: insets.top + 8 }]}>
-        <GlassSurface intensity={28} radius={26} style={styles.headerCapsule}>
+        <GlassSurface noShadow intensity={28} radius={26} style={styles.headerCapsule}>
           <View style={styles.headerRow}>
             <BouncyButton
               bounciness="gentle"
@@ -436,6 +456,7 @@ export function HomeScreen({
                 }}
               >
                 <GlassSurface
+                  noShadow
                   intensity={active ? 32 : 26}
                   radius={20}
                   style={[styles.modeChip, active && styles.modeChipActive]}
@@ -489,6 +510,7 @@ export function HomeScreen({
               <Hero3DCarousel
                 items={heroList}
                 topInset={insets.top}
+                isActive={Boolean(isFocused)}
                 onPlay={onPlayDirect}
                 onToggleWishlist={handleToggleWishlist}
                 onOpenDetail={onOpenDetail}

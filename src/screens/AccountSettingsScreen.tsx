@@ -694,6 +694,16 @@ export function AccountSettingsScreen({
             value={settings.highContrastMode}
             onChange={(v) => void updateSetting('highContrastMode', v)}
           />
+
+          <View style={styles.insetDivider} />
+          <IosSwitchRow
+            icon="return-up-back"
+            badgeColor="#30D158"
+            label="Tự động quay lại phim"
+            desc="Mở lại ngay bộ phim đang phát khi ứng dụng bị thoát đột ngột"
+            value={settings.autoResumeOnCrash}
+            onChange={(v) => void updateSetting('autoResumeOnCrash', v)}
+          />
         </GlassSurface>
 
         {/* Section 2: Offline Storage & Retention (Item 8) */}
@@ -1376,29 +1386,40 @@ export function AccountSettingsScreen({
 
           {changelogOpen ? (
             <View style={styles.changelogWrap}>
-              {(manifest?.history || [
-                {
-                  versionCode: APP_VERSION_CODE,
-                  versionName: APP_VERSION,
-                  date: APP_RELEASE_DATE,
-                  title: 'Nâng cấp giao diện & trải nghiệm xem phim mượt mà',
-                  changes: [
-                    'Thiết kế lại toàn bộ giao diện Cài đặt và điều khiển trình phát theo chuẩn iPhone hiện đại',
-                    'Bổ sung thanh kéo thước đo trực quan, nạp lại phụ đề tức thì và xem ngoại tuyến thông minh',
-                  ],
-                },
-              ]).map((h) => (
-                <View key={h.versionCode} style={styles.historyBox}>
-                  <Text style={styles.historyTitle}>
-                    v{h.versionName} — {h.title}
-                  </Text>
-                  {h.changes.map((c, idx) => (
-                    <Text key={idx} style={styles.historyLine}>
-                      • {c}
+              {(Array.isArray(manifest?.history) && manifest.history.length > 0
+                ? manifest.history
+                : [
+                    {
+                      versionCode: APP_VERSION_CODE,
+                      versionName: APP_VERSION,
+                      date: APP_RELEASE_DATE,
+                      title: 'Nâng cấp giao diện & trải nghiệm xem phim mượt mà',
+                      changes: [
+                        'Thiết kế lại toàn bộ giao diện Cài đặt và điều khiển trình phát theo chuẩn iPhone hiện đại',
+                        'Bổ sung thanh kéo thước đo trực quan, nạp lại phụ đề tức thì và xem ngoại tuyến thông minh',
+                      ],
+                    },
+                  ]
+              ).map((h: any, hIdx: number) => {
+                const changeLines: string[] = Array.isArray(h?.changes)
+                  ? h.changes.filter((c: unknown) => typeof c === 'string' && c.trim().length > 0)
+                  : typeof h?.changelog === 'string' && h.changelog.trim()
+                    ? [h.changelog.trim()]
+                    : [];
+                const verTitle = h?.title || h?.date || h?.releaseDate || 'Bản cập nhật';
+                return (
+                  <View key={`${h?.versionCode ?? hIdx}_${hIdx}`} style={styles.historyBox}>
+                    <Text style={styles.historyTitle}>
+                      v{h?.versionName || APP_VERSION} — {verTitle}
                     </Text>
-                  ))}
-                </View>
-              ))}
+                    {changeLines.map((c, idx) => (
+                      <Text key={idx} style={styles.historyLine}>
+                        • {c}
+                      </Text>
+                    ))}
+                  </View>
+                );
+              })}
             </View>
           ) : null}
         </GlassSurface>

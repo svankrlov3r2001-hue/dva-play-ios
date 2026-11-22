@@ -20,6 +20,7 @@ export interface MovieItem {
   videos_id: number;
   title: string;
   title_primary?: string;
+  title_dot?: string;
   subtitle?: string;
   slug?: string;
   description?: string;
@@ -343,6 +344,7 @@ export interface AppSettings {
   preferredQuality: 'auto' | '1080p' | '720p' | '360p';
   autoPlayNext: boolean;
   autoSkipIntro: boolean;
+  autoResumeOnCrash: boolean;
   pipEnabled: boolean;
   faceIdEnabled: boolean;
   wifiOnlyDownload: boolean;

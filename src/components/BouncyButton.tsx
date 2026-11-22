@@ -6,6 +6,7 @@ import {
   Insets,
   Pressable,
   StyleProp,
+  StyleSheet,
   ViewStyle,
 } from 'react-native';
 
@@ -29,7 +30,8 @@ export interface BouncyButtonProps {
 }
 
 /**
- * Interactive pressable button with springy elastic bounce-back animation on tap.
+ * Interactive pressable button with slow liquid water-drop elastic bounce-back animation on tap.
+ * Preserves caller transforms & opacity so outer layout animations/3D transforms are never overwritten.
  */
 export function BouncyButton({
   children,
@@ -39,7 +41,7 @@ export function BouncyButton({
   onPressIn,
   onPressOut,
   disabled = false,
-  activeOpacity = 0.92,
+  activeOpacity = 0.9,
   pressScale,
   bounciness = 'snappy',
   hitSlop,
@@ -47,16 +49,16 @@ export function BouncyButton({
   accessibilityRole,
   testID,
 }: BouncyButtonProps) {
-  const scale = useRef(new Animated.Value(1)).current;
+  const scaleX = useRef(new Animated.Value(1)).current;
+  const scaleY = useRef(new Animated.Value(1)).current;
   const opacity = useRef(new Animated.Value(1)).current;
   const pressInAtRef = useRef(0);
   const animRef = useRef<Animated.CompositeAnimation | null>(null);
 
   const isGentle = bounciness === 'gentle';
-  const effectiveScale = pressScale ?? (isGentle ? 0.95 : 0.88);
-  const reboundConfig = isGentle
-    ? { stiffness: 320, damping: 12, mass: 0.75 }
-    : { stiffness: 380, damping: 10, mass: 0.7 };
+  const baseScale = pressScale ?? (isGentle ? 0.92 : 0.84);
+  const targetScaleX = Math.min(0.97, baseScale + 0.028);
+  const targetScaleY = Math.max(0.75, baseScale - 0.025);
 
   const stopActiveAnim = () => {
     if (animRef.current) {
@@ -71,16 +73,23 @@ export function BouncyButton({
     stopActiveAnim();
 
     const anim = Animated.parallel([
-      Animated.spring(scale, {
-        toValue: effectiveScale,
-        stiffness: 480,
-        damping: 24,
-        mass: 0.65,
+      Animated.spring(scaleX, {
+        toValue: targetScaleX,
+        stiffness: 300,
+        damping: 18,
+        mass: 0.92,
+        useNativeDriver: true,
+      }),
+      Animated.spring(scaleY, {
+        toValue: targetScaleY,
+        stiffness: 300,
+        damping: 18,
+        mass: 0.92,
         useNativeDriver: true,
       }),
       Animated.timing(opacity, {
         toValue: activeOpacity,
-        duration: 70,
+        duration: 85,
         useNativeDriver: true,
       }),
     ]);
@@ -93,31 +102,47 @@ export function BouncyButton({
     stopActiveAnim();
     const elapsed = Date.now() - pressInAtRef.current;
 
-    const reboundSpring = Animated.spring(scale, {
+    const reboundX = Animated.spring(scaleX, {
       toValue: 1,
-      stiffness: reboundConfig.stiffness,
-      damping: reboundConfig.damping,
-      mass: reboundConfig.mass,
+      stiffness: isGentle ? 175 : 205,
+      damping: isGentle ? 7.6 : 6.6,
+      mass: isGentle ? 1.12 : 1.05,
+      velocity: isGentle ? 2.4 : 3.2,
+      useNativeDriver: true,
+    });
+    const reboundY = Animated.spring(scaleY, {
+      toValue: 1,
+      stiffness: isGentle ? 160 : 185,
+      damping: isGentle ? 7.0 : 6.2,
+      mass: isGentle ? 1.18 : 1.12,
+      velocity: isGentle ? 3.0 : 3.8,
       useNativeDriver: true,
     });
 
     const scaleAnim =
-      elapsed < 75
+      elapsed < 95
         ? Animated.sequence([
-            Animated.timing(scale, {
-              toValue: effectiveScale,
-              duration: 50,
-              useNativeDriver: true,
-            }),
-            reboundSpring,
+            Animated.parallel([
+              Animated.timing(scaleX, {
+                toValue: targetScaleX,
+                duration: 60,
+                useNativeDriver: true,
+              }),
+              Animated.timing(scaleY, {
+                toValue: targetScaleY,
+                duration: 60,
+                useNativeDriver: true,
+              }),
+            ]),
+            Animated.parallel([reboundX, reboundY]),
           ])
-        : reboundSpring;
+        : Animated.parallel([reboundX, reboundY]);
 
     const anim = Animated.parallel([
       scaleAnim,
       Animated.timing(opacity, {
         toValue: 1,
-        duration: 130,
+        duration: 180,
         useNativeDriver: true,
       }),
     ]);
@@ -126,9 +151,22 @@ export function BouncyButton({
     onPressOut?.(e);
   };
 
+  const flatStyle = (StyleSheet.flatten(style) || {}) as ViewStyle;
+  const { transform: callerTransformRaw, opacity: callerOpacityRaw, ...restStyle } = flatStyle;
+  const callerTransform = Array.isArray(callerTransformRaw) ? callerTransformRaw : [];
+  const callerOpacity = typeof callerOpacityRaw === 'number' ? callerOpacityRaw : 1;
+
+  const computedOpacity =
+    callerOpacity === 1
+      ? opacity
+      : opacity.interpolate({
+          inputRange: [0, 1],
+          outputRange: [0, callerOpacity],
+        });
+
   const animatedStyle = {
-    opacity,
-    transform: [{ scale }],
+    opacity: computedOpacity,
+    transform: [...callerTransform, { scaleX }, { scaleY }],
   } as Animated.WithAnimatedValue<StyleProp<ViewStyle>>;
 
   return (
@@ -142,7 +180,7 @@ export function BouncyButton({
       accessibilityLabel={accessibilityLabel}
       accessibilityRole={accessibilityRole}
       testID={testID}
-      style={[style as Animated.WithAnimatedValue<StyleProp<ViewStyle>>, animatedStyle]}
+      style={[restStyle, animatedStyle]}
     >
       {children}
     </AnimatedPressable>

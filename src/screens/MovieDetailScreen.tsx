@@ -31,6 +31,7 @@ import {
   subscribeOfflineDownloads,
   syncOnlineProgressToOffline,
 } from '../services/downloadService';
+import { isNetworkError, reportNetworkFailure } from '../services/networkService';
 import {
   EpisodeItem,
   MovieDetail,
@@ -52,6 +53,8 @@ interface MovieDetailScreenProps {
     title: string;
     episodeTitle?: string;
     episodes?: EpisodeItem[];
+    posterUrl?: string;
+    thumbnailUrl?: string;
   }) => void;
   onOpenCastWithMovie: (params: {
     videosId: number;
@@ -60,6 +63,7 @@ interface MovieDetailScreenProps {
   }) => void;
   onSelectRelated: (videosId: number) => void;
   obscuredByPlayer?: boolean;
+  watchProgressRevision?: number;
 }
 
 export function MovieDetailScreen({
@@ -70,6 +74,7 @@ export function MovieDetailScreen({
   onOpenCastWithMovie,
   onSelectRelated,
   obscuredByPlayer = false,
+  watchProgressRevision = 0,
 }: MovieDetailScreenProps) {
   const insets = useSafeAreaInsets();
   const [loading, setLoading] = useState(true);
@@ -97,11 +102,13 @@ export function MovieDetailScreen({
     }
   }, [visible, enterAnim]);
 
-  const loadDetails = useCallback(async (id: number) => {
-    setLoading(true);
-    setMovie(null);
-    setSelectedSeasonIdx(0);
-    setActiveTab('episodes');
+  const loadDetails = useCallback(async (id: number, silent = false) => {
+    if (!silent) {
+      setLoading(true);
+      setMovie(null);
+      setSelectedSeasonIdx(0);
+      setActiveTab('episodes');
+    }
     try {
       const res = await fetchMovieDetailsApi(id);
       setMovie(res.movie);
@@ -120,9 +127,13 @@ export function MovieDetailScreen({
         });
       }
     } catch (err: any) {
-      showAppAlert('Lỗi', err?.message || 'Không thể tải chi tiết phim.');
+      if (isNetworkError(err)) {
+        void reportNetworkFailure();
+      } else if (!silent) {
+        showAppAlert('Lỗi', err?.message || 'Không thể tải chi tiết phim.');
+      }
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, []);
 
@@ -133,11 +144,17 @@ export function MovieDetailScreen({
 
   useEffect(() => {
     if (visible && videosId) {
-      loadDetails(videosId);
+      loadDetails(videosId, false);
     } else if (!visible) {
       setMovie(null);
     }
   }, [visible, videosId, loadDetails]);
+
+  useEffect(() => {
+    if (watchProgressRevision > 0 && visible && videosId) {
+      void loadDetails(videosId, true);
+    }
+  }, [watchProgressRevision, visible, videosId, loadDetails]);
 
   const handleWishlist = async () => {
     if (!movie) return;
@@ -158,7 +175,7 @@ export function MovieDetailScreen({
   };
 
   const handlePlayPrimary = () => {
-    if (!movie) return;
+    if (!movie || movie.videos_id !== videosId) return;
     const hist = movie.watch_history;
     const targetCode = hist?.last_stream_code || movie.stream_code;
     const targetEpId = hist?.last_episode_id || movie.episodes?.[0]?.episodes_id || 0;
@@ -173,6 +190,8 @@ export function MovieDetailScreen({
       title: movie.title,
       episodeTitle: matchedEpIdx >= 0 ? movie.episodes[matchedEpIdx].episodes_name : undefined,
       episodes: movie.episodes,
+      posterUrl: movie.poster_url,
+      thumbnailUrl: movie.thumbnail_url,
     });
   };
 
@@ -462,6 +481,8 @@ export function MovieDetailScreen({
                                 title: movie.title,
                                 episodeTitle: ep.episodes_name,
                                 episodes: movie.episodes,
+                                posterUrl: movie.poster_url,
+                                thumbnailUrl: movie.thumbnail_url,
                               });
                             }}
                           >
@@ -487,6 +508,8 @@ export function MovieDetailScreen({
                               videosId: movie.videos_id,
                               streamCode: src.stream_code,
                               title: movie.title,
+                              posterUrl: movie.poster_url,
+                              thumbnailUrl: movie.thumbnail_url,
                             });
                           }}
                         >

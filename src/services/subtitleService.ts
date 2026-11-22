@@ -181,6 +181,39 @@ export const TRANSLATE_LANGUAGES: { code: string; name: string }[] = [
   { code: 'zu', name: 'Tiếng Zulu' },
 ];
 
+export function encodeSubtitlePathUrl(rawUrl: string): string {
+  const clean = String(rawUrl || '').trim();
+  if (!clean) return '';
+  if (!/[^\x20-\x7E]/.test(clean) && !clean.includes(' ')) {
+    return clean;
+  }
+  const sslPrefix = 'ssl=';
+  const sslIdx = clean.indexOf(sslPrefix);
+  if (sslIdx >= 0) {
+    const beforeSsl = clean.slice(0, sslIdx + sslPrefix.length);
+    const afterSsl = clean.slice(sslIdx + sslPrefix.length);
+    const ampIdx = afterSsl.indexOf('&');
+    const rawPath = ampIdx >= 0 ? afterSsl.slice(0, ampIdx) : afterSsl;
+    const suffix = ampIdx >= 0 ? afterSsl.slice(ampIdx) : '';
+    const encodedPath = rawPath
+      .split('/')
+      .map((seg) => {
+        try {
+          return encodeURIComponent(decodeURIComponent(seg));
+        } catch {
+          return encodeURIComponent(seg);
+        }
+      })
+      .join('/');
+    return `${beforeSsl}${encodedPath}${suffix}`;
+  }
+  try {
+    return encodeURI(clean);
+  } catch {
+    return clean;
+  }
+}
+
 export function buildSubtitleUrls(serverFileKey?: string): { vnUrl: string; enUrl: string } {
   const cleanKey = String(serverFileKey || '').replace(/\.(mp4|m3u8)$/i, '').trim();
   if (!cleanKey) return { vnUrl: '', enUrl: '' };
@@ -188,8 +221,12 @@ export function buildSubtitleUrls(serverFileKey?: string): { vnUrl: string; enUr
     cleanKey.includes('.Tập.') || /[.\s]T[ậâa]p/i.test(cleanKey) ? 'Phim.Bộ' : 'Phim.Lẻ';
   const baseCode = cleanKey.split(/[.\s]T[ậâa]p/i)[0] || cleanKey.replace(/\.Tập\..*$/, '');
   return {
-    vnUrl: `https://sub.dangvietanh.com/dashboard?ssl=${theloai}/${baseCode}/Subtitle/VN/${cleanKey}.vtt&dtpd=0&vtpd=80&vtpdtt=0`,
-    enUrl: `https://sub.dangvietanh.com/dashboard?ssl=${theloai}/${baseCode}/Subtitle/EN/${cleanKey}.vtt&dtpd=0&vtpd=80&vtpdtt=0`,
+    vnUrl: encodeSubtitlePathUrl(
+      `https://sub.dangvietanh.com/dashboard?ssl=${theloai}/${baseCode}/Subtitle/VN/${cleanKey}.vtt&dtpd=0&vtpd=80&vtpdtt=0`
+    ),
+    enUrl: encodeSubtitlePathUrl(
+      `https://sub.dangvietanh.com/dashboard?ssl=${theloai}/${baseCode}/Subtitle/EN/${cleanKey}.vtt&dtpd=0&vtpd=80&vtpdtt=0`
+    ),
   };
 }
 

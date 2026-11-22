@@ -48,8 +48,8 @@ export function PlayerServerPanelModal({
   pingRefreshing,
 }: PlayerServerPanelModalProps) {
   const { width, height } = useWindowDimensions();
-  const cardWidth = Math.min(width - 40, 560);
-  const cardMaxHeight = Math.min(height - 32, 232);
+  const cardWidth = Math.min(width - 24, 672);
+  const cardMaxHeight = Math.min(height - 32, 238);
 
   const activeServer = servers.find((s) => s.id === activeServerId);
   const activeServerLabel = activeServer?.label || 'Tự chọn';

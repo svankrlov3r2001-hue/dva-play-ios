@@ -45,6 +45,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   preferredQuality: 'auto',
   autoPlayNext: true,
   autoSkipIntro: true,
+  autoResumeOnCrash: true,
   pipEnabled: true,
   faceIdEnabled: false,
   wifiOnlyDownload: true,

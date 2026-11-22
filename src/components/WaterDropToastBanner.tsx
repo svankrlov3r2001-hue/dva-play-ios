@@ -1,6 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Animated, Easing, Image, StyleSheet, Text, View } from 'react-native';
+import { Feather, Ionicons } from '@expo/vector-icons';
 import { GlassSurface } from './GlassSurface';
+
+export interface WaterDropToastIcon {
+  family?: 'ionicons' | 'feather';
+  name: string;
+  color?: string;
+  bgColor?: string;
+}
 
 export interface WaterDropToastPayload {
   id: number;
@@ -8,6 +16,7 @@ export interface WaterDropToastPayload {
   subtitle?: string;
   tone?: 'default' | 'success' | 'warning' | 'info';
   durationSec?: number;
+  icon?: WaterDropToastIcon;
 }
 
 interface WaterDropToastBannerProps {
@@ -26,7 +35,7 @@ const SPRING_DROP_EASING = Easing.bezier(0.34, 1.56, 0.64, 1);
 export function WaterDropToastBanner({
   toast,
   topOffset,
-  maxWidth = 400,
+  maxWidth = 460,
 }: WaterDropToastBannerProps) {
   const [rendered, setRendered] = useState<WaterDropToastPayload | null>(toast);
   const [countdownSec, setCountdownSec] = useState<number>(toast?.durationSec ?? 3);
@@ -243,21 +252,42 @@ export function WaterDropToastBanner({
       >
         <GlassSurface
           variant="liquid"
-          radius={28}
+          radius={24}
           intensity={28}
           style={styles.pillContainer}
         >
           <View style={styles.rowContent}>
-            <View style={styles.iconBox}>
-              <Image
-                source={require('../../assets/splash-logo.png')}
-                style={styles.logoImg}
-                resizeMode="contain"
-              />
+            <View
+              style={[
+                styles.iconBox,
+                rendered.icon?.bgColor ? { backgroundColor: rendered.icon.bgColor } : null,
+              ]}
+            >
+              {rendered.icon ? (
+                rendered.icon.family === 'feather' ? (
+                  <Feather
+                    name={rendered.icon.name as any}
+                    size={20}
+                    color={rendered.icon.color || '#FFFFFF'}
+                  />
+                ) : (
+                  <Ionicons
+                    name={rendered.icon.name as any}
+                    size={20}
+                    color={rendered.icon.color || '#FFFFFF'}
+                  />
+                )
+              ) : (
+                <Image
+                  source={require('../../assets/splash-logo.png')}
+                  style={styles.logoImg}
+                  resizeMode="contain"
+                />
+              )}
             </View>
 
             <View style={styles.textCol}>
-              <Text style={styles.titleTxt} numberOfLines={1}>
+              <Text style={styles.titleTxt} numberOfLines={2}>
                 {rendered.title}
               </Text>
               {rendered.subtitle ? (
@@ -291,12 +321,14 @@ const styles = StyleSheet.create({
     zIndex: 80,
   },
   animWrap: {
-    minWidth: 270,
+    minWidth: 240,
     alignSelf: 'center',
   },
   pillContainer: {
-    paddingVertical: 11,
-    paddingHorizontal: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 15,
+    minHeight: 58,
+    justifyContent: 'center',
   },
   rowContent: {
     flexDirection: 'row',
@@ -307,16 +339,19 @@ const styles = StyleSheet.create({
     width: 38,
     height: 38,
     borderRadius: 12,
-    backgroundColor: '#323232',
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
     alignItems: 'center',
     justifyContent: 'center',
+    flexShrink: 0,
   },
   logoImg: {
     width: 24,
     height: 24,
   },
   textCol: {
-    flex: 1,
+    flexShrink: 1,
+    flexGrow: 0,
+    justifyContent: 'center',
     gap: 2,
     minWidth: 0,
   },
@@ -324,16 +359,17 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 13.5,
     fontWeight: '700',
-    lineHeight: 17,
+    lineHeight: 18,
   },
   subtitleTxt: {
     color: 'rgba(255, 255, 255, 0.84)',
     fontSize: 12.5,
     fontWeight: '400',
-    lineHeight: 16.5,
+    lineHeight: 17,
   },
   timeCol: {
-    marginLeft: 6,
+    flexShrink: 0,
+    marginLeft: 8,
     alignItems: 'flex-end',
     justifyContent: 'center',
   },

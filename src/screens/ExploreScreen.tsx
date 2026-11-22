@@ -22,6 +22,7 @@ import { SkeletonCrossfade } from '../components/SkeletonCrossfade';
 import { ExploreGridSkeleton } from '../components/SkeletonLoaders';
 import { COLORS } from '../constants/config';
 import { fetchMoviesCatalogApi } from '../services/api';
+import { isNetworkError, reportNetworkFailure } from '../services/networkService';
 import { FilterOption, MovieItem } from '../types/models';
 
 const TYPE_OPTIONS = [
@@ -94,7 +95,10 @@ export function ExploreScreen({ onOpenPreview }: ExploreScreenProps) {
         setTotalPages(res.total_pages || 1);
         setPage(targetPage);
         setItems((prev) => (append ? [...prev, ...(res.data || [])] : res.data || []));
-      } catch {
+      } catch (err) {
+        if (isNetworkError(err)) {
+          void reportNetworkFailure();
+        }
       } finally {
         if (reqId !== requestSeqRef.current) return;
         if (append) {

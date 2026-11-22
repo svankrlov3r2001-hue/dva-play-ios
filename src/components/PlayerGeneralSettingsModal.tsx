@@ -198,6 +198,20 @@ export function PlayerGeneralSettingsModal({
               void updateSetting('resumeOnHome', v);
             },
           },
+          {
+            id: 'auto_resume_crash',
+            icon: 'return-up-back',
+            badgeColor: '#30D158',
+            title: 'Tự động quay lại phim',
+            subtitle: 'Mở lại ngay khi ứng dụng bị thoát đột ngột',
+            keywords: 'tu dong quay lai phim thoat ung dung',
+            kind: 'switch',
+            switchValue: settings.autoResumeOnCrash,
+            onToggle: (v) => {
+              Haptics.selectionAsync();
+              void updateSetting('autoResumeOnCrash', v);
+            },
+          },
         ],
       },
       {

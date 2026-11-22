@@ -19,6 +19,7 @@ import { MovieCard } from '../components/MovieCard';
 import { ExploreGridSkeleton } from '../components/SkeletonLoaders';
 import { COLORS, RADII } from '../constants/config';
 import { fetchMoviesCatalogApi, searchSuggestApi } from '../services/api';
+import { isNetworkError, reportNetworkFailure } from '../services/networkService';
 import { MovieItem } from '../types/models';
 
 const QUICK_TAGS = ['Hành động', 'Anime', 'Hàn Quốc', 'Kinh dị', 'Marvel', 'Viễn tưởng'];
@@ -55,7 +56,10 @@ export function SearchScreen({ onOpenPreview, onOpenDetail }: SearchScreenProps)
       if (seq === recSeqRef.current) {
         setRecommended(res.data || []);
       }
-    } catch {
+    } catch (err) {
+      if (isNetworkError(err)) {
+        void reportNetworkFailure();
+      }
     } finally {
       if (seq === recSeqRef.current) {
         setLoadingRecommended(false);
@@ -98,7 +102,10 @@ export function SearchScreen({ onOpenPreview, onOpenDetail }: SearchScreenProps)
     try {
       const res = await fetchMoviesCatalogApi({ q, limit: 36, page: 1 });
       setResults(res.data || []);
-    } catch {
+    } catch (err) {
+      if (isNetworkError(err)) {
+        void reportNetworkFailure();
+      }
     } finally {
       setSearching(false);
     }

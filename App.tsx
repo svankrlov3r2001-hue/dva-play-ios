@@ -29,7 +29,6 @@ import { PreviewSheetModal } from './src/components/PreviewSheetModal';
 import { SplashOverlay } from './src/components/SplashOverlay';
 import {
   COLORS,
-  SPLASH_AUTO_RETRY_MS,
   SPLASH_MIN_DURATION_MS,
 } from './src/constants/config';
 import { AuthProvider, useAuth } from './src/context/AuthContext';
@@ -44,9 +43,15 @@ import { MovieDetailScreen } from './src/screens/MovieDetailScreen';
 import { PlayerLaunchParams, PlayerModal } from './src/screens/PlayerModal';
 import { QuickLoginQrModal } from './src/screens/QuickLoginQrModal';
 import { SearchScreen } from './src/screens/SearchScreen';
+import {
+  ActivePlaybackSession,
+  clearActivePlaybackSession,
+  loadActivePlaybackSession,
+} from './src/services/activeSessionService';
 import { checkAuthStatusApi } from './src/services/api';
 import {
   enforceOfflineRetentionPolicy,
+  findCompletedOfflineItem,
   flushPendingOfflineProgressToServer,
   getOfflineRootDir,
   loadOfflineDownloads,
@@ -56,6 +61,12 @@ import {
   subscribeOfflineDownloads,
 } from './src/services/downloadService';
 import { ensureOfflineMediaServer } from './src/services/localMediaServer';
+import {
+  probeConnectivity,
+  startNetworkMonitor,
+  subscribeAutoOfflineRequest,
+  subscribeNetworkStatus,
+} from './src/services/networkService';
 import {
   checkAndFetchOtaCombinedAsync,
   runSilentBackgroundOtaSync,
@@ -102,6 +113,7 @@ function RootAppContent() {
     unlockWithBiometrics,
     attemptAutoUnlockWithBiometrics,
     logout,
+    refreshUser,
   } = useAuth();
 
   // Minimum 3s Startup Connection Splash state matching dva-play/src/main/splashManager.js
@@ -115,6 +127,14 @@ function RootAppContent() {
   const [offlineItems, setOfflineItems] = useState<OfflineDownloadItem[]>([]);
   const offlineModeActiveRef = useRef(false);
   offlineModeActiveRef.current = offlineModeActive;
+  const [watchProgressRevision, setWatchProgressRevision] = useState(0);
+  const bumpWatchProgressRevision = useCallback(() => {
+    setWatchProgressRevision((v) => v + 1);
+  }, []);
+  const [biometricUnlockedEarly, setBiometricUnlockedEarly] = useState(false);
+  const [pendingAutoResume, setPendingAutoResume] = useState<ActivePlaybackSession | null>(null);
+  const [autoResumeChecked, setAutoResumeChecked] = useState(false);
+  const autoResumeConsumedRef = useRef(false);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [activeTab, setActiveTab] = useState<AppTabKey>('home');
@@ -124,6 +144,10 @@ function RootAppContent() {
   const [detailId, setDetailId] = useState<number | null>(null);
   const [playerParams, setPlayerParams] = useState<PlayerLaunchParams | null>(null);
   const [playerPhase, setPlayerPhase] = useState<PlayerTransitionPhase>('idle');
+  const playerPhaseRef = useRef<PlayerTransitionPhase>(playerPhase);
+  playerPhaseRef.current = playerPhase;
+  const splashVisibleRef = useRef(splashVisible);
+  splashVisibleRef.current = splashVisible;
   const portraitOpacity = useRef(new Animated.Value(1)).current;
   const queuedPlayerParamsRef = useRef<PlayerLaunchParams | null>(null);
   const pendingAfterRestoreRef = useRef<(() => void) | undefined>(undefined);
@@ -145,6 +169,17 @@ function RootAppContent() {
     title: string;
   } | null>(null);
 
+  const enterOfflineMode = useCallback(() => {
+    if (retryTimerRef.current) {
+      clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
+    offlineModeActiveRef.current = true;
+    setOfflineModeActive(true);
+    setSplashError(false);
+    setServerReady(true);
+  }, []);
+
   const probeServerConnection = useCallback(async () => {
     if (retryTimerRef.current) {
       clearTimeout(retryTimerRef.current);
@@ -157,19 +192,23 @@ function RootAppContent() {
       setServerReady(true);
     } catch {
       if (offlineModeActiveRef.current) return;
-      setServerReady(false);
-      setSplashError(true);
-      setSplashStatusText('Lỗi kết nối tới máy chủ., Đang thử lại...');
-      retryTimerRef.current = setTimeout(() => {
-        if (!offlineModeActiveRef.current) {
-          probeServerConnection();
-        }
-      }, SPLASH_AUTO_RETRY_MS);
+      await probeConnectivity(2000).catch(() => false);
+      if (offlineModeActiveRef.current) return;
+      setSplashStatusText('Đang chuyển sang Kho Phim Ngoại Tuyến...');
+      enterOfflineMode();
     }
-  }, []);
+  }, [enterOfflineMode]);
 
   useEffect(() => {
     ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => {});
+    loadActivePlaybackSession()
+      .then((s) => {
+        setPendingAutoResume(s);
+        setAutoResumeChecked(true);
+      })
+      .catch(() => {
+        setAutoResumeChecked(true);
+      });
     loadOfflineDownloads()
       .then((items) => {
         setOfflineItems(items);
@@ -189,6 +228,30 @@ function RootAppContent() {
       appStateSub.remove();
     };
   }, []);
+
+  useEffect(() => {
+    const stopMonitor = startNetworkMonitor(5000);
+    const unsubAutoOffline = subscribeAutoOfflineRequest(() => {
+      if (!offlineModeActiveRef.current && playerPhaseRef.current === 'idle') {
+        enterOfflineMode();
+      }
+    });
+    const unsubNet = subscribeNetworkStatus((online) => {
+      if (
+        !online &&
+        !offlineModeActiveRef.current &&
+        playerPhaseRef.current === 'idle' &&
+        !splashVisibleRef.current
+      ) {
+        enterOfflineMode();
+      }
+    });
+    return () => {
+      stopMonitor();
+      unsubAutoOffline();
+      unsubNet();
+    };
+  }, [enterOfflineMode]);
 
   useEffect(() => {
     if (!settingsLoaded) return;
@@ -288,17 +351,46 @@ function RootAppContent() {
   const prevAuthTransitionRef = useRef<'login' | 'logout' | null>(null);
 
   useEffect(() => {
+    const fastAutoResumeReady = Boolean(
+      settingsLoaded &&
+        autoResumeChecked &&
+        settings.autoResumeOnCrash &&
+        pendingAutoResume?.active &&
+        !autoResumeConsumedRef.current
+    );
+    const connectionReady = offlineModeActive || (serverReady && !bootstrapping);
+    const waitRuleSatisfied =
+      splashMinDone ||
+      biometricUnlockedEarly ||
+      fastAutoResumeReady ||
+      offlineModeActive ||
+      lockPromptVisible;
     if (
       splashVisible &&
       !splashDismissing &&
       !authTransition &&
-      splashMinDone &&
-      serverReady &&
-      !bootstrapping
+      (!isLocked || lockPromptVisible) &&
+      connectionReady &&
+      waitRuleSatisfied
     ) {
       setSplashDismissing(true);
     }
-  }, [splashVisible, splashDismissing, authTransition, splashMinDone, serverReady, bootstrapping]);
+  }, [
+    splashVisible,
+    splashDismissing,
+    authTransition,
+    splashMinDone,
+    serverReady,
+    bootstrapping,
+    offlineModeActive,
+    isLocked,
+    lockPromptVisible,
+    biometricUnlockedEarly,
+    settingsLoaded,
+    autoResumeChecked,
+    settings.autoResumeOnCrash,
+    pendingAutoResume,
+  ]);
 
   useEffect(() => {
     if (authTransition === 'login' || authTransition === 'logout') {
@@ -336,7 +428,7 @@ function RootAppContent() {
       lastAttemptedLockSeqRef.current = -1;
       return;
     }
-    if ((splashVisible && !splashDismissing) || !user) {
+    if (!user) {
       return;
     }
     if (lastAttemptedLockSeqRef.current === lockSeq) {
@@ -346,7 +438,13 @@ function RootAppContent() {
     const triggerScan = () => {
       if (lastAttemptedLockSeqRef.current === lockSeq) return;
       lastAttemptedLockSeqRef.current = lockSeq;
-      attemptAutoUnlockWithBiometrics().catch(() => {});
+      attemptAutoUnlockWithBiometrics()
+        .then((ok) => {
+          if (ok && splashVisibleRef.current) {
+            setBiometricUnlockedEarly(true);
+          }
+        })
+        .catch(() => {});
     };
 
     if (AppState.currentState === 'background') {
@@ -362,8 +460,6 @@ function RootAppContent() {
     const t = setTimeout(triggerScan, 80);
     return () => clearTimeout(t);
   }, [
-    splashVisible,
-    splashDismissing,
     user,
     isLocked,
     lockSeq,
@@ -581,11 +677,69 @@ function RootAppContent() {
         videosId: item.videos_id,
         streamCode: item.stream_code,
         title: item.title,
+        posterUrl: item.poster_url,
+        thumbnailUrl: item.thumbnail_url,
       });
     } else {
       setDetailId(item.videos_id);
     }
   };
+
+  useEffect(() => {
+    if (!settingsLoaded || !autoResumeChecked || autoResumeConsumedRef.current) return;
+    if (!settings.autoResumeOnCrash || !pendingAutoResume || !pendingAutoResume.active) {
+      return;
+    }
+    const connectionReady = offlineModeActive || (serverReady && !bootstrapping && Boolean(user));
+    if (!connectionReady || isLocked || playerPhase !== 'idle') {
+      return;
+    }
+
+    autoResumeConsumedRef.current = true;
+    const session = pendingAutoResume;
+    setPendingAutoResume(null);
+
+    const matchedOffline = findCompletedOfflineItem({
+      streamCode: session.streamCode,
+      videosId: session.videosId,
+      episodeId: session.episodeId,
+    });
+    if (offlineModeActive && !matchedOffline) {
+      void clearActivePlaybackSession();
+      return;
+    }
+
+    launchPlayerWithCurtain({
+      videosId: session.videosId,
+      streamCode: session.streamCode,
+      episodeId: session.episodeId,
+      episodeNumber: session.episodeNumber,
+      seasonId: session.seasonId,
+      title: session.title,
+      episodeTitle: session.episodeTitle,
+      posterUrl: session.posterUrl,
+      thumbnailUrl: session.thumbnailUrl,
+      initialResumeSec: session.positionSec,
+      ...(matchedOffline
+        ? { offlineUri: matchedOffline.local_uri, offlineItem: matchedOffline }
+        : {}),
+    });
+    if (splashVisibleRef.current) {
+      setSplashDismissing(true);
+    }
+  }, [
+    settingsLoaded,
+    autoResumeChecked,
+    settings.autoResumeOnCrash,
+    pendingAutoResume,
+    offlineModeActive,
+    serverReady,
+    bootstrapping,
+    user,
+    isLocked,
+    playerPhase,
+    launchPlayerWithCurtain,
+  ]);
 
   const handlePlayOffline = (
     offline: OfflineDownloadItem,
@@ -705,16 +859,19 @@ function RootAppContent() {
               <View style={styles.screenArea}>
                 <LibraryScreen
                   offlineOnlyMode
+                  watchProgressRevision={watchProgressRevision}
                   onOpenPreview={() => {}}
                   onPlayOffline={handlePlayOffline}
                   onReconnectOnline={() => {
                     offlineModeActiveRef.current = false;
                     setOfflineModeActive(false);
+                    setServerReady(false);
                     setSplashError(false);
                     setSplashStatusText('Đang kết nối lại...');
                     setSplashDismissing(false);
                     setSplashVisible(true);
                     probeServerConnection();
+                    refreshUser().catch(() => {});
                   }}
                 />
               </View>
@@ -726,6 +883,7 @@ function RootAppContent() {
             params={playerParams}
             onClose={() => closePlayerWithCurtain()}
             onSwitchOfflineItem={handleSwitchOfflineItem}
+            onWatchProgressSaved={bumpWatchProgressRevision}
           />
 
           {renderLockOverlay()}
@@ -764,6 +922,18 @@ function RootAppContent() {
             <View style={styles.screenArea}>
               {activeTab === 'home' ? (
                 <HomeScreen
+                  isFocused={
+                    activeTab === 'home' &&
+                    playerPhase === 'idle' &&
+                    !detailId &&
+                    !previewId &&
+                    !accountOpen &&
+                    !castVisible &&
+                    !quickLoginQrVisible &&
+                    !isLocked &&
+                    !splashVisible
+                  }
+                  watchProgressRevision={watchProgressRevision}
                   onOpenPreview={handleOpenPreview}
                   onOpenDetail={(id) => setDetailId(id)}
                   onPlayDirect={handlePlayDirect}
@@ -790,6 +960,7 @@ function RootAppContent() {
 
               {activeTab === 'library' ? (
                 <LibraryScreen
+                  watchProgressRevision={watchProgressRevision}
                   onOpenPreview={handleOpenPreview}
                   onPlayOffline={handlePlayOffline}
                 />
@@ -808,6 +979,7 @@ function RootAppContent() {
               visible={detailId !== null}
               videosId={detailId}
               obscuredByPlayer={hidePortraitStage || playerParams !== null}
+              watchProgressRevision={watchProgressRevision}
               onClose={() => setDetailId(null)}
               onPlay={(p) => launchPlayerWithCurtain(p)}
               onOpenCastWithMovie={(m) => {
@@ -832,6 +1004,8 @@ function RootAppContent() {
                   streamCode: p.streamCode,
                   episodeId: p.episodeId,
                   title: p.title,
+                  posterUrl: p.posterUrl,
+                  thumbnailUrl: p.thumbnailUrl,
                 })
               }
               onOpenDetail={(id) => setDetailId(id)}
@@ -865,6 +1039,8 @@ function RootAppContent() {
           onClose={() => closePlayerWithCurtain()}
           onSwitchEpisode={handleSwitchEpisode}
           onSwitchOfflineItem={handleSwitchOfflineItem}
+          onEnterOfflineMode={() => closePlayerWithCurtain(() => enterOfflineMode())}
+          onWatchProgressSaved={bumpWatchProgressRevision}
         />
 
         {renderLockOverlay()}
