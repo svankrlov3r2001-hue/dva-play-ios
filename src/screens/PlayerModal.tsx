@@ -77,6 +77,7 @@ import {
   ensureOfflineMediaServer,
   getCachedOfflineMediaServerPort,
   restartOfflineMediaServer,
+  setNativePipSubtitleCues,
 } from '../services/localMediaServer';
 import {
   probeConnectivity,
@@ -764,6 +765,20 @@ export function PlayerModal({
     time: 0,
     side: 'center',
   });
+  const singleTapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const seekComboRef = useRef<{
+    side: 'left' | 'right' | null;
+    totalSec: number;
+    lastTapAt: number;
+    hideTimer: ReturnType<typeof setTimeout> | null;
+  }>({ side: null, totalSec: 0, lastTapAt: 0, hideTimer: null });
+  const [seekRipple, setSeekRipple] = useState<{
+    side: 'left' | 'right';
+    totalSec: number;
+    pulseId: number;
+  } | null>(null);
+  const seekRippleOpacity = useRef(new Animated.Value(0)).current;
+  const seekRippleScale = useRef(new Animated.Value(0.92)).current;
   const holdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const holdActivatedRef = useRef(false);
 
@@ -905,11 +920,17 @@ export function PlayerModal({
 
   // Derive current episode list & next episode seamlessly
   const effectiveEpisodes: EpisodeItem[] = useMemo(() => {
-    if (resolved?.episodes && resolved.episodes.length > 0) return resolved.episodes;
-    if (detailEpisodes.length > 0) return detailEpisodes;
-    if (params?.episodes && params.episodes.length > 0) return params.episodes;
-    if (params?.offlineEpisodes && params.offlineEpisodes.length > 0) {
-      return params.offlineEpisodes.map((it, idx) => ({
+    const buildOfflineEps = (): EpisodeItem[] => {
+      const vid = params?.videosId || 0;
+      const pool =
+        params?.offlineEpisodes && params.offlineEpisodes.length > 0
+          ? params.offlineEpisodes
+          : vid > 0
+            ? offlineItems
+                .filter((it) => it.status === 'completed' && it.videos_id === vid)
+                .sort((a, b) => (a.episode_number || 0) - (b.episode_number || 0))
+            : [];
+      return pool.map((it, idx) => ({
         episodes_id: it.episode_id || idx + 1,
         seasons_id: 0,
         episodes_name: it.episode_title || `Tập ${it.episode_number || idx + 1}`,
@@ -918,9 +939,13 @@ export function PlayerModal({
         full_url: '',
         order: it.episode_number || idx + 1,
       }));
-    }
-    return [];
-  }, [resolved?.episodes, detailEpisodes, params?.episodes, params?.offlineEpisodes]);
+    };
+
+    if (resolved?.episodes && resolved.episodes.length > 0) return resolved.episodes;
+    if (detailEpisodes.length > 0) return detailEpisodes;
+    if (params?.episodes && params.episodes.length > 0) return params.episodes;
+    return buildOfflineEps();
+  }, [resolved?.episodes, detailEpisodes, params?.episodes, params?.offlineEpisodes, params?.videosId, offlineItems]);
 
   const currentNextEpisode = useMemo(() => {
     if (resolved?.next_episode && resolved.next_episode.stream_code !== activeStreamCode) {
@@ -1396,7 +1421,13 @@ export function PlayerModal({
 
       // Offline-first branch when opened from Offline Library (resolves non-99 statuses accurately without hanging on "Đang kiểm tra")
       if (isOfflineOnlyMode && localOffline) {
-        const synthEps: EpisodeItem[] = (params.offlineEpisodes || []).map((it, idx) => ({
+        const offlinePool =
+          params.offlineEpisodes && params.offlineEpisodes.length > 0
+            ? params.offlineEpisodes
+            : offlineItems
+                .filter((i) => i.status === 'completed' && i.videos_id === localOffline.videos_id)
+                .sort((a, b) => (a.episode_number || 0) - (b.episode_number || 0));
+        const synthEps: EpisodeItem[] = offlinePool.map((it, idx) => ({
           episodes_id: it.episode_id || idx + 1,
           seasons_id: 0,
           episodes_name: it.episode_title || `Tập ${it.episode_number || idx + 1}`,
@@ -1405,13 +1436,15 @@ export function PlayerModal({
           full_url: '',
           order: it.episode_number || idx + 1,
         }));
-        const offIdx = (params.offlineEpisodes || []).findIndex(
-          (i) => i.id === localOffline.id
-        );
+        const offIdx = offlinePool.findIndex((i) => i.id === localOffline.id);
         const nextOff =
-          offIdx >= 0 && params.offlineEpisodes && offIdx + 1 < params.offlineEpisodes.length
-            ? params.offlineEpisodes[offIdx + 1]
-            : null;
+          offIdx >= 0 && offIdx + 1 < offlinePool.length ? offlinePool[offIdx + 1] : null;
+        if (localOffline.local_poster_uri || localOffline.poster_url) {
+          setMoviePosterMeta((prev) => ({
+            poster: prev.poster || localOffline.local_poster_uri || localOffline.poster_url || '',
+            thumb: prev.thumb || localOffline.local_poster_uri || localOffline.poster_url || '',
+          }));
+        }
         const synthResolved: StreamResolvedData = {
           success: true,
           stream_code: streamCodeToLoad,
@@ -1532,12 +1565,38 @@ export function PlayerModal({
 
           let sfkBg = localOffline.server_file_key || '';
           let onlineRes: StreamResolvedData | null = null;
-          if (!sfkBg && params.videosId > 0) {
-            onlineRes = await resolveStreamApi(streamCodeToLoad, params.videosId).catch(() => null);
+          let detailRes: { movie?: any } | null = null;
+          if (params.videosId > 0 && (!sfkBg || synthEps.length <= 1)) {
+            const [sr, dr] = await Promise.all([
+              !sfkBg || synthEps.length <= 1
+                ? resolveStreamApi(streamCodeToLoad, params.videosId).catch(() => null)
+                : Promise.resolve(null),
+              synthEps.length <= 1
+                ? fetchMovieDetailsApi(params.videosId).catch(() => null)
+                : Promise.resolve(null),
+            ]);
+            onlineRes = sr;
+            detailRes = dr;
             if (loadSeqRef.current !== mySeq) return;
             if (onlineRes?.server_file_key) {
               sfkBg = onlineRes.server_file_key;
             }
+          }
+          const detailEps: EpisodeItem[] = detailRes?.movie
+            ? detailRes.movie.episodes && detailRes.movie.episodes.length > 0
+              ? detailRes.movie.episodes
+              : detailRes.movie.seasons?.[0]?.episodes || []
+            : [];
+          if (detailEps.length > 0) {
+            detailEpisodesVideosIdRef.current = params.videosId;
+            setDetailEpisodes(detailEps);
+          }
+          if (detailRes?.movie) {
+            setInWishlist(Boolean(detailRes.movie.in_wishlist));
+            setMoviePosterMeta((prev) => ({
+              poster: prev.poster || detailRes?.movie?.poster_url || '',
+              thumb: prev.thumb || detailRes?.movie?.thumbnail_url || '',
+            }));
           }
           const [pings, cfRes, ggdRes] = await Promise.all([
             measureAllServerPings(true),
@@ -1547,9 +1606,17 @@ export function PlayerModal({
               : Promise.resolve({ ggdriver_1: false, ggdriver_2: false, ggdriver_3: false }),
           ]);
           if (loadSeqRef.current !== mySeq) return;
+          const combinedEpisodes =
+            onlineRes?.episodes && onlineRes.episodes.length > 0
+              ? onlineRes.episodes
+              : detailEps.length > 0
+                ? detailEps
+                : synthEps;
           const mergedResolved: StreamResolvedData = {
             ...synthResolved,
             ...(onlineRes || {}),
+            episodes: combinedEpisodes,
+            next_episode: onlineRes?.next_episode ?? synthResolved.next_episode,
             server_file_key: sfkBg,
           };
           setResolved((prev) => (prev && prev.stream_code === streamCodeToLoad ? mergedResolved : prev));
@@ -2359,22 +2426,28 @@ export function PlayerModal({
       setEnCues(dual.enCues);
       setVnSubUrl(dual.vnUrl);
       setEnSubUrl(dual.enUrl);
-      setSubReloadNonce((n) => n + 1);
       if (isInPipRef.current) {
         syncNativePipSubtitleTrack(getActivePlayer(), true);
       }
-      showToast('Đã nạp lại phụ đề', 'Phụ đề mới đã được tải và đồng bộ', 'success', {
-        family: 'ionicons',
-        name: 'chatbox-ellipses-outline',
-        color: '#34D399',
-      });
+      showToast(
+        'Đã nạp lại phụ đề & thuyết minh',
+        'Phụ đề và giọng đọc đã được đồng bộ lại',
+        'success',
+        {
+          family: 'ionicons',
+          name: 'chatbox-ellipses-outline',
+          color: '#34D399',
+        }
+      );
     } catch {
-      showToast('Không thể nạp lại phụ đề', 'Vui lòng thử lại sau giây lát', 'warning', {
+      showToast('Đã khởi động lại thuyết minh', 'Chưa thể tải thêm phụ đề mới từ máy chủ', 'warning', {
         family: 'ionicons',
-        name: 'chatbox-ellipses-outline',
+        name: 'headset-outline',
         color: '#FBBF24',
       });
     } finally {
+      // Always bump reloadNonce so Thuyết Minh & AudioPlayer reliably restart even offline
+      setSubReloadNonce((n) => n + 1);
       setIsReloadingSubtitles(false);
     }
   }, [
@@ -2870,11 +2943,35 @@ export function PlayerModal({
     };
   }, [visible, onEnterOfflineMode, persistCurrentProgress, playerA, playerB, showToast]);
 
+  const clearSeekInteractionTimers = useCallback(() => {
+    if (singleTapTimerRef.current) {
+      clearTimeout(singleTapTimerRef.current);
+      singleTapTimerRef.current = null;
+    }
+    if (seekComboRef.current.hideTimer) {
+      clearTimeout(seekComboRef.current.hideTimer);
+      seekComboRef.current.hideTimer = null;
+    }
+    seekComboRef.current.side = null;
+    seekComboRef.current.totalSec = 0;
+    seekComboRef.current.lastTapAt = 0;
+    seekRippleOpacity.stopAnimation();
+    seekRippleOpacity.setValue(0);
+    seekRippleScale.stopAnimation();
+    seekRippleScale.setValue(0.92);
+    setSeekRipple(null);
+  }, [seekRippleOpacity, seekRippleScale]);
+
+  useEffect(() => {
+    return () => clearSeekInteractionTimers();
+  }, [clearSeekInteractionTimers]);
+
   // Launch / episode-change effect with full teardown on close or movie switch
   const resetPlayerStateCleanly = useCallback(
     (preservePosterForParams?: PlayerLaunchParams | null) => {
       loadSeqRef.current += 1;
       cancelEpisodeCrossfade();
+      clearSeekInteractionTimers();
       if (checkFilePollRef.current) {
         clearInterval(checkFilePollRef.current);
         checkFilePollRef.current = null;
@@ -2930,7 +3027,7 @@ export function PlayerModal({
       durationRef.current = 0;
       setBufferedPos(0);
     },
-    [cancelEpisodeCrossfade, playerA, playerB, layerAOpacity, layerBOpacity]
+    [cancelEpisodeCrossfade, clearSeekInteractionTimers, playerA, playerB, layerAOpacity, layerBOpacity]
   );
 
   useEffect(() => {
@@ -3288,6 +3385,81 @@ export function PlayerModal({
     [getActivePlayer]
   );
 
+  const toggleHudImmediate = useCallback(() => {
+    if (hudVisibleRef.current) {
+      clearHudTimer();
+      setHudVisible(false);
+    } else {
+      showHudWithTimer(3600);
+    }
+  }, [clearHudTimer, showHudWithTimer]);
+
+  const triggerSeekCombo = useCallback(
+    (side: 'left' | 'right') => {
+      if (singleTapTimerRef.current) {
+        clearTimeout(singleTapTimerRef.current);
+        singleTapTimerRef.current = null;
+      }
+      if (seekComboRef.current.hideTimer) {
+        clearTimeout(seekComboRef.current.hideTimer);
+        seekComboRef.current.hideTimer = null;
+      }
+      const now = Date.now();
+      const isContinuing =
+        seekComboRef.current.side === side && now - seekComboRef.current.lastTapAt < 950;
+      const nextTotal = isContinuing ? seekComboRef.current.totalSec + 10 : 10;
+      seekComboRef.current.side = side;
+      seekComboRef.current.totalSec = nextTotal;
+      seekComboRef.current.lastTapAt = now;
+
+      const delta = side === 'left' ? -10 : 10;
+      seekToWithWarning(currentTimeRef.current + delta);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+
+      setSeekRipple({ side, totalSec: nextTotal, pulseId: now });
+      seekRippleOpacity.stopAnimation();
+      seekRippleScale.stopAnimation();
+      seekRippleScale.setValue(0.93);
+      Animated.parallel([
+        Animated.timing(seekRippleOpacity, {
+          toValue: 1,
+          duration: 120,
+          useNativeDriver: true,
+        }),
+        Animated.sequence([
+          Animated.timing(seekRippleScale, {
+            toValue: 1.04,
+            duration: 95,
+            easing: Easing.out(Easing.quad),
+            useNativeDriver: true,
+          }),
+          Animated.timing(seekRippleScale, {
+            toValue: 1,
+            duration: 110,
+            easing: Easing.out(Easing.quad),
+            useNativeDriver: true,
+          }),
+        ]),
+      ]).start();
+
+      seekComboRef.current.hideTimer = setTimeout(() => {
+        seekComboRef.current.hideTimer = null;
+        seekComboRef.current.side = null;
+        seekComboRef.current.totalSec = 0;
+        Animated.timing(seekRippleOpacity, {
+          toValue: 0,
+          duration: 220,
+          useNativeDriver: true,
+        }).start(({ finished }) => {
+          if (finished && seekComboRef.current.side === null) {
+            setSeekRipple(null);
+          }
+        });
+      }, 820);
+    },
+    [seekToWithWarning, seekRippleOpacity, seekRippleScale]
+  );
+
   // Progress bar PanResponder
   const scrubberPanResponder = useMemo(
     () =>
@@ -3372,6 +3544,17 @@ export function PlayerModal({
     vnCues,
     enCues,
   ]);
+
+  useEffect(() => {
+    if (!visible) {
+      setNativePipSubtitleCues('');
+      return;
+    }
+    setNativePipSubtitleCues(pipSubCuesJson || '');
+    return () => {
+      setNativePipSubtitleCues('');
+    };
+  }, [visible, pipSubCuesJson]);
 
   if (!visible || !params) {
     return null;
@@ -3464,6 +3647,28 @@ export function PlayerModal({
       : !settings.subShowVi && settings.subShowEn
         ? 'en'
         : 'vi';
+
+  const nextOfflineMatch = currentNextEpisode
+    ? offlineItems.find(
+        (o) =>
+          o.status === 'completed' &&
+          (o.stream_code === currentNextEpisode.ep.stream_code ||
+            (params.videosId > 0 &&
+              o.videos_id === params.videosId &&
+              currentNextEpisode.ep.episodes_id > 0 &&
+              o.episode_id === currentNextEpisode.ep.episodes_id))
+      )
+    : null;
+  const nextEpThumbUri =
+    nextOfflineMatch?.local_poster_uri ||
+    nextOfflineMatch?.poster_url ||
+    matchedOfflineItem?.local_poster_uri ||
+    matchedOfflineItem?.poster_url ||
+    moviePosterMeta.thumb ||
+    moviePosterMeta.poster ||
+    params.thumbnailUrl ||
+    params.posterUrl ||
+    '';
 
   const holdToastPayload: WaterDropToastPayload | null = holdBoostActive
     ? {
@@ -3613,40 +3818,89 @@ export function PlayerModal({
               return;
             }
             const x = e.nativeEvent.locationX;
+            const stageW = Math.max(winWidth, 1);
             const side: 'left' | 'right' | 'center' =
-              x < winWidth * 0.28 ? 'left' : x > winWidth * 0.72 ? 'right' : 'center';
+              x < stageW * 0.34 ? 'left' : x > stageW * 0.66 ? 'right' : 'center';
             const now = Date.now();
+
+            // 1. Continue active seek combo seamlessly on 3rd, 4th, 5th+ taps without toggling HUD or top toast spam
+            if (
+              side !== 'center' &&
+              seekComboRef.current.side === side &&
+              now - seekComboRef.current.lastTapAt < 950
+            ) {
+              lastTapStageRef.current = { time: 0, side: 'center' };
+              triggerSeekCombo(side);
+              return;
+            }
+
+            // 2. Second tap inside double-tap window cancels pending HUD toggle immediately
             if (
               side !== 'center' &&
               lastTapStageRef.current.side === side &&
               now - lastTapStageRef.current.time < 280
             ) {
+              if (singleTapTimerRef.current) {
+                clearTimeout(singleTapTimerRef.current);
+                singleTapTimerRef.current = null;
+              }
               lastTapStageRef.current = { time: 0, side: 'center' };
-              const delta = side === 'left' ? -10 : 10;
-              seekToWithWarning(currentTimeRef.current + delta);
-              Haptics.selectionAsync();
-              showToast(
-                delta < 0 ? 'Tua lùi 10 giây' : 'Tua tới 10 giây',
-                undefined,
-                'info',
-                {
-                  family: 'ionicons',
-                  name: delta < 0 ? 'play-back' : 'play-forward',
-                  color: '#FFFFFF',
-                }
-              );
+              triggerSeekCombo(side);
               return;
             }
-            lastTapStageRef.current = { time: now, side };
 
-            if (hudVisibleRef.current) {
-              clearHudTimer();
-              setHudVisible(false);
-            } else {
-              showHudWithTimer(3600);
+            // 3. Center tap toggles HUD right away; edge single-tap waits briefly to distinguish double-tap seek
+            if (side === 'center') {
+              if (singleTapTimerRef.current) {
+                clearTimeout(singleTapTimerRef.current);
+                singleTapTimerRef.current = null;
+              }
+              lastTapStageRef.current = { time: 0, side: 'center' };
+              toggleHudImmediate();
+              return;
             }
+
+            lastTapStageRef.current = { time: now, side };
+            if (singleTapTimerRef.current) {
+              clearTimeout(singleTapTimerRef.current);
+              singleTapTimerRef.current = null;
+            }
+            singleTapTimerRef.current = setTimeout(() => {
+              singleTapTimerRef.current = null;
+              toggleHudImmediate();
+            }, 250);
           }}
         />
+
+        {/* Continuous side double-tap seek ripple overlay */}
+        {seekRipple ? (
+          <Animated.View
+            pointerEvents="none"
+            style={[
+              styles.seekRippleZone,
+              seekRipple.side === 'left' ? styles.seekRippleLeft : styles.seekRippleRight,
+              { opacity: seekRippleOpacity },
+            ]}
+          >
+            <Animated.View
+              style={[
+                styles.seekRipplePill,
+                { transform: [{ scale: seekRippleScale }] },
+              ]}
+            >
+              <Ionicons
+                name={seekRipple.side === 'left' ? 'play-back' : 'play-forward'}
+                size={22}
+                color="#FFF"
+              />
+              <Text style={styles.seekRippleText}>
+                {seekRipple.side === 'left'
+                  ? `-${seekRipple.totalSec} giây`
+                  : `+${seekRipple.totalSec} giây`}
+              </Text>
+            </Animated.View>
+          </Animated.View>
+        ) : null}
 
         {/* Native Dual Subtitle & AI Voice Engine matching subtitleUI.php */}
         <NativeSubtitleOverlay
@@ -4146,13 +4400,16 @@ export function PlayerModal({
                       }}
                     >
                       <GlassSurface variant="liquid" radius={40} intensity={28} style={styles.nextEpPill}>
-                        {moviePosterMeta.thumb || moviePosterMeta.poster ? (
+                        {nextEpThumbUri ? (
                           <Image
-                            source={{ uri: moviePosterMeta.thumb || moviePosterMeta.poster }}
+                            source={{ uri: nextEpThumbUri }}
                             style={styles.nextEpThumb}
+                            resizeMode="cover"
                           />
                         ) : (
-                          <View style={[styles.nextEpThumb, { backgroundColor: COLORS.accent }]} />
+                          <View style={[styles.nextEpThumb, styles.nextEpThumbFallback]}>
+                            <Ionicons name="play-skip-forward" size={13} color="#FFF" />
+                          </View>
                         )}
                         <Ionicons name="chevron-forward" size={16} color="#FFF" />
                       </GlassSurface>
@@ -4195,7 +4452,9 @@ export function PlayerModal({
                     </GlassSurface>
                   </BouncyButton>
 
-                  {effectiveEpisodes.length > 0 ? (
+                  {effectiveEpisodes.length > 0 ||
+                  (resolved?.seasons && resolved.seasons.length > 0) ||
+                  Boolean(resolved?.server_movie_title) ? (
                     <BouncyButton
                       activeOpacity={0.82}
                       pressScale={0.86}
@@ -5129,6 +5388,48 @@ const styles = StyleSheet.create({
     width: 26,
     height: 26,
     borderRadius: 13,
+  },
+  nextEpThumbFallback: {
+    backgroundColor: 'rgba(255, 255, 255, 0.16)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  seekRippleZone: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    width: '36%',
+    zIndex: 8,
+    backgroundColor: 'rgba(10, 14, 24, 0.42)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  seekRippleLeft: {
+    left: 0,
+    borderTopRightRadius: 180,
+    borderBottomRightRadius: 180,
+  },
+  seekRippleRight: {
+    right: 0,
+    borderTopLeftRadius: 180,
+    borderBottomLeftRadius: 180,
+  },
+  seekRipplePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 18,
+    paddingVertical: 11,
+    borderRadius: 999,
+    backgroundColor: 'rgba(20, 26, 40, 0.72)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  seekRippleText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '800',
+    fontVariant: ['tabular-nums'],
   },
   circleActionBtn: {
     width: 42,

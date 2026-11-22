@@ -702,7 +702,6 @@ export function wrapUrlForIosNativePlayer(opts: {
     !pipProxyBroken &&
     localServerPort > 0 &&
     isNativePipProxySupported() &&
-    (vnSubUrl || enSubUrl) &&
     !rawUrl.startsWith('http://127.0.0.1:')
   ) {
     const qs = `src=${encodeURIComponent(rawUrl)}&vn=${encodeURIComponent(vnSubUrl)}&en=${encodeURIComponent(enSubUrl)}`;

@@ -268,7 +268,10 @@ export async function fetchQrPendingDevicesApi(): Promise<{
   return apiRequest(`auth.php?action=qr_pending_devices&_t=${Date.now()}`);
 }
 
-export async function claimQuickLoginQrApi(qrLoginKey: string): Promise<{
+export async function claimQuickLoginQrApi(
+  qrLoginKey: string,
+  source: 'qr' | 'manual' | 'pending' = 'manual'
+): Promise<{
   success: boolean;
   key: string;
   formatted_key: string;
@@ -277,7 +280,7 @@ export async function claimQuickLoginQrApi(qrLoginKey: string): Promise<{
 }> {
   return apiRequest('auth.php?action=qr_scan_claim', {
     method: 'POST',
-    body: JSON.stringify({ qr_login_key: qrLoginKey }),
+    body: JSON.stringify({ qr_login_key: qrLoginKey, source }),
   });
 }
 

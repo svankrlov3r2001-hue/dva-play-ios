@@ -284,7 +284,7 @@ export function PlayerSubtitleSettingsModal({
                 <Feather name="refresh-cw" size={18} color="#60A5FA" />
               )}
               <Text style={[styles.tileTitle, { color: '#93C5FD' }]}>Nạp lại</Text>
-              <Text style={styles.tileSub}>Tải mới phụ đề</Text>
+              <Text style={styles.tileSub}>Phụ đề & thuyết minh</Text>
             </BouncyButton>
           </View>
 

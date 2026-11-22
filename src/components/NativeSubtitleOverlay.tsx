@@ -1,6 +1,7 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  AppState,
   StyleSheet,
   Text,
   TextStyle,
@@ -176,6 +177,221 @@ function OutlinedText({
   );
 }
 
+interface AiVoicePlayerEngineProps {
+  enabled: boolean;
+  isPlaying: boolean;
+  isMuted: boolean;
+  isInPip: boolean;
+  appState: string;
+  voiceMode: SubtitleAiVoiceMode;
+  volume: number;
+  translateLang: string;
+  activeCue: ParsedVttCue | null;
+  mainVnIndex: number;
+  vnCues: ParsedVttCue[];
+  episodeSignature: string;
+  reloadNonce: number;
+  translationVersion: number;
+  translationCacheRef: React.MutableRefObject<Map<string, string>>;
+  ttsLocalCacheRef: React.MutableRefObject<Map<string, string>>;
+  ttsInFlightRef: React.MutableRefObject<Map<string, Promise<string | null>>>;
+  onEngineError: () => void;
+}
+
+function AiVoicePlayerEngine({
+  enabled,
+  isPlaying,
+  isMuted,
+  isInPip,
+  appState,
+  voiceMode,
+  volume,
+  translateLang,
+  activeCue,
+  mainVnIndex,
+  vnCues,
+  episodeSignature,
+  reloadNonce,
+  translationVersion,
+  translationCacheRef,
+  ttsLocalCacheRef,
+  ttsInFlightRef,
+  onEngineError,
+}: AiVoicePlayerEngineProps) {
+  const ttsPlayer = useVideoPlayer(null, (p) => {
+    p.audioMixingMode = 'mixWithOthers';
+    p.staysActiveInBackground = true;
+    p.loop = false;
+    p.muted = false;
+  });
+  const lastSpokenSigRef = useRef('');
+  const onEngineErrorRef = useRef(onEngineError);
+  onEngineErrorRef.current = onEngineError;
+
+  useEffect(() => {
+    const sub = ttsPlayer.addListener('statusChange', (ev) => {
+      if (ev.status === 'error') {
+        lastSpokenSigRef.current = '';
+        onEngineErrorRef.current();
+      }
+    });
+    return () => sub.remove();
+  }, [ttsPlayer]);
+
+  useEffect(() => {
+    try {
+      ttsPlayer.audioMixingMode = 'mixWithOthers';
+      ttsPlayer.staysActiveInBackground = true;
+      ttsPlayer.muted = false;
+      ttsPlayer.volume = Math.max(0, Math.min(1, (volume ?? 80) / 100));
+    } catch {}
+  }, [ttsPlayer, volume]);
+
+  useEffect(() => {
+    lastSpokenSigRef.current = '';
+    try {
+      ttsPlayer.pause();
+    } catch {}
+    return () => {
+      try {
+        ttsPlayer.pause();
+      } catch {}
+    };
+  }, [episodeSignature, reloadNonce, ttsPlayer]);
+
+  useEffect(() => {
+    const canSpeakNow =
+      enabled && isPlaying && !isMuted && Boolean(activeCue) && (isInPip || appState === 'active');
+    if (!canSpeakNow || !activeCue) {
+      try {
+        ttsPlayer.pause();
+      } catch {}
+      if (!activeCue || !enabled || !isPlaying || isMuted) {
+        lastSpokenSigRef.current = '';
+      }
+      return;
+    }
+
+    const toLang = translateLang || '';
+    const cachedTrans = toLang
+      ? translationCacheRef.current.get(`${toLang}::${activeCue.text}`)
+      : '';
+    const spokenText = (cachedTrans || activeCue.text || '').trim();
+    const spokenLang = cachedTrans && toLang ? toLang : 'vi';
+
+    if (!spokenText || spokenText.includes('♪')) {
+      try {
+        ttsPlayer.pause();
+      } catch {}
+      return;
+    }
+
+    const cueSig = `${episodeSignature}|${reloadNonce}|${activeCue.start}|${spokenText}`;
+    if (lastSpokenSigRef.current === cueSig) return;
+    lastSpokenSigRef.current = cueSig;
+
+    const effVoice = getAdaptiveVoiceForTime(voiceMode || 'adaptive', activeCue.start);
+    const durSec = Math.max(0.4, activeCue.end - activeCue.start);
+    const speed = calculateTtsSpeed(spokenText, durSec, effVoice);
+    const remoteTtsUrl = buildTtsProxyUrl(spokenText, spokenLang, speed, effVoice);
+
+    const ensureCachedTtsFile = async (url: string): Promise<string | null> => {
+      const hit = ttsLocalCacheRef.current.get(url);
+      if (hit) {
+        try {
+          const info = await FileSystem.getInfoAsync(hit);
+          if (info.exists && (typeof (info as any).size !== 'number' || (info as any).size > 128)) {
+            return hit;
+          }
+        } catch {}
+        ttsLocalCacheRef.current.delete(url);
+      }
+      const inflight = ttsInFlightRef.current.get(url);
+      if (inflight) return inflight;
+      const promise = (async () => {
+        try {
+          const baseDir = `${FileSystem.cacheDirectory ?? ''}dva_tts/`;
+          await FileSystem.makeDirectoryAsync(baseDir, { intermediates: true });
+          const hash = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+          const dest = `${baseDir}tts_${hash}.mp3`;
+          const dl = await FileSystem.downloadAsync(url, dest);
+          if (dl.status >= 200 && dl.status < 300) {
+            const info = await FileSystem.getInfoAsync(dl.uri).catch(() => null);
+            if (!info || !info.exists || (typeof (info as any).size === 'number' && (info as any).size <= 128)) {
+              FileSystem.deleteAsync(dl.uri, { idempotent: true }).catch(() => {});
+              return null;
+            }
+            ttsLocalCacheRef.current.set(url, dl.uri);
+            return dl.uri;
+          }
+          return null;
+        } catch {
+          return null;
+        } finally {
+          ttsInFlightRef.current.delete(url);
+        }
+      })();
+      ttsInFlightRef.current.set(url, promise);
+      return promise;
+    };
+
+    let aborted = false;
+    (async () => {
+      const localUri = await ensureCachedTtsFile(remoteTtsUrl);
+      if (aborted || lastSpokenSigRef.current !== cueSig) return;
+      try {
+        await ttsPlayer.replaceAsync({ uri: localUri || remoteTtsUrl });
+        if (aborted || lastSpokenSigRef.current !== cueSig) return;
+        ttsPlayer.audioMixingMode = 'mixWithOthers';
+        ttsPlayer.staysActiveInBackground = true;
+        ttsPlayer.muted = false;
+        ttsPlayer.volume = Math.max(0, Math.min(1, (volume ?? 80) / 100));
+        ttsPlayer.play();
+      } catch {}
+    })();
+
+    // Preload next 6 cues in background
+    if (mainVnIndex >= 0) {
+      for (let i = 1; i <= 6; i++) {
+        const nxt = vnCues[mainVnIndex + i];
+        if (!nxt || !nxt.text || nxt.text.includes('♪')) continue;
+        const nxtTrans = toLang ? translationCacheRef.current.get(`${toLang}::${nxt.text}`) : '';
+        const nxtText = (nxtTrans || nxt.text).trim();
+        const nxtLang = nxtTrans && toLang ? toLang : 'vi';
+        const nxtVoice = getAdaptiveVoiceForTime(voiceMode || 'adaptive', nxt.start);
+        const nxtSpeed = calculateTtsSpeed(nxtText, Math.max(0.4, nxt.end - nxt.start), nxtVoice);
+        const nxtUrl = buildTtsProxyUrl(nxtText, nxtLang, nxtSpeed, nxtVoice);
+        void ensureCachedTtsFile(nxtUrl);
+      }
+    }
+
+    return () => {
+      aborted = true;
+    };
+  }, [
+    enabled,
+    isPlaying,
+    isMuted,
+    isInPip,
+    appState,
+    voiceMode,
+    volume,
+    translateLang,
+    activeCue,
+    mainVnIndex,
+    vnCues,
+    episodeSignature,
+    reloadNonce,
+    translationVersion,
+    translationCacheRef,
+    ttsLocalCacheRef,
+    ttsInFlightRef,
+    ttsPlayer,
+  ]);
+
+  return null;
+}
+
 export function NativeSubtitleOverlay({
   vnCues,
   enCues,
@@ -194,6 +410,49 @@ export function NativeSubtitleOverlay({
   const translationCacheRef = useRef<Map<string, string>>(new Map());
   const inFlightKeysRef = useRef<Set<string>>(new Set());
   const prevLangRef = useRef(settings.subTranslateLang);
+  const ttsLocalCacheRef = useRef<Map<string, string>>(new Map());
+  const ttsInFlightRef = useRef<Map<string, Promise<string | null>>>(new Map());
+  const [ttsEngineKey, setTtsEngineKey] = useState(0);
+  const [appState, setAppState] = useState<string>(AppState.currentState || 'active');
+  const prevAppStateRef = useRef<string>(AppState.currentState || 'active');
+  const subAiEnabledRef = useRef(Boolean(settings.subAiVoiceEnabled));
+  subAiEnabledRef.current = Boolean(settings.subAiVoiceEnabled);
+  const prevReloadNonceRef = useRef(reloadNonce);
+  const lastEngineResetAtRef = useRef(0);
+
+  const handleEngineError = useCallback(() => {
+    const now = Date.now();
+    if (now - lastEngineResetAtRef.current < 2500) return;
+    lastEngineResetAtRef.current = now;
+    setTtsEngineKey((k) => k + 1);
+  }, []);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (nextState) => {
+      const prev = prevAppStateRef.current;
+      prevAppStateRef.current = nextState;
+      setAppState(nextState);
+      if ((prev === 'background' || prev === 'inactive') && nextState === 'active') {
+        if (subAiEnabledRef.current) {
+          setTtsEngineKey((k) => k + 1);
+        }
+      }
+    });
+    return () => sub.remove();
+  }, []);
+
+  useEffect(() => {
+    if (reloadNonce > 0 && reloadNonce !== prevReloadNonceRef.current) {
+      prevReloadNonceRef.current = reloadNonce;
+      ttsLocalCacheRef.current.clear();
+      ttsInFlightRef.current.clear();
+      const baseDir = `${FileSystem.cacheDirectory ?? ''}dva_tts/`;
+      FileSystem.deleteAsync(baseDir, { idempotent: true }).catch(() => {});
+      setTtsEngineKey((k) => k + 1);
+    } else {
+      prevReloadNonceRef.current = reloadNonce;
+    }
+  }, [reloadNonce]);
 
   // Clear translation cache on language or episode change
   useEffect(() => {
@@ -293,150 +552,33 @@ export function NativeSubtitleOverlay({
     };
   }, [settings.subShowEn, settings.subTranslateLang, mainVnCue?.text, mainVnIndex, vnCues]);
 
-  // AI Voice TTS playback synchronized with active VN cue
-  const ttsPlayer = useVideoPlayer(null, (p) => {
-    p.audioMixingMode = 'mixWithOthers';
-    p.staysActiveInBackground = false;
-    p.loop = false;
-  });
-  const ttsLocalCacheRef = useRef<Map<string, string>>(new Map());
-  const ttsInFlightRef = useRef<Map<string, Promise<string | null>>>(new Map());
-  const lastSpokenSigRef = useRef('');
-
-  useEffect(() => {
-    try {
-      ttsPlayer.volume = Math.max(0, Math.min(1, (settings.subAiVoiceVolume ?? 80) / 100));
-    } catch {}
-  }, [ttsPlayer, settings.subAiVoiceVolume]);
-
-  useEffect(() => {
-    lastSpokenSigRef.current = '';
-    if (reloadNonce > 0) {
-      ttsLocalCacheRef.current.clear();
-      ttsInFlightRef.current.clear();
-    }
-    try {
-      ttsPlayer.pause();
-    } catch {}
-    return () => {
-      try {
-        ttsPlayer.pause();
-      } catch {}
-    };
-  }, [episodeSignature, reloadNonce, ttsPlayer]);
-
-  useEffect(() => {
-    const activeCue = mainVnCue || activeVnTopCue;
-    if (!settings.subAiVoiceEnabled || !isPlaying || isMuted || isInPip || !activeCue) {
-      try {
-        ttsPlayer.pause();
-      } catch {}
-      if (!activeCue || !settings.subAiVoiceEnabled) {
-        lastSpokenSigRef.current = '';
-      }
-      return;
-    }
-
-    const toLang = settings.subTranslateLang || '';
-    const cachedTrans = toLang
-      ? translationCacheRef.current.get(`${toLang}::${activeCue.text}`)
-      : '';
-    const spokenText = (cachedTrans || activeCue.text || '').trim();
-    const spokenLang = cachedTrans && toLang ? toLang : 'vi';
-
-    if (!spokenText || spokenText.includes('♪')) {
-      try {
-        ttsPlayer.pause();
-      } catch {}
-      return;
-    }
-
-    const cueSig = `${episodeSignature}|${activeCue.start}|${spokenText}`;
-    if (lastSpokenSigRef.current === cueSig) return;
-    lastSpokenSigRef.current = cueSig;
-
-    const voiceMode: SubtitleAiVoiceMode = settings.subAiVoiceMode || 'adaptive';
-    const effVoice = getAdaptiveVoiceForTime(voiceMode, activeCue.start);
-    const durSec = Math.max(0.4, activeCue.end - activeCue.start);
-    const speed = calculateTtsSpeed(spokenText, durSec, effVoice);
-    const remoteTtsUrl = buildTtsProxyUrl(spokenText, spokenLang, speed, effVoice);
-
-    const ensureCachedTtsFile = async (url: string): Promise<string | null> => {
-      const hit = ttsLocalCacheRef.current.get(url);
-      if (hit) return hit;
-      const inflight = ttsInFlightRef.current.get(url);
-      if (inflight) return inflight;
-      const promise = (async () => {
-        try {
-          const baseDir = `${FileSystem.cacheDirectory ?? ''}dva_tts/`;
-          await FileSystem.makeDirectoryAsync(baseDir, { intermediates: true });
-          const hash = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-          const dest = `${baseDir}tts_${hash}.mp3`;
-          const dl = await FileSystem.downloadAsync(url, dest);
-          if (dl.status >= 200 && dl.status < 300) {
-            ttsLocalCacheRef.current.set(url, dl.uri);
-            return dl.uri;
-          }
-          return null;
-        } catch {
-          return null;
-        } finally {
-          ttsInFlightRef.current.delete(url);
-        }
-      })();
-      ttsInFlightRef.current.set(url, promise);
-      return promise;
-    };
-
-    let aborted = false;
-    (async () => {
-      const localUri = await ensureCachedTtsFile(remoteTtsUrl);
-      if (aborted || lastSpokenSigRef.current !== cueSig) return;
-      try {
-        await ttsPlayer.replaceAsync({ uri: localUri || remoteTtsUrl });
-        if (aborted || lastSpokenSigRef.current !== cueSig) return;
-        ttsPlayer.volume = Math.max(0, Math.min(1, (settings.subAiVoiceVolume ?? 80) / 100));
-        ttsPlayer.play();
-      } catch {}
-    })();
-
-    // Preload next 6 cues in background
-    if (mainVnIndex >= 0) {
-      for (let i = 1; i <= 6; i++) {
-        const nxt = vnCues[mainVnIndex + i];
-        if (!nxt || !nxt.text || nxt.text.includes('♪')) continue;
-        const nxtTrans = toLang ? translationCacheRef.current.get(`${toLang}::${nxt.text}`) : '';
-        const nxtText = (nxtTrans || nxt.text).trim();
-        const nxtLang = nxtTrans && toLang ? toLang : 'vi';
-        const nxtVoice = getAdaptiveVoiceForTime(voiceMode, nxt.start);
-        const nxtSpeed = calculateTtsSpeed(nxtText, Math.max(0.4, nxt.end - nxt.start), nxtVoice);
-        const nxtUrl = buildTtsProxyUrl(nxtText, nxtLang, nxtSpeed, nxtVoice);
-        void ensureCachedTtsFile(nxtUrl);
-      }
-    }
-
-    return () => {
-      aborted = true;
-    };
-  }, [
-    settings.subAiVoiceEnabled,
-    settings.subAiVoiceMode,
-    settings.subAiVoiceVolume,
-    settings.subTranslateLang,
-    isPlaying,
-    isMuted,
-    isInPip,
-    mainVnCue,
-    activeVnTopCue,
-    mainVnIndex,
-    vnCues,
-    episodeSignature,
-    translationVersion,
-    ttsPlayer,
-  ]);
+  const activeVoiceCue = mainVnCue || activeVnTopCue;
+  const voiceEngineNode = settings.subAiVoiceEnabled ? (
+    <AiVoicePlayerEngine
+      key={ttsEngineKey}
+      enabled={Boolean(settings.subAiVoiceEnabled)}
+      isPlaying={isPlaying}
+      isMuted={isMuted}
+      isInPip={isInPip}
+      appState={appState}
+      voiceMode={settings.subAiVoiceMode || 'adaptive'}
+      volume={settings.subAiVoiceVolume ?? 80}
+      translateLang={settings.subTranslateLang || ''}
+      activeCue={activeVoiceCue}
+      mainVnIndex={mainVnIndex}
+      vnCues={vnCues}
+      episodeSignature={episodeSignature}
+      reloadNonce={reloadNonce}
+      translationVersion={translationVersion}
+      translationCacheRef={translationCacheRef}
+      ttsLocalCacheRef={ttsLocalCacheRef}
+      ttsInFlightRef={ttsInFlightRef}
+      onEngineError={handleEngineError}
+    />
+  ) : null;
 
   if (isInPip || (!settings.subShowVi && !settings.subShowEn)) {
-    return null;
+    return voiceEngineNode;
   }
 
   const autoLayout = computeAutoSubtitleLayout(winHeight, subHighRaw);
@@ -526,42 +668,45 @@ export function NativeSubtitleOverlay({
   const bottomStyleValue = `${Math.max(-10, Math.min(40, effectivePosPct))}%` as `${number}%`;
 
   return (
-    <View pointerEvents="none" style={[StyleSheet.absoluteFill, styles.overlayRoot]}>
-      {activeVnTopCue ? (
-        <View style={styles.topSubContainer}>
-          <OutlinedText
-            text={activeVnTopCue.text}
-            outline={outline}
-            style={{
-              color: palette.main,
-              fontSize: primaryFontSize,
-              lineHeight: Math.round(primaryFontSize * 1.2),
-              fontWeight: '400',
-              textAlign: 'center',
-              fontFamily,
-            }}
-          />
-        </View>
-      ) : null}
+    <>
+      {voiceEngineNode}
+      <View pointerEvents="none" style={[StyleSheet.absoluteFill, styles.overlayRoot]}>
+        {activeVnTopCue ? (
+          <View style={styles.topSubContainer}>
+            <OutlinedText
+              text={activeVnTopCue.text}
+              outline={outline}
+              style={{
+                color: palette.main,
+                fontSize: primaryFontSize,
+                lineHeight: Math.round(primaryFontSize * 1.2),
+                fontWeight: '400',
+                textAlign: 'center',
+                fontFamily,
+              }}
+            />
+          </View>
+        ) : null}
 
-      {showVnLine || showSecondaryLine ? (
-        <View style={[styles.bottomSubContainer, { bottom: bottomStyleValue }]}>
-          {isReversed ? (
-            <>
-              {enBlock}
-              {dividerEl}
-              {vnBlock}
-            </>
-          ) : (
-            <>
-              {vnBlock}
-              {dividerEl}
-              {enBlock}
-            </>
-          )}
-        </View>
-      ) : null}
-    </View>
+        {showVnLine || showSecondaryLine ? (
+          <View style={[styles.bottomSubContainer, { bottom: bottomStyleValue }]}>
+            {isReversed ? (
+              <>
+                {enBlock}
+                {dividerEl}
+                {vnBlock}
+              </>
+            ) : (
+              <>
+                {vnBlock}
+                {dividerEl}
+                {enBlock}
+              </>
+            )}
+          </View>
+        ) : null}
+      </View>
+    </>
   );
 }
 

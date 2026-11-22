@@ -38,7 +38,9 @@ interface QuickLoginQrModalProps {
 export function extractQuickLoginKey(raw: string): string | null {
   if (!raw) return null;
   const payload = String(raw).trim();
-  const matchParam = payload.match(/[?&](?:backQR|key|qr_login_key|code)=([0-9a-zA-Z_-]+)/i);
+  const matchParam = payload.match(
+    /[?&](?:backQR|backQR_share_1|backQR_share_2|key|qr_login_key|code)=([0-9a-zA-Z_-]+)/i
+  );
   if (matchParam && matchParam[1]) {
     return matchParam[1].replace(/\s+/g, '');
   }
@@ -51,6 +53,10 @@ export function extractQuickLoginKey(raw: string): string | null {
   const cleaned = payload.replace(/\s+/g, '');
   if (/^\d{6,12}$/.test(cleaned)) {
     return cleaned;
+  }
+  const spacedNine = payload.match(/\b(\d{3}\s+\d{3}\s+\d{3})\b/);
+  if (spacedNine && spacedNine[1]) {
+    return spacedNine[1].replace(/\s+/g, '');
   }
   const matchNineDigits = payload.match(/\b(\d{9})\b/);
   if (matchNineDigits && matchNineDigits[1]) {
@@ -102,6 +108,8 @@ export function QuickLoginQrModal({ visible, onClose }: QuickLoginQrModalProps) 
 
   const enterAnim = useRef(new Animated.Value(0)).current;
   const autoBioTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scanLockRef = useRef(false);
+  const claimingRef = useRef(false);
   const visibleRef = useRef(visible);
   visibleRef.current = visible;
 
@@ -110,6 +118,8 @@ export function QuickLoginQrModal({ visible, onClose }: QuickLoginQrModalProps) 
       clearTimeout(autoBioTimerRef.current);
       autoBioTimerRef.current = null;
     }
+    scanLockRef.current = false;
+    claimingRef.current = false;
     setStep('scan');
     setScanned(false);
     setManualKey('');
@@ -231,20 +241,34 @@ export function QuickLoginQrModal({ visible, onClose }: QuickLoginQrModalProps) 
     [activeKey, approving, targetDevice, verifyBiometricsForAction, onClose, resetModalState]
   );
 
-  const handleSelectOrScanKey = async (rawInput: string, deviceHint?: string) => {
+  const handleSelectOrScanKey = async (
+    rawInput: string,
+    deviceHint?: string,
+    source: 'qr' | 'manual' | 'pending' = 'manual'
+  ) => {
+    if (claimingRef.current) return;
     const key = extractQuickLoginKey(rawInput);
     if (!key) {
       showAppAlert(
         'Mã QR không hợp lệ',
-        'Không tìm thấy mã đăng nhập nhanh hợp lệ trong mã QR hoặc chuỗi vừa nhập.'
+        'Không tìm thấy mã đăng nhập nhanh hợp lệ trong mã QR hoặc chuỗi vừa nhập.',
+        [
+          {
+            text: 'OK',
+            onPress: () => {
+              scanLockRef.current = false;
+              setScanned(false);
+            },
+          },
+        ]
       );
-      setScanned(false);
       return;
     }
+    claimingRef.current = true;
     setClaiming(true);
     setStatusFeedback(null);
     try {
-      const claimRes = await claimQuickLoginQrApi(key);
+      const claimRes = await claimQuickLoginQrApi(key, source);
       if (!visibleRef.current) return;
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       const resolvedDevice = claimRes.device || deviceHint || 'Thiết bị khác';
@@ -268,10 +292,19 @@ export function QuickLoginQrModal({ visible, onClose }: QuickLoginQrModalProps) 
     } catch (err: any) {
       showAppAlert(
         'Không tìm thấy thiết bị',
-        err?.message || 'Mã thiết bị không tồn tại hoặc đã hết hạn.'
+        err?.message || 'Mã thiết bị không tồn tại hoặc đã hết hạn.',
+        [
+          {
+            text: 'OK',
+            onPress: () => {
+              scanLockRef.current = false;
+              setScanned(false);
+            },
+          },
+        ]
       );
-      setScanned(false);
     } finally {
+      claimingRef.current = false;
       setClaiming(false);
     }
   };
@@ -362,8 +395,10 @@ export function QuickLoginQrModal({ visible, onClose }: QuickLoginQrModalProps) 
                     scanned || claiming
                       ? undefined
                       : ({ data }) => {
+                          if (scanLockRef.current || claimingRef.current) return;
+                          scanLockRef.current = true;
                           setScanned(true);
-                          void handleSelectOrScanKey(data);
+                          void handleSelectOrScanKey(data, undefined, 'qr');
                         }
                   }
                 />
@@ -404,7 +439,7 @@ export function QuickLoginQrModal({ visible, onClose }: QuickLoginQrModalProps) 
                 <BouncyButton
                   style={styles.connectBtn}
                   disabled={claiming}
-                  onPress={() => void handleSelectOrScanKey(manualKey)}
+                  onPress={() => void handleSelectOrScanKey(manualKey, undefined, 'manual')}
                 >
                   {claiming ? (
                     <ActivityIndicator color="#FFF" size="small" />
@@ -429,7 +464,7 @@ export function QuickLoginQrModal({ visible, onClose }: QuickLoginQrModalProps) 
                       activeOpacity={0.82}
                       style={styles.deviceRow}
                       disabled={claiming}
-                      onPress={() => void handleSelectOrScanKey(dev.key, dev.device)}
+                      onPress={() => void handleSelectOrScanKey(dev.key, dev.device, 'pending')}
                     >
                       <View style={styles.deviceIconBox}>
                         <Ionicons

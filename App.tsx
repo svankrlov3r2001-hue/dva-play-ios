@@ -53,6 +53,7 @@ import {
   enforceOfflineRetentionPolicy,
   findCompletedOfflineItem,
   flushPendingOfflineProgressToServer,
+  getOfflineDownloadsSnapshot,
   getOfflineRootDir,
   loadOfflineDownloads,
   pullOnlineProgressForOfflineItems,
@@ -709,6 +710,13 @@ function RootAppContent() {
       return;
     }
 
+    const seriesOfflineEpisodes =
+      session.videosId > 0
+        ? getOfflineDownloadsSnapshot()
+            .filter((it) => it.status === 'completed' && it.videos_id === session.videosId)
+            .sort((a, b) => (a.episode_number || 0) - (b.episode_number || 0))
+        : [];
+
     launchPlayerWithCurtain({
       videosId: session.videosId,
       streamCode: session.streamCode,
@@ -717,12 +725,13 @@ function RootAppContent() {
       seasonId: session.seasonId,
       title: session.title,
       episodeTitle: session.episodeTitle,
-      posterUrl: session.posterUrl,
-      thumbnailUrl: session.thumbnailUrl,
+      posterUrl: session.posterUrl || matchedOffline?.local_poster_uri || matchedOffline?.poster_url || '',
+      thumbnailUrl: session.thumbnailUrl || matchedOffline?.local_poster_uri || matchedOffline?.poster_url || '',
       initialResumeSec: session.positionSec,
       ...(matchedOffline
         ? { offlineUri: matchedOffline.local_uri, offlineItem: matchedOffline }
         : {}),
+      ...(seriesOfflineEpisodes.length > 0 ? { offlineEpisodes: seriesOfflineEpisodes } : {}),
     });
     if (splashVisibleRef.current) {
       setSplashDismissing(true);
@@ -745,15 +754,25 @@ function RootAppContent() {
     offline: OfflineDownloadItem,
     seriesEpisodes?: OfflineDownloadItem[]
   ) => {
+    const resolvedSeries =
+      seriesEpisodes && seriesEpisodes.length > 0
+        ? seriesEpisodes
+        : offline.videos_id > 0
+          ? getOfflineDownloadsSnapshot()
+              .filter((it) => it.status === 'completed' && it.videos_id === offline.videos_id)
+              .sort((a, b) => (a.episode_number || 0) - (b.episode_number || 0))
+          : undefined;
     launchPlayerWithCurtain({
       videosId: offline.videos_id,
       streamCode: offline.stream_code,
       episodeId: offline.episode_id,
       title: offline.title,
       episodeTitle: offline.episode_title,
+      posterUrl: offline.local_poster_uri || offline.poster_url || '',
+      thumbnailUrl: offline.local_poster_uri || offline.poster_url || '',
       offlineUri: offline.local_uri,
       offlineItem: offline,
-      offlineEpisodes: seriesEpisodes,
+      offlineEpisodes: resolvedSeries,
     });
   };
 
@@ -766,6 +785,8 @@ function RootAppContent() {
             episodeId: offline.episode_id,
             title: offline.title,
             episodeTitle: offline.episode_title,
+            posterUrl: offline.local_poster_uri || offline.poster_url || prev.posterUrl || '',
+            thumbnailUrl: offline.local_poster_uri || offline.poster_url || prev.thumbnailUrl || '',
             offlineUri: offline.local_uri,
             offlineItem: offline,
           }

@@ -90,6 +90,10 @@ export function CastModal({
   const [tvPaused, setTvPaused] = useState(false);
   const [tvMuted, setTvMuted] = useState(false);
   const enterAnim = useRef(new Animated.Value(0)).current;
+  const scanLockRef = useRef(false);
+  const pairingRef = useRef(false);
+  const senderTokenRef = useRef(senderToken);
+  senderTokenRef.current = senderToken;
 
   useEffect(() => {
     if (visible) {
@@ -103,6 +107,8 @@ export function CastModal({
     } else {
       enterAnim.stopAnimation();
       enterAnim.setValue(0);
+      scanLockRef.current = false;
+      pairingRef.current = false;
       setScanned(false);
     }
   }, [visible, enterAnim]);
@@ -122,6 +128,8 @@ export function CastModal({
         const res = await castStatusApi(senderToken);
         if (!active) return;
         if (res?.st === 'ended' || (!res?.ok && !res?.success)) {
+          senderTokenRef.current = '';
+          scanLockRef.current = false;
           setSenderToken('');
           setPairCode('');
           setTvStatus(null);
@@ -188,18 +196,32 @@ export function CastModal({
   };
 
   const handlePair = async (codeRaw: string) => {
+    if (pairingRef.current || senderTokenRef.current) return;
     const code = extractCode(codeRaw);
     if (!code) {
-      showAppAlert('Thiếu mã ghép đôi', 'Vui lòng quét mã QR trên TV hoặc nhập đúng mã 6 ký tự.');
-      setScanned(false);
+      showAppAlert(
+        'Thiếu mã ghép đôi',
+        'Vui lòng quét mã QR trên TV hoặc nhập đúng mã 6 ký tự.',
+        [
+          {
+            text: 'OK',
+            onPress: () => {
+              scanLockRef.current = false;
+              setScanned(false);
+            },
+          },
+        ]
+      );
       return;
     }
+    pairingRef.current = true;
     setPairing(true);
     try {
       const res = await castPairApi(code);
       const tok = String(res?.sender_token || res?.room_id || '');
       if ((res?.ok || res?.success) && tok) {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        senderTokenRef.current = tok;
         setSenderToken(tok);
         setPairCode(String(res?.code || code));
         setManualCode('');
@@ -211,13 +233,38 @@ export function CastModal({
           }
         }
       } else {
-        showAppAlert('Không thể ghép đôi', res?.error || res?.message || 'Mã TV không hợp lệ hoặc đã hết hạn.');
-        setScanned(false);
+        if (senderTokenRef.current) return;
+        showAppAlert(
+          'Không thể ghép đôi',
+          res?.error || res?.message || 'Mã TV không hợp lệ hoặc đã hết hạn.',
+          [
+            {
+              text: 'OK',
+              onPress: () => {
+                scanLockRef.current = false;
+                setScanned(false);
+              },
+            },
+          ]
+        );
       }
     } catch (err: any) {
-      showAppAlert('Lỗi DVA Cast', err?.message || 'Không kết nối được tới máy chủ DVA Cast.');
-      setScanned(false);
+      if (senderTokenRef.current) return;
+      showAppAlert(
+        'Lỗi DVA Cast',
+        err?.message || 'Không kết nối được tới máy chủ DVA Cast.',
+        [
+          {
+            text: 'OK',
+            onPress: () => {
+              scanLockRef.current = false;
+              setScanned(false);
+            },
+          },
+        ]
+      );
     } finally {
+      pairingRef.current = false;
       setPairing(false);
     }
   };
@@ -228,6 +275,8 @@ export function CastModal({
     try {
       const res = await castPushApi({ sender_token: senderToken, command: cmd, ...extra });
       if (res?.st === 'ended') {
+        senderTokenRef.current = '';
+        scanLockRef.current = false;
         setSenderToken('');
         setPairCode('');
         setTvStatus(null);
@@ -246,17 +295,21 @@ export function CastModal({
   };
 
   const handleDisconnect = async () => {
-    if (senderToken) {
-      try {
-        await castStopApi(senderToken);
-      } catch {}
-    }
+    const tok = senderTokenRef.current || senderToken;
+    senderTokenRef.current = '';
+    scanLockRef.current = false;
+    pairingRef.current = false;
     setSenderToken('');
     setPairCode('');
     setTvStatus(null);
     setTvPaused(false);
     setTvMuted(false);
     setScanned(false);
+    if (tok) {
+      try {
+        await castStopApi(tok);
+      } catch {}
+    }
   };
 
   if (!visible) {
@@ -274,8 +327,10 @@ export function CastModal({
             scanned || pairing
               ? undefined
               : ({ data }) => {
+                  if (scanLockRef.current || pairingRef.current || senderTokenRef.current) return;
+                  scanLockRef.current = true;
                   setScanned(true);
-                  handlePair(data);
+                  void handlePair(data);
                 }
           }
         />
@@ -330,27 +385,148 @@ export function CastModal({
   const remoteControlsContent = (compact: boolean) => {
     const posSec = Number(tvStatus?.receiver_pos || 0);
     const durSec = Number(tvStatus?.receiver_dur || 0);
+    const progressPct = durSec > 0 ? Math.min(100, Math.max(0, (posSec / durSec) * 100)) : 0;
     const titleStr =
       tvStatus?.title || movieToCast?.title || 'Sẵn sàng điều khiển phát trên TV';
     const epStr = tvStatus?.episode || movieToCast?.episode || '';
 
+    if (compact) {
+      return (
+        <View style={styles.remoteLandscapeRow}>
+          <View style={styles.remoteLandscapeLeft}>
+            <View style={styles.roomPill}>
+              <View style={styles.roomLiveDot} />
+              <Ionicons name="tv" size={14} color={COLORS.accent} />
+              <Text style={styles.roomPillTxt}>
+                Phòng {formatPairCodeDisplay(pairCode)}
+              </Text>
+            </View>
+
+            <View style={styles.landscapeInfoBody}>
+              <Text style={styles.landscapeTitle} numberOfLines={2}>
+                {epStr ? `${titleStr} • ${epStr}` : titleStr}
+              </Text>
+              {durSec > 0 ? (
+                <View style={styles.progressBox}>
+                  <View style={styles.progressTrack}>
+                    <View style={[styles.progressFill, { width: `${progressPct}%` }]} />
+                  </View>
+                  <Text style={styles.timeReadoutLeft}>
+                    {fmtSec(posSec)} / {fmtSec(durSec)}
+                  </Text>
+                </View>
+              ) : (
+                <Text style={styles.waitingTimeTxt}>Đang đồng bộ trình phát TV...</Text>
+              )}
+            </View>
+
+            <View style={styles.landscapeActionFooter}>
+              {movieToCast ? (
+                <BouncyButton
+                  bounciness="gentle"
+                  style={styles.landscapePushBtn}
+                  onPress={() => pushMovieToTv(senderToken, movieToCast)}
+                >
+                  <Ionicons name="tv-outline" size={16} color="#FFF" />
+                  <Text style={styles.landscapePushTxt} numberOfLines={1}>
+                    Phát lên TV
+                  </Text>
+                </BouncyButton>
+              ) : null}
+              <BouncyButton
+                bounciness="gentle"
+                style={styles.landscapeStopBtn}
+                onPress={handleDisconnect}
+              >
+                <Ionicons name="power-outline" size={15} color="#FCA5A5" />
+                <Text style={styles.stopTxt}>Ngắt TV</Text>
+              </BouncyButton>
+            </View>
+          </View>
+
+          <View style={styles.remoteLandscapeRight}>
+            <View style={styles.deckRow}>
+              <BouncyButton
+                style={styles.ctrlBtnLandscape}
+                onPress={() => sendCommand('seek_rel', { delta: -15 })}
+              >
+                <Ionicons name="play-back" size={20} color="#FFF" />
+                <Text style={styles.ctrlLabel}>-15s</Text>
+              </BouncyButton>
+
+              <BouncyButton
+                style={[styles.ctrlBtnLandscape, styles.ctrlPlayLandscape]}
+                onPress={() => sendCommand('toggle_play')}
+              >
+                <Ionicons name={tvPaused ? 'play' : 'pause'} size={26} color="#FFF" />
+                <Text style={styles.ctrlLabel}>{tvPaused ? 'Phát' : 'Tạm dừng'}</Text>
+              </BouncyButton>
+
+              <BouncyButton
+                style={styles.ctrlBtnLandscape}
+                onPress={() => sendCommand('seek_rel', { delta: 15 })}
+              >
+                <Ionicons name="play-forward" size={20} color="#FFF" />
+                <Text style={styles.ctrlLabel}>+15s</Text>
+              </BouncyButton>
+            </View>
+
+            <View style={styles.deckRow}>
+              <BouncyButton
+                style={styles.ctrlBtnLandscape}
+                onPress={() => sendCommand('seek_rel', { delta: -60 })}
+              >
+                <Ionicons name="play-skip-back" size={18} color="#FFF" />
+                <Text style={styles.ctrlLabel}>-60s</Text>
+              </BouncyButton>
+
+              <BouncyButton
+                style={[styles.ctrlBtnLandscape, tvMuted && styles.ctrlActiveTint]}
+                onPress={() => sendCommand('toggle_mute')}
+              >
+                <Ionicons
+                  name={tvMuted ? 'volume-mute' : 'volume-high'}
+                  size={20}
+                  color="#FFF"
+                />
+                <Text style={styles.ctrlLabel}>{tvMuted ? 'Bật tiếng' : 'Tắt tiếng'}</Text>
+              </BouncyButton>
+
+              <BouncyButton
+                style={styles.ctrlBtnLandscape}
+                onPress={() => sendCommand('seek_rel', { delta: 60 })}
+              >
+                <Ionicons name="play-skip-forward" size={18} color="#FFF" />
+                <Text style={styles.ctrlLabel}>+60s</Text>
+              </BouncyButton>
+            </View>
+          </View>
+        </View>
+      );
+    }
+
     return (
-      <View style={[styles.remoteInner, compact && { gap: 10 }]}>
+      <View style={styles.remoteInner}>
         <View style={styles.remoteTopInfo}>
           <View style={styles.tvBadgeIcon}>
-            <Ionicons name="tv" size={compact ? 28 : 38} color={COLORS.accent} />
+            <Ionicons name="tv" size={34} color={COLORS.accent} />
           </View>
-          <View style={compact ? { flex: 1 } : { alignItems: 'center' }}>
+          <View style={styles.remoteMetaCenter}>
             <Text style={styles.connectedTitle}>
               Đã kết nối phòng {formatPairCodeDisplay(pairCode)}
             </Text>
-            <Text style={[styles.connectedSub, compact && { textAlign: 'left' }]} numberOfLines={2}>
+            <Text style={styles.connectedSub} numberOfLines={2}>
               {epStr ? `${titleStr} • ${epStr}` : titleStr}
             </Text>
             {durSec > 0 ? (
-              <Text style={styles.timeReadout}>
-                {fmtSec(posSec)} / {fmtSec(durSec)}
-              </Text>
+              <View style={[styles.progressBox, { marginTop: 8, width: '100%' }]}>
+                <View style={styles.progressTrack}>
+                  <View style={[styles.progressFill, { width: `${progressPct}%` }]} />
+                </View>
+                <Text style={styles.timeReadout}>
+                  {fmtSec(posSec)} / {fmtSec(durSec)}
+                </Text>
+              </View>
             ) : null}
           </View>
         </View>
@@ -466,12 +642,18 @@ export function CastModal({
                 </View>
 
                 {senderToken ? (
-                  <ScrollView
-                    showsVerticalScrollIndicator={false}
-                    contentContainerStyle={styles.popupRemoteScroll}
-                  >
-                    {remoteControlsContent(isLandscape)}
-                  </ScrollView>
+                  isLandscape ? (
+                    <View style={styles.popupRemoteLandscapeWrap}>
+                      {remoteControlsContent(true)}
+                    </View>
+                  ) : (
+                    <ScrollView
+                      showsVerticalScrollIndicator={false}
+                      contentContainerStyle={styles.popupRemoteScroll}
+                    >
+                      {remoteControlsContent(false)}
+                    </ScrollView>
+                  )
                 ) : isLandscape ? (
                   <View style={styles.landscapeColumns}>
                     <View style={{ flex: 1.05 }}>{cameraBox(true)}</View>
@@ -811,5 +993,141 @@ const styles = StyleSheet.create({
   stopTxt: {
     color: '#FCA5A5',
     fontWeight: '700',
+  },
+  popupRemoteLandscapeWrap: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+  remoteLandscapeRow: {
+    flex: 1,
+    flexDirection: 'row',
+    gap: 14,
+    alignItems: 'stretch',
+  },
+  remoteLandscapeLeft: {
+    flex: 1.05,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderRadius: 24,
+    padding: 16,
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  remoteLandscapeRight: {
+    flex: 1,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderRadius: 24,
+    padding: 14,
+    justifyContent: 'center',
+    gap: 10,
+  },
+  roomPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 6,
+    backgroundColor: 'rgba(229,9,20,0.16)',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+  },
+  roomLiveDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    backgroundColor: '#30D158',
+  },
+  roomPillTxt: {
+    color: '#FFF',
+    fontSize: 12,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  landscapeInfoBody: {
+    gap: 8,
+  },
+  landscapeTitle: {
+    color: '#FFF',
+    fontSize: 14.5,
+    fontWeight: '700',
+    lineHeight: 20,
+  },
+  waitingTimeTxt: {
+    color: COLORS.muted,
+    fontSize: 12,
+  },
+  progressBox: {
+    gap: 6,
+  },
+  progressTrack: {
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    overflow: 'hidden',
+  },
+  progressFill: {
+    height: '100%',
+    backgroundColor: COLORS.accent,
+  },
+  timeReadoutLeft: {
+    color: '#5AC8FA',
+    fontSize: 12.5,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  landscapeActionFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  landscapePushBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: COLORS.accent,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 16,
+  },
+  landscapePushTxt: {
+    color: '#FFF',
+    fontSize: 12.5,
+    fontWeight: '700',
+    flexShrink: 1,
+  },
+  landscapeStopBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    backgroundColor: 'rgba(239,68,68,0.2)',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 16,
+  },
+  deckRow: {
+    flex: 1,
+    flexDirection: 'row',
+    gap: 10,
+  },
+  ctrlBtnLandscape: {
+    flex: 1,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.11)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    paddingVertical: 8,
+  },
+  ctrlPlayLandscape: {
+    backgroundColor: 'rgba(229,9,20,0.48)',
+  },
+  ctrlActiveTint: {
+    backgroundColor: 'rgba(229,9,20,0.34)',
+  },
+  remoteMetaCenter: {
+    alignItems: 'center',
+    width: '100%',
   },
 });

@@ -6,6 +6,7 @@ interface DvaNativeMediaServerBridge {
   dvaGetOfflineMediaServerPort(): Promise<number>;
   dvaStopOfflineMediaServer(): Promise<boolean>;
   dvaHasPipSubtitleProxy?: () => boolean;
+  dvaSetPipSubtitleCues?: (cuesJson: string) => boolean;
   dvaGetSigningInfo?: () => string;
   dvaSetBackgroundDownloadActive?: (active: boolean) => boolean;
   dvaIsBackgroundDownloadActive?: () => boolean;
@@ -50,6 +51,18 @@ export function isNativePipProxySupported(): boolean {
   }
   try {
     return Boolean(bridge.dvaHasPipSubtitleProxy());
+  } catch {
+    return false;
+  }
+}
+
+export function setNativePipSubtitleCues(cuesJson: string): boolean {
+  const bridge = getNativeMediaBridge();
+  if (!bridge || typeof bridge.dvaSetPipSubtitleCues !== 'function') {
+    return false;
+  }
+  try {
+    return Boolean(bridge.dvaSetPipSubtitleCues(String(cuesJson || '')));
   } catch {
     return false;
   }
