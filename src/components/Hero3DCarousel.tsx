@@ -98,18 +98,23 @@ export function Hero3DCarousel({
     } catch {}
   }, [trailerMuted, trailerPlayer]);
 
-  const stopTrailerImmediately = useCallback(() => {
-    try {
-      trailerPlayer.pause();
-    } catch {}
-    trailerPlayer.replaceAsync(null).catch(() => {});
-    trailerOpacity.stopAnimation();
-    trailerOpacity.setValue(0);
-    setTrailerReady(false);
-    trailerInitialSeekDoneRef.current = false;
-    trailerFirstPostSeekSecRef.current = null;
-    trailerCollapseTriggeredRef.current = false;
-  }, [trailerOpacity, trailerPlayer]);
+  const stopTrailerImmediately = useCallback(
+    (preserveOpacity = false) => {
+      try {
+        trailerPlayer.pause();
+      } catch {}
+      trailerPlayer.replaceAsync(null).catch(() => {});
+      if (!preserveOpacity) {
+        trailerOpacity.stopAnimation();
+        trailerOpacity.setValue(0);
+      }
+      setTrailerReady(false);
+      trailerInitialSeekDoneRef.current = false;
+      trailerFirstPostSeekSecRef.current = null;
+      trailerCollapseTriggeredRef.current = false;
+    },
+    [trailerOpacity, trailerPlayer]
+  );
 
   const triggerCollapseAndRevealRef = useRef<(token: number) => void>(() => {});
   triggerCollapseAndRevealRef.current = (token: number) => {
@@ -265,11 +270,11 @@ export function Hero3DCarousel({
   );
 
   // Per-slide lifecycle:
-  // t = 0s: reset to 5-card fanned deck
-  // t = 650ms: resolve & start buffering trailer from >= 200s silently in background
-  // on 1st played second of trailer (in timeUpdate): fold side cards -> dock center card LEFT beside info -> reveal trailer
+  // t = 0s: if previously docked left, smoothly expand poster back to center + open 5-card 3D deck + widen info
+  // t = 650ms (or 1150ms after un-dock): buffer trailer >= 200s silently until 1st played second triggers collapse
   useEffect(() => {
     const token = ++sequenceTokenRef.current;
+    const wasDocked = hasCollapsedRef.current;
     if (collapseAnimRef.current) {
       collapseAnimRef.current.stop();
       collapseAnimRef.current = null;
@@ -278,10 +283,46 @@ export function Hero3DCarousel({
     trailerCollapseTriggeredRef.current = false;
     trailerFirstPostSeekSecRef.current = null;
     setIsDocked(false);
-    spreadProgress.setValue(1);
-    dockProgress.setValue(0);
-    layoutProgress.setValue(0);
-    stopTrailerImmediately();
+    stopTrailerImmediately(wasDocked);
+
+    if (wasDocked) {
+      const expandAnim = Animated.parallel([
+        Animated.timing(trailerOpacity, {
+          toValue: 0,
+          duration: 240,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+        Animated.sequence([
+          Animated.parallel([
+            Animated.timing(dockProgress, {
+              toValue: 0,
+              duration: 360,
+              easing: Easing.out(Easing.cubic),
+              useNativeDriver: true,
+            }),
+            Animated.timing(layoutProgress, {
+              toValue: 0,
+              duration: 340,
+              easing: Easing.out(Easing.cubic),
+              useNativeDriver: false,
+            }),
+          ]),
+          Animated.timing(spreadProgress, {
+            toValue: 1,
+            duration: 320,
+            easing: Easing.out(Easing.cubic),
+            useNativeDriver: true,
+          }),
+        ]),
+      ]);
+      collapseAnimRef.current = expandAnim;
+      expandAnim.start();
+    } else {
+      spreadProgress.setValue(1);
+      dockProgress.setValue(0);
+      layoutProgress.setValue(0);
+    }
 
     const activeItem = items[activeIndex];
     if (!isActive || !activeItem || items.length === 0) {
@@ -338,7 +379,7 @@ export function Hero3DCarousel({
           });
         } catch {}
       })();
-    }, 650);
+    }, wasDocked ? 1150 : 650);
 
     // Advance slowly to next slide only after generous trailer preview time (36s)
     const nextSlideTimer =
@@ -358,7 +399,7 @@ export function Hero3DCarousel({
         collapseAnimRef.current.stop();
         collapseAnimRef.current = null;
       }
-      stopTrailerImmediately();
+      stopTrailerImmediately(false);
     };
   }, [
     activeIndex,

@@ -788,6 +788,14 @@ function RootAppContent() {
     );
   };
 
+  const handleClosePlayer = useCallback(() => {
+    closePlayerWithCurtain();
+  }, [closePlayerWithCurtain]);
+
+  const handleEnterOfflineModeFromPlayer = useCallback(() => {
+    closePlayerWithCurtain(() => enterOfflineMode());
+  }, [closePlayerWithCurtain, enterOfflineMode]);
+
   const renderLockOverlay = () => {
     if (!isLocked) return null;
     return (
@@ -881,7 +889,7 @@ function RootAppContent() {
           <PlayerModal
             visible={playerPhase === 'active' && playerParams !== null}
             params={playerParams}
-            onClose={() => closePlayerWithCurtain()}
+            onClose={handleClosePlayer}
             onSwitchOfflineItem={handleSwitchOfflineItem}
             onWatchProgressSaved={bumpWatchProgressRevision}
           />
@@ -1036,10 +1044,10 @@ function RootAppContent() {
         <PlayerModal
           visible={playerPhase === 'active' && playerParams !== null}
           params={playerParams}
-          onClose={() => closePlayerWithCurtain()}
+          onClose={handleClosePlayer}
           onSwitchEpisode={handleSwitchEpisode}
           onSwitchOfflineItem={handleSwitchOfflineItem}
-          onEnterOfflineMode={() => closePlayerWithCurtain(() => enterOfflineMode())}
+          onEnterOfflineMode={handleEnterOfflineModeFromPlayer}
           onWatchProgressSaved={bumpWatchProgressRevision}
         />
 

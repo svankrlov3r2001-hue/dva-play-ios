@@ -705,10 +705,25 @@ export function PlayerModal({
   const holdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const holdActivatedRef = useRef(false);
 
+  const loadedEpisodeKeyRef = useRef('');
+  const lastAutoServerSwitchAtRef = useRef(0);
+  const AUTO_SWITCH_COOLDOWN_MS = 45000;
+  const BUFFERING_STALL_AUTO_SWITCH_MS = 8000;
+
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
   const resolvedRef = useRef<StreamResolvedData | null>(resolved);
   resolvedRef.current = resolved;
+  const paramsRef = useRef(params);
+  paramsRef.current = params;
+  const playbackRateRef = useRef(playbackRate);
+  playbackRateRef.current = playbackRate;
+  const isBufferingRef = useRef(isBuffering);
+  isBufferingRef.current = isBuffering;
+  const onEnterOfflineModeRef = useRef(onEnterOfflineMode);
+  onEnterOfflineModeRef.current = onEnterOfflineMode;
+  const onWatchProgressSavedRef = useRef(onWatchProgressSaved);
+  onWatchProgressSavedRef.current = onWatchProgressSaved;
 
   const isOfflineOnlyMode = Boolean(params?.offlineUri || params?.offlineItem);
 
@@ -983,11 +998,7 @@ export function PlayerModal({
             episode_number: episodeNumber,
             season_id: seasonId,
             title: params.title,
-          })
-            .then(() => {
-              onWatchProgressSaved?.();
-            })
-            .catch(() => {})
+          }).catch(() => {})
         );
         jobs.push(
           syncOnlineProgressToOffline({
@@ -1003,7 +1014,7 @@ export function PlayerModal({
 
       await Promise.all(jobs);
     },
-    [params, activeStreamCode, matchedOfflineItem?.id, isOfflineOnlyMode, effectiveEpisodes, onWatchProgressSaved]
+    [params, activeStreamCode, matchedOfflineItem?.id, isOfflineOnlyMode, effectiveEpisodes]
   );
 
   const flushActivePlaybackSessionNow = useCallback(
@@ -1128,13 +1139,13 @@ export function PlayerModal({
           metadata: { title: opts.title, artist: 'Đặng Việt Anh' },
         });
         player.muted = false;
-        player.playbackRate = playbackRate;
+        player.playbackRate = playbackRateRef.current;
         if (!isLockedRef.current) {
           player.play();
         }
       } catch {}
     },
-    [ensureLiveLocalPort, getActivePlayer, getInactivePlayer, playbackRate]
+    [ensureLiveLocalPort, getActivePlayer, getInactivePlayer]
   );
 
   // Start or restart polling for Phiên 11 / Phiên 36 readiness
@@ -1183,6 +1194,7 @@ export function PlayerModal({
             hasGgdDirect,
           });
           if (firstPlayable) {
+            lastAutoServerSwitchAtRef.current = Date.now();
             await playServerOnActiveLayer(firstPlayable, {
               seekToSec: Math.max(targetStartSec, currentTimeRef.current),
               serverFileKey: sfk,
@@ -1203,6 +1215,7 @@ export function PlayerModal({
         ) {
           const upgradedMedia = buildServer11Or36MediaUrl(curId, sfk, pollRes);
           if (upgradedMedia.url && upgradedMedia.url !== curSrv.streamUrl) {
+            lastAutoServerSwitchAtRef.current = Date.now();
             await playServerOnActiveLayer(
               {
                 ...curSrv,
@@ -1232,13 +1245,16 @@ export function PlayerModal({
           curId !== '99' &&
           pollRes.status === 'success' &&
           curId !== '11' &&
-          curId !== '36'
+          curId !== '36' &&
+          isBufferingRef.current &&
+          Date.now() - lastAutoServerSwitchAtRef.current >= AUTO_SWITCH_COOLDOWN_MS
         ) {
           const better = selectOptimalServer(updated, {
             preferOffline: settingsRef.current.preferOfflineWhenOnline,
             hasGgdDirect,
           });
           if (better && better.id !== curId && (better.pingMs ?? 9999) + 40 < (curSrv.pingMs ?? 9999)) {
+            lastAutoServerSwitchAtRef.current = Date.now();
             await playServerOnActiveLayer(better, {
               seekToSec: currentTimeRef.current,
               serverFileKey: sfk,
@@ -1269,6 +1285,7 @@ export function PlayerModal({
       offlineRetryAttemptedRef.current = false;
       rewoundToastPendingRef.current = false;
       userExplicitlyPausedRef.current = false;
+      lastAutoServerSwitchAtRef.current = 0;
 
       if (checkFilePollRef.current) {
         clearInterval(checkFilePollRef.current);
@@ -1632,8 +1649,8 @@ export function PlayerModal({
       } catch {
         setFirstFrameReady(true);
         setIsBuffering(false);
-        if (onEnterOfflineMode) {
-          onEnterOfflineMode();
+        if (onEnterOfflineModeRef.current) {
+          onEnterOfflineModeRef.current();
         } else {
           showAppAlert('Lỗi kết nối', 'Không thể tải dữ liệu phát phim lúc này.');
         }
@@ -1648,9 +1665,11 @@ export function PlayerModal({
       playServerOnActiveLayer,
       startCheckFilePolling,
       showToast,
-      onEnterOfflineMode,
     ]
   );
+
+  const loadEpisodeByCodeRef = useRef(loadEpisodeByCode);
+  loadEpisodeByCodeRef.current = loadEpisodeByCode;
 
   // Preload next episode silently into inactive AVPlayer layer at T - outro - 120s
   const preloadNextEpisodeToInactiveLayer = useCallback(async () => {
@@ -2701,6 +2720,7 @@ export function PlayerModal({
 
   useEffect(() => {
     if (!visible || !params) {
+      loadedEpisodeKeyRef.current = '';
       lastLoadedVideosIdRef.current = 0;
       resetPlayerStateCleanly(null);
       setServerModalOpen(false);
@@ -2719,8 +2739,15 @@ export function PlayerModal({
 
     if (skipNextReloadCodeRef.current === params.streamCode) {
       skipNextReloadCodeRef.current = null;
+      loadedEpisodeKeyRef.current = `${params.videosId}|${params.streamCode}|${params.offlineItem?.id || ''}|${isOfflineOnlyMode ? 'off' : 'on'}`;
       return;
     }
+
+    const loadKey = `${params.videosId}|${params.streamCode}|${params.offlineItem?.id || ''}|${isOfflineOnlyMode ? 'off' : 'on'}`;
+    if (loadedEpisodeKeyRef.current === loadKey) {
+      return;
+    }
+    loadedEpisodeKeyRef.current = loadKey;
 
     const switchingDifferentMovie =
       lastLoadedVideosIdRef.current !== 0 && lastLoadedVideosIdRef.current !== params.videosId;
@@ -2762,7 +2789,7 @@ export function PlayerModal({
         .catch(() => {});
     }
 
-    void loadEpisodeByCode(params.streamCode, {
+    void loadEpisodeByCodeRef.current(params.streamCode, {
       episodeTitleHint: params.episodeTitle,
       offlineOverride: params.offlineItem || null,
     });
@@ -2770,9 +2797,9 @@ export function PlayerModal({
     visible,
     params?.streamCode,
     params?.videosId,
+    params?.offlineItem?.id,
     isOfflineOnlyMode,
     clearPipRestoreTimer,
-    loadEpisodeByCode,
     resetPlayerStateCleanly,
   ]);
 
@@ -2937,10 +2964,93 @@ export function PlayerModal({
           new Promise<void>((r) => setTimeout(r, 900)),
         ]);
       } catch {}
-      onWatchProgressSaved?.();
+      onWatchProgressSavedRef.current?.();
       onClose();
     })();
-  }, [persistCurrentProgress, clearHudTimer, playerA, playerB, onWatchProgressSaved, onClose]);
+  }, [persistCurrentProgress, clearHudTimer, playerA, playerB, onClose]);
+
+  // Buffering-only Auto-Optimal Server Switch with Cooldown (Item 3)
+  useEffect(() => {
+    if (!visible || !isBuffering || !firstFrameReady || isOfflineOnlyMode) return;
+    if (!settingsRef.current.autoOptimalServer) return;
+    if (manualLockedServerRef.current) return;
+    const curId = activeServerIdRef.current;
+    if (!curId || curId === '99') return;
+
+    const stallStartPos = currentTimeRef.current;
+    const mySeq = loadSeqRef.current;
+
+    const timer = setTimeout(() => {
+      void (async () => {
+        if (loadSeqRef.current !== mySeq) return;
+        if (!isBufferingRef.current || userExplicitlyPausedRef.current || isLockedRef.current) return;
+        if (!settingsRef.current.autoOptimalServer || manualLockedServerRef.current) return;
+        const activeIdNow = activeServerIdRef.current;
+        if (!activeIdNow || activeIdNow === '99') return;
+
+        // Only switch when playback has actually stalled during buffering
+        if (Math.abs(currentTimeRef.current - stallStartPos) >= 1.0) return;
+
+        const now = Date.now();
+        if (now - lastAutoServerSwitchAtRef.current < AUTO_SWITCH_COOLDOWN_MS) return;
+
+        try {
+          const online = await probeConnectivity(2000).catch(() => false);
+          if (!online || loadSeqRef.current !== mySeq || !isBufferingRef.current) return;
+
+          const p = await measureAllServerPings(Boolean(matchedOfflineItem));
+          if (loadSeqRef.current !== mySeq || !isBufferingRef.current) return;
+
+          const latestList = serversRef.current.map((s) => {
+            if (s.id === '99') return { ...s, pingMs: p.ping99, pingFailed: false };
+            if (s.id === '11') return { ...s, pingMs: p.ping11, pingFailed: p.ping11 === null };
+            if (s.id === '36') return { ...s, pingMs: p.ping36, pingFailed: p.ping36 === null };
+            if (s.id === '40') return { ...s, pingMs: p.ping40, pingFailed: false };
+            if (s.id === '3') return { ...s, pingMs: p.ping3, pingFailed: false };
+            return s;
+          });
+          setServers(latestList);
+
+          const candidates = latestList.filter((s) => s.id !== activeIdNow && isServerPlayable(s));
+          const hasGgdDirect = Boolean(
+            resolvedRef.current?.ggdriver_1 ||
+              resolvedRef.current?.ggdriver_2 ||
+              resolvedRef.current?.ggdriver_3
+          );
+          const better = selectOptimalServer(candidates, {
+            preferOffline: settingsRef.current.preferOfflineWhenOnline,
+            hasGgdDirect,
+          });
+          if (better && better.id !== activeIdNow) {
+            lastAutoServerSwitchAtRef.current = Date.now();
+            await playServerOnActiveLayer(better, {
+              seekToSec: currentTimeRef.current,
+              serverFileKey: resolvedRef.current?.server_file_key || '',
+              vnUrl: vnSubUrlRef.current,
+              enUrl: enSubUrlRef.current,
+              title: resolvedRef.current?.title || paramsRef.current?.title || '',
+            });
+            showToast(
+              `Đã chuyển sang ${better.label}`,
+              `Tự động tối ưu do tải chậm (${better.pingMs || 0} ms)`,
+              'info',
+              { family: 'ionicons', name: 'server-outline', color: '#38BDF8' }
+            );
+          }
+        } catch {}
+      })();
+    }, BUFFERING_STALL_AUTO_SWITCH_MS);
+
+    return () => clearTimeout(timer);
+  }, [
+    visible,
+    isBuffering,
+    firstFrameReady,
+    isOfflineOnlyMode,
+    matchedOfflineItem,
+    playServerOnActiveLayer,
+    showToast,
+  ]);
 
   const seekToWithWarning = useCallback(
     (targetSec: number) => {
@@ -4067,6 +4177,7 @@ export function PlayerModal({
               const target = servers.find((s) => s.id === id);
               if (!target) return;
               manualLockedServerRef.current = id;
+              lastAutoServerSwitchAtRef.current = Date.now();
               erroredServersRef.current.delete(id);
               const sfk = resolved?.server_file_key || '';
 
@@ -4333,7 +4444,8 @@ export function PlayerModal({
           }}
           onReloadPlayer={() => {
             persistCurrentProgress(true);
-            void loadEpisodeByCode(activeStreamCode, {
+            loadedEpisodeKeyRef.current = '';
+            void loadEpisodeByCodeRef.current(activeStreamCode, {
               episodeTitleHint: epDisplay,
               offlineOverride: matchedOfflineItem,
             });
