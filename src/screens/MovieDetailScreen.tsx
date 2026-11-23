@@ -40,6 +40,24 @@ import {
   SourceItem,
 } from '../types/models';
 
+function formatCompactResumeText(raw?: string): string {
+  const txt = String(raw || '').trim();
+  if (!txt) return '';
+  if (!/giờ|phút|giây/i.test(txt)) return txt;
+  const hMatch = txt.match(/(\d+)\s*giờ/i);
+  const mMatch = txt.match(/(\d+)\s*phút/i);
+  const sMatch = txt.match(/(\d+)\s*giây/i);
+  const h = hMatch ? parseInt(hMatch[1], 10) : 0;
+  const m = mMatch ? parseInt(mMatch[1], 10) : 0;
+  const s = sMatch ? parseInt(sMatch[1], 10) : 0;
+  const pad = (n: number) => String(Math.max(0, n)).padStart(2, '0');
+  const formatted = h > 0 ? `${pad(h)}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+  return txt
+    .replace(/(?:\d+\s*giờ\s*|\d+\s*phút\s*|\d+\s*giây\s*)+/gi, formatted)
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 interface MovieDetailScreenProps {
   visible: boolean;
   videosId: number | null;
@@ -299,7 +317,7 @@ export function MovieDetailScreen({
               <View style={styles.progressBox}>
                 <View style={styles.progressRow}>
                   <Text style={styles.progressTxt}>
-                    {movie.watch_history.viewed_information}
+                    {formatCompactResumeText(movie.watch_history.viewed_information)}
                   </Text>
                   <Text style={styles.progressRemain}>
                     {movie.watch_history.time_remaining || `${movie.watch_history.progress_percent}%`}
@@ -328,8 +346,13 @@ export function MovieDetailScreen({
                 }}
               >
                 <Ionicons name="play" size={20} color="#FFF" />
-                <Text style={styles.playBtnText}>
-                  {movie.watch_history?.viewed_information || 'Xem ngay'}
+                <Text
+                  style={styles.playBtnText}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.8}
+                >
+                  {formatCompactResumeText(movie.watch_history?.viewed_information) || 'Xem ngay'}
                 </Text>
               </BouncyButton>
 
@@ -436,7 +459,8 @@ export function MovieDetailScreen({
                       <ScrollView
                         horizontal
                         showsHorizontalScrollIndicator={false}
-                        contentContainerStyle={styles.seasonRow}
+                        style={{ overflow: 'visible' }}
+                        contentContainerStyle={[styles.seasonRow, { overflow: 'visible' }]}
                       >
                         {movie.seasons.map((s, idx) => (
                           <BouncyButton
@@ -532,7 +556,12 @@ export function MovieDetailScreen({
                   castGroups.map((grp) => (
                     <View key={grp.title} style={{ marginBottom: 18 }}>
                       <Text style={styles.subHeading}>{grp.title}</Text>
-                      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                      <ScrollView
+                        horizontal
+                        showsHorizontalScrollIndicator={false}
+                        style={{ overflow: 'visible' }}
+                        contentContainerStyle={{ overflow: 'visible' }}
+                      >
                         {grp.items.map((star, idx) => (
                           <GlassSurface
                             key={`${grp.title}_${star.id}_${idx}`}
@@ -768,8 +797,10 @@ const styles = StyleSheet.create({
   },
   playBtn: {
     height: 50,
+    paddingHorizontal: 14,
     borderRadius: RADII.md,
     backgroundColor: COLORS.accent,
+    overflow: 'hidden',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -779,6 +810,7 @@ const styles = StyleSheet.create({
     color: '#FFF',
     fontSize: 16,
     fontWeight: '700',
+    flexShrink: 1,
   },
   quickActionRow: {
     flexDirection: 'row',

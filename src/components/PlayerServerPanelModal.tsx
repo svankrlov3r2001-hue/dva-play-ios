@@ -149,7 +149,11 @@ export function PlayerServerPanelModal({
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.cardsScroll}
+              style={{ marginHorizontal: -16, marginVertical: -8 }}
+              contentContainerStyle={[
+                styles.cardsScroll,
+                { paddingHorizontal: 16, paddingVertical: 8 },
+              ]}
             >
               {servers.map((srv) => {
                 const isActive = srv.id === activeServerId;

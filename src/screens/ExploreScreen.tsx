@@ -16,7 +16,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BouncyButton } from '../components/BouncyButton';
-import { GlassSurface } from '../components/GlassSurface';
+import { GlassSurface, WaterDropPopupView } from '../components/GlassSurface';
 import { MovieCard } from '../components/MovieCard';
 import { SkeletonCrossfade } from '../components/SkeletonCrossfade';
 import { ExploreGridSkeleton } from '../components/SkeletonLoaders';
@@ -217,11 +217,6 @@ export function ExploreScreen({ onOpenPreview }: ExploreScreenProps) {
     return tags;
   }, [type, genre, country, sort, genres, countries]);
 
-  const sheetTranslateY = sheetAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [260, 0],
-  });
-
   return (
     <View style={[styles.container, { paddingTop: insets.top + 8 }]}>
       <View style={styles.headerBar}>
@@ -308,11 +303,10 @@ export function ExploreScreen({ onOpenPreview }: ExploreScreenProps) {
             style={StyleSheet.absoluteFill}
             onPress={() => setFilterSheetOpen(false)}
           />
-          <Animated.View
-            style={[
-              styles.sheetPositioner,
-              { transform: [{ translateY: sheetTranslateY }] },
-            ]}
+          <WaterDropPopupView
+            visible={filterSheetOpen}
+            from="bottom"
+            style={styles.sheetPositioner}
           >
             <GlassSurface
               intensity={34}
@@ -482,7 +476,7 @@ export function ExploreScreen({ onOpenPreview }: ExploreScreenProps) {
                 </BouncyButton>
               </View>
             </GlassSurface>
-          </Animated.View>
+          </WaterDropPopupView>
         </Animated.View>
       ) : null}
     </View>
@@ -632,8 +626,11 @@ const styles = StyleSheet.create({
   },
   sheetScroll: {
     flexGrow: 0,
+    marginHorizontal: -10,
   },
   sheetScrollContent: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
     paddingBottom: 14,
   },
   groupHeading: {

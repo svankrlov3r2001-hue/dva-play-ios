@@ -212,7 +212,7 @@ export function GlassSurface({
 
 const styles = StyleSheet.create({
   outer: {
-    overflow: 'hidden',
+    overflow: 'visible',
   },
   liquidOuter: {
     overflow: 'visible',

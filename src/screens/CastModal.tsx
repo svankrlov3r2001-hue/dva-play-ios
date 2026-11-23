@@ -21,7 +21,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AmbientAppBackground } from '../components/AmbientAppBackground';
 import { showAppAlert } from '../components/AppAlertModal';
 import { BouncyButton } from '../components/BouncyButton';
-import { GlassSurface } from '../components/GlassSurface';
+import { GlassSurface, WaterDropPopupView } from '../components/GlassSurface';
 import { COLORS } from '../constants/config';
 import {
   castPairApi,
@@ -611,73 +611,80 @@ export function CastModal({
             behavior={Platform.OS === 'ios' ? 'padding' : undefined}
             style={{ width: cardWidth, maxWidth: '100%' }}
           >
-            <GlassSurface
-              variant="liquid"
-              intensity={34}
-              radius={40}
-              style={{ width: cardWidth, height: cardHeight }}
-            >
-              <View style={styles.popupInner}>
-                <View style={styles.header}>
-                  <View style={{ flex: 1, paddingRight: 10 }}>
-                    <Text style={styles.popupTitle}>DVA Cast lên TV</Text>
-                    {movieToCast?.title ? (
-                      <Text style={styles.popupSub} numberOfLines={1}>
-                        {movieToCast.episode
-                          ? `${movieToCast.title} • ${movieToCast.episode}`
-                          : movieToCast.title}
-                      </Text>
-                    ) : null}
+            <WaterDropPopupView visible={visible} from="center">
+              <GlassSurface
+                variant="liquid"
+                intensity={34}
+                radius={40}
+                style={{ width: cardWidth, height: cardHeight }}
+              >
+                <View style={styles.popupInner}>
+                  <View style={styles.header}>
+                    <View style={{ flex: 1, paddingRight: 10 }}>
+                      <Text style={styles.popupTitle}>DVA Cast lên TV</Text>
+                      {movieToCast?.title ? (
+                        <Text style={styles.popupSub} numberOfLines={1}>
+                          {movieToCast.episode
+                            ? `${movieToCast.title} • ${movieToCast.episode}`
+                            : movieToCast.title}
+                        </Text>
+                      ) : null}
+                    </View>
+                    <BouncyButton
+                      style={styles.closeBtn}
+                      hitSlop={10}
+                      onPress={() => {
+                        Haptics.selectionAsync();
+                        onClose();
+                      }}
+                    >
+                      <Ionicons name="close" size={22} color="#FFF" />
+                    </BouncyButton>
                   </View>
-                  <BouncyButton
-                    style={styles.closeBtn}
-                    hitSlop={10}
-                    onPress={() => {
-                      Haptics.selectionAsync();
-                      onClose();
-                    }}
-                  >
-                    <Ionicons name="close" size={22} color="#FFF" />
-                  </BouncyButton>
-                </View>
 
-                {senderToken ? (
-                  isLandscape ? (
-                    <View style={styles.popupRemoteLandscapeWrap}>
-                      {remoteControlsContent(true)}
+                  {senderToken ? (
+                    isLandscape ? (
+                      <View style={styles.popupRemoteLandscapeWrap}>
+                        {remoteControlsContent(true)}
+                      </View>
+                    ) : (
+                      <ScrollView
+                        style={{ marginHorizontal: -12 }}
+                        showsVerticalScrollIndicator={false}
+                        contentContainerStyle={[
+                          styles.popupRemoteScroll,
+                          { paddingHorizontal: 12, paddingVertical: 4 },
+                        ]}
+                      >
+                        {remoteControlsContent(false)}
+                      </ScrollView>
+                    )
+                  ) : isLandscape ? (
+                    <View style={styles.landscapeColumns}>
+                      <View style={{ flex: 1.05 }}>{cameraBox(true)}</View>
+                      <View style={styles.landscapeRightCol}>
+                        <Text style={styles.desc}>
+                          Mở DVA Cast trên TV / máy chiếu, hướng Camera vào mã QR hoặc nhập mã 6 ký tự bên dưới.
+                        </Text>
+                        <View style={styles.glassPanelBox}>{manualInputBox}</View>
+                      </View>
                     </View>
                   ) : (
                     <ScrollView
+                      style={{ marginHorizontal: -12 }}
                       showsVerticalScrollIndicator={false}
-                      contentContainerStyle={styles.popupRemoteScroll}
+                      contentContainerStyle={{ gap: 14, paddingHorizontal: 12, paddingVertical: 4 }}
                     >
-                      {remoteControlsContent(false)}
-                    </ScrollView>
-                  )
-                ) : isLandscape ? (
-                  <View style={styles.landscapeColumns}>
-                    <View style={{ flex: 1.05 }}>{cameraBox(true)}</View>
-                    <View style={styles.landscapeRightCol}>
                       <Text style={styles.desc}>
-                        Mở DVA Cast trên TV / máy chiếu, hướng Camera vào mã QR hoặc nhập mã 6 ký tự bên dưới.
+                        Mở DVA Cast trên TV / máy chiếu, hướng Camera iPhone vào mã QR hoặc nhập mã 6 ký tự bên dưới.
                       </Text>
+                      {cameraBox(false)}
                       <View style={styles.glassPanelBox}>{manualInputBox}</View>
-                    </View>
-                  </View>
-                ) : (
-                  <ScrollView
-                    showsVerticalScrollIndicator={false}
-                    contentContainerStyle={{ gap: 14 }}
-                  >
-                    <Text style={styles.desc}>
-                      Mở DVA Cast trên TV / máy chiếu, hướng Camera iPhone vào mã QR hoặc nhập mã 6 ký tự bên dưới.
-                    </Text>
-                    {cameraBox(false)}
-                    <View style={styles.glassPanelBox}>{manualInputBox}</View>
-                  </ScrollView>
-                )}
-              </View>
-            </GlassSurface>
+                    </ScrollView>
+                  )}
+                </View>
+              </GlassSurface>
+            </WaterDropPopupView>
           </KeyboardAvoidingView>
         </View>
       </Modal>

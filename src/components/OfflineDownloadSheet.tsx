@@ -15,7 +15,7 @@ import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { showAppAlert } from './AppAlertModal';
 import { BouncyButton } from './BouncyButton';
-import { GlassSurface } from './GlassSurface';
+import { GlassSurface, WaterDropPopupView } from './GlassSurface';
 import { COLORS } from '../constants/config';
 import { useSettings } from '../context/SettingsContext';
 import { fetchMovieDetailsApi } from '../services/api';
@@ -318,8 +318,9 @@ export function OfflineDownloadSheet({
 
   const renderControlsColumn = () => (
     <ScrollView
+      style={{ marginHorizontal: -12, marginTop: -6 }}
       showsVerticalScrollIndicator={false}
-      contentContainerStyle={{ gap: 10, paddingBottom: 6 }}
+      contentContainerStyle={{ gap: 10, paddingHorizontal: 12, paddingVertical: 6 }}
     >
       {renderStatusPill(currentDownloadItem)}
 
@@ -473,7 +474,11 @@ export function OfflineDownloadSheet({
           <ActivityIndicator size="small" color="#FFF" />
         </View>
       ) : orderedEpisodes.length > 0 ? (
-        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ gap: 6, paddingBottom: 6 }}>
+        <ScrollView
+          style={{ marginHorizontal: -12 }}
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={{ gap: 6, paddingHorizontal: 12, paddingVertical: 6 }}
+        >
           {orderedEpisodes.map((ep) => {
             const item = findItemForEpisode(ep.stream_code);
             const isCur = ep.stream_code === targetStreamCode;
@@ -549,53 +554,61 @@ export function OfflineDownloadSheet({
     >
       <View style={styles.modalBackdrop}>
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
-        <GlassSurface
-          variant="liquid"
-          radius={40}
-          intensity={34}
-          style={[
-            styles.cardWrap,
-            {
-              width: cardWidth,
-              height: cardHeight,
-            },
-          ]}
-        >
-          <View style={styles.cardInner}>
-            <View style={styles.header}>
-              <View style={{ flex: 1, paddingRight: 10 }}>
-                <Text style={styles.headerTitle} numberOfLines={1}>
-                  Tải &amp; Xem Ngoại Tuyến
-                </Text>
-                <Text style={styles.headerSub} numberOfLines={1}>
-                  {title}
-                  {currentEpisodeTitle ? ` • ${currentEpisodeTitle}` : ''}
-                </Text>
-                <Text style={styles.bgDownloadHint} numberOfLines={1}>
-                  Hỗ trợ tải ngầm ngay cả khi thoát ra màn hình chính hoặc khóa máy
-                </Text>
+        <WaterDropPopupView visible={visible} from="center">
+          <GlassSurface
+            variant="liquid"
+            radius={40}
+            intensity={34}
+            style={[
+              styles.cardWrap,
+              {
+                width: cardWidth,
+                height: cardHeight,
+              },
+            ]}
+          >
+            <View style={styles.cardInner}>
+              <View style={styles.header}>
+                <View style={{ flex: 1, paddingRight: 10 }}>
+                  <Text style={styles.headerTitle} numberOfLines={1}>
+                    Tải &amp; Xem Ngoại Tuyến
+                  </Text>
+                  <Text style={styles.headerSub} numberOfLines={1}>
+                    {title}
+                    {currentEpisodeTitle ? ` • ${currentEpisodeTitle}` : ''}
+                  </Text>
+                  <Text style={styles.bgDownloadHint} numberOfLines={1}>
+                    Hỗ trợ tải ngầm ngay cả khi thoát ra màn hình chính hoặc khóa máy
+                  </Text>
+                </View>
+                <BouncyButton style={styles.closeBtn} onPress={onClose}>
+                  <Ionicons name="close" size={22} color="#FFF" />
+                </BouncyButton>
               </View>
-              <BouncyButton style={styles.closeBtn} onPress={onClose}>
-                <Ionicons name="close" size={22} color="#FFF" />
-              </BouncyButton>
-            </View>
 
-            {isLandscape ? (
-              <View style={styles.landscapeCols}>
-                <View style={styles.landscapeColLeft}>{renderControlsColumn()}</View>
-                <View style={styles.landscapeColRight}>{renderEpisodesColumn()}</View>
-              </View>
-            ) : (
-              <ScrollView
-                showsVerticalScrollIndicator={false}
-                contentContainerStyle={{ gap: 14, paddingBottom: Math.max(12, insets.bottom) }}
-              >
-                {renderControlsColumn()}
-                {renderEpisodesColumn()}
-              </ScrollView>
-            )}
-          </View>
-        </GlassSurface>
+              {isLandscape ? (
+                <View style={styles.landscapeCols}>
+                  <View style={styles.landscapeColLeft}>{renderControlsColumn()}</View>
+                  <View style={styles.landscapeColRight}>{renderEpisodesColumn()}</View>
+                </View>
+              ) : (
+                <ScrollView
+                  style={{ marginHorizontal: -12 }}
+                  showsVerticalScrollIndicator={false}
+                  contentContainerStyle={{
+                    gap: 14,
+                    paddingHorizontal: 12,
+                    paddingTop: 6,
+                    paddingBottom: Math.max(12, insets.bottom),
+                  }}
+                >
+                  {renderControlsColumn()}
+                  {renderEpisodesColumn()}
+                </ScrollView>
+              )}
+            </View>
+          </GlassSurface>
+        </WaterDropPopupView>
       </View>
     </Modal>
   );

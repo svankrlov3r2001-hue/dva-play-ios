@@ -42,6 +42,24 @@ interface PreviewSheetModalProps {
   onOpenDetail: (videosId: number) => void;
 }
 
+function formatCompactResumeText(raw?: string): string {
+  const txt = String(raw || '').trim();
+  if (!txt) return '';
+  if (!/giờ|phút|giây/i.test(txt)) return txt;
+  const hMatch = txt.match(/(\d+)\s*giờ/i);
+  const mMatch = txt.match(/(\d+)\s*phút/i);
+  const sMatch = txt.match(/(\d+)\s*giây/i);
+  const h = hMatch ? parseInt(hMatch[1], 10) : 0;
+  const m = mMatch ? parseInt(mMatch[1], 10) : 0;
+  const s = sMatch ? parseInt(sMatch[1], 10) : 0;
+  const pad = (n: number) => String(Math.max(0, n)).padStart(2, '0');
+  const formatted = h > 0 ? `${pad(h)}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+  return txt
+    .replace(/(?:\d+\s*giờ\s*|\d+\s*phút\s*|\d+\s*giây\s*)+/gi, formatted)
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 export function PreviewSheetModal({
   visible,
   videosId,
@@ -63,6 +81,8 @@ export function PreviewSheetModal({
   const isOpen = visible && !obscuredByPlayer;
   const backdropOpacity = useRef(new Animated.Value(0)).current;
   const sheetTranslateY = useRef(new Animated.Value(360)).current;
+  const sheetScaleX = useRef(new Animated.Value(0.92)).current;
+  const sheetScaleY = useRef(new Animated.Value(1.06)).current;
   const trailerOpacity = useRef(new Animated.Value(0)).current;
   const isMutedRef = useRef(isMuted);
   isMutedRef.current = isMuted;
@@ -124,27 +144,68 @@ export function PreviewSheetModal({
 
   useEffect(() => {
     if (isOpen) {
+      backdropOpacity.stopAnimation();
+      sheetTranslateY.stopAnimation();
+      sheetScaleX.stopAnimation();
+      sheetScaleY.stopAnimation();
       backdropOpacity.setValue(0);
-      sheetTranslateY.setValue(320);
+      sheetTranslateY.setValue(240);
+      sheetScaleX.setValue(0.92);
+      sheetScaleY.setValue(1.06);
       Animated.parallel([
         Animated.timing(backdropOpacity, {
           toValue: 1,
-          duration: 220,
+          duration: 210,
           easing: Easing.out(Easing.cubic),
           useNativeDriver: true,
         }),
-        Animated.timing(sheetTranslateY, {
+        Animated.spring(sheetTranslateY, {
           toValue: 0,
-          duration: 260,
-          easing: Easing.out(Easing.cubic),
+          stiffness: 175,
+          damping: 14,
+          mass: 1.05,
           useNativeDriver: true,
         }),
+        Animated.sequence([
+          Animated.timing(sheetScaleX, {
+            toValue: 1.025,
+            duration: 175,
+            easing: Easing.bezier(0.34, 1.56, 0.64, 1),
+            useNativeDriver: true,
+          }),
+          Animated.spring(sheetScaleX, {
+            toValue: 1,
+            stiffness: 190,
+            damping: 8.5,
+            mass: 1.05,
+            useNativeDriver: true,
+          }),
+        ]),
+        Animated.sequence([
+          Animated.timing(sheetScaleY, {
+            toValue: 0.975,
+            duration: 175,
+            easing: Easing.bezier(0.34, 1.56, 0.64, 1),
+            useNativeDriver: true,
+          }),
+          Animated.spring(sheetScaleY, {
+            toValue: 1,
+            stiffness: 190,
+            damping: 8.5,
+            mass: 1.05,
+            useNativeDriver: true,
+          }),
+        ]),
       ]).start();
     } else {
       backdropOpacity.stopAnimation();
       sheetTranslateY.stopAnimation();
+      sheetScaleX.stopAnimation();
+      sheetScaleY.stopAnimation();
       backdropOpacity.setValue(0);
-      sheetTranslateY.setValue(320);
+      sheetTranslateY.setValue(240);
+      sheetScaleX.setValue(0.92);
+      sheetScaleY.setValue(1.06);
       setTrailerActive(false);
       trailerOpacity.setValue(0);
       seekAppliedRef.current = false;
@@ -154,7 +215,7 @@ export function PreviewSheetModal({
       } catch {}
       player.replaceAsync(null).catch(() => {});
     }
-  }, [isOpen, backdropOpacity, sheetTranslateY, player, trailerOpacity]);
+  }, [isOpen, backdropOpacity, sheetTranslateY, sheetScaleX, sheetScaleY, player, trailerOpacity]);
 
   useEffect(() => {
     player.muted = isMuted;
@@ -309,7 +370,14 @@ export function PreviewSheetModal({
         <Animated.View
           style={[
             styles.sheetAnimWrap,
-            { maxHeight: maxSheetHeight, transform: [{ translateY: sheetTranslateY }] },
+            {
+              maxHeight: maxSheetHeight,
+              transform: [
+                { translateY: sheetTranslateY },
+                { scaleX: sheetScaleX },
+                { scaleY: sheetScaleY },
+              ],
+            },
           ]}
         >
           <GlassSurface
@@ -473,8 +541,13 @@ export function PreviewSheetModal({
                       }}
                     >
                       <Ionicons name="play" size={20} color="#FFF" />
-                      <Text style={styles.playBtnText}>
-                        {info.viewed_information || 'Xem ngay'}
+                      <Text
+                        style={styles.playBtnText}
+                        numberOfLines={1}
+                        adjustsFontSizeToFit
+                        minimumFontScale={0.78}
+                      >
+                        {formatCompactResumeText(info.viewed_information) || 'Xem ngay'}
                       </Text>
                     </BouncyButton>
 
@@ -539,6 +612,9 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     left: 0,
+    borderTopLeftRadius: 34,
+    borderTopRightRadius: 34,
+    overflow: 'hidden',
     opacity: 0.72,
   },
   handleBar: {
@@ -555,6 +631,8 @@ const styles = StyleSheet.create({
     width: '100%',
     height: 215,
     backgroundColor: COLORS.bg,
+    borderTopLeftRadius: 34,
+    borderTopRightRadius: 34,
     position: 'relative',
     overflow: 'hidden',
   },
@@ -589,6 +667,7 @@ const styles = StyleSheet.create({
   content: {
     paddingHorizontal: 20,
     paddingTop: 10,
+    paddingBottom: 10,
   },
   logoTitleImg: {
     width: 210,
@@ -676,9 +755,12 @@ const styles = StyleSheet.create({
   },
   playBtn: {
     flex: 1,
+    minWidth: 0,
     height: 48,
+    paddingHorizontal: 14,
     borderRadius: 16,
     backgroundColor: COLORS.accent,
+    overflow: 'hidden',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -688,6 +770,7 @@ const styles = StyleSheet.create({
     color: '#FFF',
     fontSize: 15,
     fontWeight: '700',
+    flexShrink: 1,
   },
   iconActionBtn: {
     width: 48,

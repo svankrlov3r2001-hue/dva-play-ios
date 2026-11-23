@@ -15,7 +15,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BouncyButton } from './BouncyButton';
-import { GlassSurface } from './GlassSurface';
+import { GlassSurface, WaterDropPopupView } from './GlassSurface';
 import { COLORS } from '../constants/config';
 import { EpisodeItem, OfflineDownloadItem, SeasonItem } from '../types/models';
 
@@ -397,23 +397,26 @@ export function PlayerEpisodeListModal({
     >
       <View style={styles.backdrop}>
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
-        <GlassSurface
-          variant="liquid"
-          radius={40}
-          intensity={34}
-          style={[styles.cardWrap, { width: cardWidth, height: cardHeight }]}
-        >
-          <View style={styles.splitRow}>
-            {/* Left Sidebar matching danh_sach_tap */}
-            <View style={[styles.sidebar, isLandscape ? { width: '30%' } : { width: '36%' }]}>
-              {resolvedPoster ? (
-                <Image
-                  source={{ uri: resolvedPoster }}
-                  style={styles.sidebarBgImg}
-                  blurRadius={22}
-                />
-              ) : null}
-              <View pointerEvents="none" style={styles.sidebarBgTint} />
+        <WaterDropPopupView visible={visible} from="center">
+          <GlassSurface
+            variant="liquid"
+            radius={40}
+            intensity={34}
+            style={[styles.cardWrap, { width: cardWidth, height: cardHeight }]}
+          >
+            <View style={styles.splitRow}>
+              {/* Left Sidebar matching danh_sach_tap */}
+              <View style={[styles.sidebar, isLandscape ? { width: '30%' } : { width: '36%' }]}>
+                <View pointerEvents="none" style={styles.sidebarBgClip}>
+                  {resolvedPoster ? (
+                    <Image
+                      source={{ uri: resolvedPoster }}
+                      style={styles.sidebarBgImg}
+                      blurRadius={22}
+                    />
+                  ) : null}
+                  <View style={styles.sidebarBgTint} />
+                </View>
 
               <View style={styles.sidebarTop}>
                 <Text style={styles.sidebarTag}>DANH SÁCH TẬP</Text>
@@ -500,9 +503,14 @@ export function PlayerEpisodeListModal({
                   key={`ep-grid-${numCols}`}
                   data={episodes}
                   numColumns={numCols}
+                  removeClippedSubviews={false}
+                  style={{ marginHorizontal: -10, marginTop: -8 }}
                   keyExtractor={(item, index) => `${item.stream_key}-${index}`}
                   showsVerticalScrollIndicator={false}
-                  contentContainerStyle={styles.gridContent}
+                  contentContainerStyle={[
+                    styles.gridContent,
+                    { paddingHorizontal: 10, paddingTop: 8 },
+                  ]}
                   columnWrapperStyle={numCols > 1 ? styles.gridRow : undefined}
                   onScrollToIndexFailed={(info) => {
                     listRef.current?.scrollToOffset({
@@ -588,64 +596,67 @@ export function PlayerEpisodeListModal({
                 style={StyleSheet.absoluteFill}
                 onPress={() => setSeasonPopupOpen(false)}
               />
-              <GlassSurface variant="liquid" radius={40} intensity={34} style={styles.seasonPopupCard}>
-                <View style={styles.seasonPopupHeader}>
-                  <Text style={styles.seasonPopupTitle}>Chọn mùa phim</Text>
-                  <BouncyButton
-                    style={styles.seasonCloseBtn}
-                    onPress={() => setSeasonPopupOpen(false)}
+              <WaterDropPopupView visible={seasonPopupOpen} from="center">
+                <GlassSurface variant="liquid" radius={40} intensity={34} style={styles.seasonPopupCard}>
+                  <View style={styles.seasonPopupHeader}>
+                    <Text style={styles.seasonPopupTitle}>Chọn mùa phim</Text>
+                    <BouncyButton
+                      style={styles.seasonCloseBtn}
+                      onPress={() => setSeasonPopupOpen(false)}
+                    >
+                      <Ionicons name="close" size={18} color="#FFF" />
+                    </BouncyButton>
+                  </View>
+                  <ScrollView
+                    showsVerticalScrollIndicator={false}
+                    style={{ maxHeight: 220, marginHorizontal: -12 }}
+                    contentContainerStyle={{ gap: 8, paddingHorizontal: 12, paddingVertical: 6 }}
                   >
-                    <Ionicons name="close" size={18} color="#FFF" />
-                  </BouncyButton>
-                </View>
-                <ScrollView
-                  showsVerticalScrollIndicator={false}
-                  style={{ maxHeight: 220 }}
-                  contentContainerStyle={{ gap: 8 }}
-                >
-                  {seasons.map((season, sIdx) => {
-                    const sId = String(season.seasons_id);
-                    const isSelected = sId === String(selectedSeasonId);
-                    const sLabel = formatSeasonName(season.seasons_name, sIdx + 1);
-                    return (
-                      <BouncyButton
-                        key={sId}
-                        bounciness="gentle"
-                        activeOpacity={0.8}
-                        style={[
-                          styles.seasonItem,
-                          isSelected && styles.seasonItemSelected,
-                        ]}
-                        onPress={() => {
-                          Haptics.selectionAsync();
-                          setSeasonPopupOpen(false);
-                          if (sId !== String(selectedSeasonId)) {
-                            setSelectedSeasonId(sId);
-                            void loadEpisodes(sId);
-                          }
-                        }}
-                      >
-                        <Ionicons
-                          name={isSelected ? 'checkmark-circle' : 'tv-outline'}
-                          size={18}
-                          color={isSelected ? COLORS.accent : 'rgba(255,255,255,0.72)'}
-                        />
-                        <Text
+                    {seasons.map((season, sIdx) => {
+                      const sId = String(season.seasons_id);
+                      const isSelected = sId === String(selectedSeasonId);
+                      const sLabel = formatSeasonName(season.seasons_name, sIdx + 1);
+                      return (
+                        <BouncyButton
+                          key={sId}
+                          bounciness="gentle"
+                          activeOpacity={0.8}
                           style={[
-                            styles.seasonItemTxt,
-                            isSelected && { color: '#FFF', fontWeight: '800' },
+                            styles.seasonItem,
+                            isSelected && styles.seasonItemSelected,
                           ]}
+                          onPress={() => {
+                            Haptics.selectionAsync();
+                            setSeasonPopupOpen(false);
+                            if (sId !== String(selectedSeasonId)) {
+                              setSelectedSeasonId(sId);
+                              void loadEpisodes(sId);
+                            }
+                          }}
                         >
-                          {sLabel}
-                        </Text>
-                      </BouncyButton>
-                    );
-                  })}
-                </ScrollView>
-              </GlassSurface>
+                          <Ionicons
+                            name={isSelected ? 'checkmark-circle' : 'tv-outline'}
+                            size={18}
+                            color={isSelected ? COLORS.accent : 'rgba(255,255,255,0.72)'}
+                          />
+                          <Text
+                            style={[
+                              styles.seasonItemTxt,
+                              isSelected && { color: '#FFF', fontWeight: '800' },
+                            ]}
+                          >
+                            {sLabel}
+                          </Text>
+                        </BouncyButton>
+                      );
+                    })}
+                  </ScrollView>
+                </GlassSurface>
+              </WaterDropPopupView>
             </View>
           ) : null}
         </GlassSurface>
+        </WaterDropPopupView>
       </View>
     </Modal>
   );
@@ -661,19 +672,27 @@ const styles = StyleSheet.create({
   },
   cardWrap: {
     borderRadius: 40,
-    overflow: 'hidden',
   },
   splitRow: {
     flex: 1,
     flexDirection: 'row',
-    overflow: 'hidden',
     borderRadius: 40,
   },
   sidebar: {
     padding: 18,
     justifyContent: 'space-between',
-    backgroundColor: 'rgba(0, 0, 0, 0.25)',
+    position: 'relative',
+  },
+  sidebarBgClip: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    borderTopLeftRadius: 40,
+    borderBottomLeftRadius: 40,
     overflow: 'hidden',
+    backgroundColor: 'rgba(0, 0, 0, 0.25)',
   },
   sidebarBgImg: {
     position: 'absolute',

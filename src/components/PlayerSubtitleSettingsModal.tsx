@@ -17,7 +17,7 @@ import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { showAppAlert } from './AppAlertModal';
 import { BouncyButton } from './BouncyButton';
-import { GlassSurface } from './GlassSurface';
+import { GlassSurface, WaterDropPopupView } from './GlassSurface';
 import { IosRulerSlider } from './IosRulerSlider';
 import { COLORS } from '../constants/config';
 import { useSettings } from '../context/SettingsContext';
@@ -171,7 +171,11 @@ export function PlayerSubtitleSettingsModal({
   const renderBody = () => {
     if (subView === 'grid') {
       return (
-        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ gap: 12 }}>
+        <ScrollView
+          style={styles.scrollBleed}
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={{ gap: 12, paddingHorizontal: 16, paddingTop: 6, paddingBottom: 6 }}
+        >
           <View style={styles.langToggleRow}>
             <BouncyButton
               activeOpacity={0.8}
@@ -303,7 +307,11 @@ export function PlayerSubtitleSettingsModal({
 
     if (subView === 'font') {
       return (
-        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+        <ScrollView
+          style={styles.scrollBleed}
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={{ gap: 8, paddingHorizontal: 16, paddingTop: 6, paddingBottom: 6 }}
+        >
           {SUBTITLE_FONT_OPTIONS.map((opt) => {
             const selected = settings.subFont === opt.value;
             return (
@@ -368,8 +376,9 @@ export function PlayerSubtitleSettingsModal({
       return (
         <ScrollView
           nestedScrollEnabled
+          style={styles.scrollBleed}
           showsVerticalScrollIndicator={false}
-          contentContainerStyle={{ gap: 10, paddingBottom: 6 }}
+          contentContainerStyle={{ gap: 10, paddingHorizontal: 16, paddingTop: 6, paddingBottom: 6 }}
         >
           <View style={styles.switchRow}>
             <View style={{ flex: 1, paddingRight: 10 }}>
@@ -475,8 +484,9 @@ export function PlayerSubtitleSettingsModal({
       return (
         <ScrollView
           nestedScrollEnabled
+          style={styles.scrollBleed}
           showsVerticalScrollIndicator={false}
-          contentContainerStyle={{ gap: 12, paddingTop: 4 }}
+          contentContainerStyle={{ gap: 12, paddingHorizontal: 16, paddingTop: 6, paddingBottom: 6 }}
         >
           <IosRulerSlider
             label={isDelay ? 'Độ trễ phụ đề (giây)' : 'Kéo dài hiển thị (giây)'}
@@ -542,8 +552,10 @@ export function PlayerSubtitleSettingsModal({
           <FlatList
             data={filteredLanguages}
             keyExtractor={(it) => it.code}
+            style={styles.scrollBleed}
+            removeClippedSubviews={false}
             showsVerticalScrollIndicator={false}
-            contentContainerStyle={{ gap: 6, paddingBottom: 8 }}
+            contentContainerStyle={{ gap: 6, paddingHorizontal: 16, paddingTop: 6, paddingBottom: 8 }}
             renderItem={({ item }) => {
               const selected = settings.subTranslateLang === item.code;
               return (
@@ -574,8 +586,9 @@ export function PlayerSubtitleSettingsModal({
     return (
       <ScrollView
         nestedScrollEnabled
+        style={styles.scrollBleed}
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ gap: 10, paddingBottom: 6 }}
+        contentContainerStyle={{ gap: 10, paddingHorizontal: 16, paddingTop: 6, paddingBottom: 6 }}
       >
         <IosRulerSlider
           label="Âm lượng thuyết minh"
@@ -640,36 +653,38 @@ export function PlayerSubtitleSettingsModal({
     >
       <View style={styles.backdrop}>
         <Pressable style={StyleSheet.absoluteFill} onPress={handleClose} />
-        <GlassSurface
-          variant="liquid"
-          radius={40}
-          intensity={34}
-          style={[styles.cardWrap, { width: cardWidth, height: cardHeight }]}
-        >
-          <View style={styles.inner}>
-            <View style={styles.header}>
-              {subView !== 'grid' ? (
-                <BouncyButton
-                  style={styles.backIconBtn}
-                  onPress={() => {
-                    Haptics.selectionAsync();
-                    setSubView('grid');
-                  }}
-                >
-                  <Ionicons name="chevron-back" size={20} color="#FFF" />
+        <WaterDropPopupView visible={visible} from="center">
+          <GlassSurface
+            variant="liquid"
+            radius={40}
+            intensity={34}
+            style={[styles.cardWrap, { width: cardWidth, height: cardHeight }]}
+          >
+            <View style={styles.inner}>
+              <View style={styles.header}>
+                {subView !== 'grid' ? (
+                  <BouncyButton
+                    style={styles.backIconBtn}
+                    onPress={() => {
+                      Haptics.selectionAsync();
+                      setSubView('grid');
+                    }}
+                  >
+                    <Ionicons name="chevron-back" size={20} color="#FFF" />
+                  </BouncyButton>
+                ) : (
+                  <View style={styles.headerIconPlaceholder} />
+                )}
+                <Text style={styles.headerTitle}>{renderHeaderTitle()}</Text>
+                <BouncyButton style={styles.closeBtn} onPress={handleClose}>
+                  <Ionicons name="close" size={20} color="#FFF" />
                 </BouncyButton>
-              ) : (
-                <View style={styles.headerIconPlaceholder} />
-              )}
-              <Text style={styles.headerTitle}>{renderHeaderTitle()}</Text>
-              <BouncyButton style={styles.closeBtn} onPress={handleClose}>
-                <Ionicons name="close" size={20} color="#FFF" />
-              </BouncyButton>
-            </View>
+              </View>
 
-            {renderBody()}
-          </View>
-        </GlassSurface>
+              {renderBody()}
+            </View>
+          </GlassSurface>
+        </WaterDropPopupView>
       </View>
     </Modal>
   );
@@ -690,6 +705,10 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingHorizontal: 22,
     paddingVertical: 18,
+  },
+  scrollBleed: {
+    marginHorizontal: -16,
+    marginTop: -6,
   },
   header: {
     flexDirection: 'row',

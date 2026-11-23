@@ -11,7 +11,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { BouncyButton } from './BouncyButton';
-import { GlassSurface } from './GlassSurface';
+import { GlassSurface, WaterDropPopupView } from './GlassSurface';
 import { COLORS, RADII } from '../constants/config';
 import {
   AppSettings,
@@ -243,15 +243,20 @@ export function PlayerOverlayPanels({
   return (
     <View style={styles.overlayWrap} pointerEvents="box-none">
       <Pressable style={styles.backdrop} onPress={onClose} />
-      <GlassSurface variant="liquid" intensity={34} radius={40} style={[styles.panelCard, isWide && styles.panelCardWide]}>
-        <View style={styles.panelHeader}>
-          <Text style={styles.panelTitle}>{PANEL_TITLES[activePanel]}</Text>
-          <BouncyButton style={styles.closeIconBtn} onPress={onClose}>
-            <Ionicons name="close" size={22} color="#FFF" />
-          </BouncyButton>
-        </View>
+      <WaterDropPopupView visible={Boolean(activePanel)} triggerKey={activePanel} from="center">
+        <GlassSurface variant="liquid" intensity={34} radius={40} style={[styles.panelCard, isWide && styles.panelCardWide]}>
+          <View style={styles.panelHeader}>
+            <Text style={styles.panelTitle}>{PANEL_TITLES[activePanel]}</Text>
+            <BouncyButton style={styles.closeIconBtn} onPress={onClose}>
+              <Ionicons name="close" size={22} color="#FFF" />
+            </BouncyButton>
+          </View>
 
-        <ScrollView style={styles.panelBody} contentContainerStyle={{ gap: 8, paddingBottom: 8 }} showsVerticalScrollIndicator={false}>
+          <ScrollView
+            style={[styles.panelBody, { marginHorizontal: -12, marginTop: -4 }]}
+            contentContainerStyle={{ gap: 8, paddingHorizontal: 12, paddingTop: 4, paddingBottom: 8 }}
+            showsVerticalScrollIndicator={false}
+          >
           {activePanel === 'servers' ? (
             <>
               <Text style={styles.sectionHeading}>Chất lượng / Luồng trực tiếp</Text>
@@ -307,7 +312,12 @@ export function PlayerOverlayPanels({
           {activePanel === 'episodes' ? (
             <>
               {seasonList.length > 1 ? (
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  style={{ overflow: 'visible' }}
+                  contentContainerStyle={[styles.chipRow, { overflow: 'visible' }]}
+                >
                   {seasonList.map((s) => {
                     const active = activeSeason?.seasons_id === s.seasons_id;
                     return (
@@ -626,7 +636,8 @@ export function PlayerOverlayPanels({
             </>
           ) : null}
         </ScrollView>
-      </GlassSurface>
+        </GlassSurface>
+      </WaterDropPopupView>
     </View>
   );
 }

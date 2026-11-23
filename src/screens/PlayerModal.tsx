@@ -4025,25 +4025,27 @@ export function PlayerModal({
         {/* Floating Next-Episode Countdown Pill */}
         {nextCountdownSec !== null && currentNextEpisode ? (
           <View style={styles.countdownOverlay}>
-            <GlassSurface variant="liquid" radius={40} intensity={34} style={styles.countdownCard}>
-              <Text style={styles.countdownTitle}>
-                Chuyển sang {currentNextEpisode.ep.episodes_name} sau {nextCountdownSec}s
-              </Text>
-              <View style={styles.countdownBtns}>
-                <BouncyButton
-                  style={styles.countdownCancelBtn}
-                  onPress={() => setNextCountdownSec(null)}
-                >
-                  <Text style={styles.countdownBtnTxt}>Hủy</Text>
-                </BouncyButton>
-                <BouncyButton
-                  style={styles.countdownNowBtn}
-                  onPress={triggerSwitchToNextEpisode}
-                >
-                  <Text style={styles.countdownBtnTxt}>Xem ngay</Text>
-                </BouncyButton>
-              </View>
-            </GlassSurface>
+            <WaterDropPopupView from="bottom">
+              <GlassSurface variant="liquid" radius={40} intensity={34} style={styles.countdownCard}>
+                <Text style={styles.countdownTitle}>
+                  Chuyển sang {currentNextEpisode.ep.episodes_name} sau {nextCountdownSec}s
+                </Text>
+                <View style={styles.countdownBtns}>
+                  <BouncyButton
+                    style={styles.countdownCancelBtn}
+                    onPress={() => setNextCountdownSec(null)}
+                  >
+                    <Text style={styles.countdownBtnTxt}>Hủy</Text>
+                  </BouncyButton>
+                  <BouncyButton
+                    style={styles.countdownNowBtn}
+                    onPress={triggerSwitchToNextEpisode}
+                  >
+                    <Text style={styles.countdownBtnTxt}>Xem ngay</Text>
+                  </BouncyButton>
+                </View>
+              </GlassSurface>
+            </WaterDropPopupView>
           </View>
         ) : null}
 
@@ -4695,8 +4697,10 @@ export function PlayerModal({
                 {moreMenuOpen ? (
                   <WaterDropPopupView from="bottom" style={styles.morePopoverWrap}>
                     <View style={styles.morePopover}>
-                      <BlurView intensity={34} tint="systemUltraThinMaterialDark" style={StyleSheet.absoluteFill} />
-                      <View style={styles.morePopoverFill} />
+                      <View pointerEvents="none" style={styles.morePopoverBgClip}>
+                        <BlurView intensity={34} tint="systemUltraThinMaterialDark" style={StyleSheet.absoluteFill} />
+                        <View style={styles.morePopoverFill} />
+                      </View>
 
                       {!isOfflineOnlyMode ? (
                         <BouncyButton
@@ -5600,11 +5604,21 @@ const styles = StyleSheet.create({
     gap: 2,
     minWidth: 256,
     borderRadius: 28,
+    overflow: 'visible',
+    position: 'relative',
+    boxShadow: GLASS_SHADOW,
+    elevation: 18,
+  },
+  morePopoverBgClip: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    borderRadius: 28,
     overflow: 'hidden',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.18)',
-    boxShadow: GLASS_SHADOW,
-    elevation: 18,
   },
   morePopoverFill: {
     position: 'absolute',

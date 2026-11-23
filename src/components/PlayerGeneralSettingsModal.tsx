@@ -15,7 +15,7 @@ import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { showAppAlert } from './AppAlertModal';
 import { BouncyButton } from './BouncyButton';
-import { GlassSurface } from './GlassSurface';
+import { GlassSurface, WaterDropPopupView } from './GlassSurface';
 import { COLORS } from '../constants/config';
 import { useSettings } from '../context/SettingsContext';
 import { ContrastLevelOption, HoldSeekSpeedOption } from '../types/models';
@@ -421,7 +421,11 @@ export function PlayerGeneralSettingsModal({
   const renderContent = () => {
     if (subView === 'contrast') {
       return (
-        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 10 }}>
+        <ScrollView
+          style={styles.scrollBleed}
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={{ paddingHorizontal: 18, paddingTop: 6, paddingBottom: 10 }}
+        >
           <View style={styles.insetGroup}>
             {CONTRAST_OPTIONS.map((opt, idx) => {
               const selected = settings.contrastLevel === opt.value;
@@ -482,7 +486,11 @@ export function PlayerGeneralSettingsModal({
 
     if (subView === 'sleep_timer') {
       return (
-        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ gap: 14, paddingBottom: 8 }}>
+        <ScrollView
+          style={styles.scrollBleed}
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={{ gap: 14, paddingHorizontal: 18, paddingTop: 6, paddingBottom: 8 }}
+        >
           <View style={styles.insetGroup}>
             <View style={styles.groupedRow}>
               <View style={[styles.iosBadge, { backgroundColor: '#5856D6' }]}>
@@ -553,7 +561,11 @@ export function PlayerGeneralSettingsModal({
     }
 
     return (
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ gap: 14, paddingBottom: 10 }}>
+      <ScrollView
+        style={styles.scrollBleed}
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ gap: 14, paddingHorizontal: 18, paddingTop: 6, paddingBottom: 10 }}
+      >
         {/* Clock + Search Pill */}
         <View style={styles.topUtilityRow}>
           <View style={styles.searchPill}>
@@ -645,46 +657,48 @@ export function PlayerGeneralSettingsModal({
       <View style={styles.backdrop}>
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
 
-        <GlassSurface
-          variant="liquid"
-          radius={40}
-          intensity={28}
-          style={[styles.sheetCard, { width: cardWidth, height: cardHeight }]}
-        >
-          <View style={styles.inner}>
-            <View style={styles.header}>
-              {subView !== 'main' ? (
+        <WaterDropPopupView visible={visible} from="center">
+          <GlassSurface
+            variant="liquid"
+            radius={40}
+            intensity={28}
+            style={[styles.sheetCard, { width: cardWidth, height: cardHeight }]}
+          >
+            <View style={styles.inner}>
+              <View style={styles.header}>
+                {subView !== 'main' ? (
+                  <BouncyButton
+                    style={styles.iconCircleBtn}
+                    onPress={() => {
+                      Haptics.selectionAsync();
+                      setSubView('main');
+                    }}
+                  >
+                    <Ionicons name="chevron-back" size={19} color="#FFFFFF" />
+                  </BouncyButton>
+                ) : (
+                  <BouncyButton style={styles.iconCircleBtn} onPress={handleRebootConfirm}>
+                    <Feather name="rotate-cw" size={16} color="#FFFFFF" />
+                  </BouncyButton>
+                )}
+
+                <Text style={styles.headerTitle}>{renderSubViewTitle()}</Text>
+
                 <BouncyButton
                   style={styles.iconCircleBtn}
                   onPress={() => {
                     Haptics.selectionAsync();
-                    setSubView('main');
+                    onClose();
                   }}
                 >
-                  <Ionicons name="chevron-back" size={19} color="#FFFFFF" />
+                  <Ionicons name="close" size={19} color="#FFFFFF" />
                 </BouncyButton>
-              ) : (
-                <BouncyButton style={styles.iconCircleBtn} onPress={handleRebootConfirm}>
-                  <Feather name="rotate-cw" size={16} color="#FFFFFF" />
-                </BouncyButton>
-              )}
+              </View>
 
-              <Text style={styles.headerTitle}>{renderSubViewTitle()}</Text>
-
-              <BouncyButton
-                style={styles.iconCircleBtn}
-                onPress={() => {
-                  Haptics.selectionAsync();
-                  onClose();
-                }}
-              >
-                <Ionicons name="close" size={19} color="#FFFFFF" />
-              </BouncyButton>
+              {renderContent()}
             </View>
-
-            {renderContent()}
-          </View>
-        </GlassSurface>
+          </GlassSurface>
+        </WaterDropPopupView>
       </View>
     </Modal>
   );
@@ -706,6 +720,10 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingHorizontal: 22,
     paddingVertical: 18,
+  },
+  scrollBleed: {
+    marginHorizontal: -18,
+    marginTop: -6,
   },
   header: {
     flexDirection: 'row',
@@ -775,7 +793,6 @@ const styles = StyleSheet.create({
   insetGroup: {
     borderRadius: 24,
     backgroundColor: 'rgba(255, 255, 255, 0.07)',
-    overflow: 'hidden',
   },
   groupedRow: {
     flexDirection: 'row',

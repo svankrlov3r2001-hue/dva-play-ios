@@ -634,7 +634,11 @@ export function HomeScreen({
                   <Ionicons name="close" size={20} color="#FFF" />
                 </BouncyButton>
               </View>
-              <ScrollView style={{ maxHeight: 360 }} showsVerticalScrollIndicator={false}>
+              <ScrollView
+                style={{ maxHeight: 360, marginHorizontal: -10 }}
+                showsVerticalScrollIndicator={false}
+                contentContainerStyle={{ paddingHorizontal: 10, paddingVertical: 6 }}
+              >
                 <View style={styles.genreGrid}>
                   <BouncyButton
                     onPress={() => {
@@ -698,7 +702,11 @@ export function HomeScreen({
                   <Ionicons name="close" size={20} color="#FFF" />
                 </BouncyButton>
               </View>
-              <ScrollView style={{ maxHeight: 430 }} showsVerticalScrollIndicator={false}>
+              <ScrollView
+                style={{ maxHeight: 430, marginHorizontal: -10 }}
+                showsVerticalScrollIndicator={false}
+                contentContainerStyle={{ paddingHorizontal: 10, paddingVertical: 6 }}
+              >
                 {notifications.length === 0 ? (
                   <Text style={styles.notifEmpty}>Đang tải thông báo...</Text>
                 ) : (
