@@ -21,9 +21,11 @@ import { useSettings } from '../context/SettingsContext';
 import { fetchMovieDetailsApi } from '../services/api';
 import {
   cancelOfflineDownload,
+  clearPendingFollowUpDownloads,
   enqueueEpisodeBatch,
   enqueueOfflineDownload,
   formatBytes,
+  formatEpisodeDisplayTitle,
   getCurrentAndNextEpisodes,
   loadOfflineDownloads,
   normalizeEpisodeOrder,
@@ -31,6 +33,7 @@ import {
   pauseOfflineDownload,
   removeOfflineDownload,
   resumeOfflineDownload,
+  setPendingFollowUpDownloads,
   subscribeOfflineDownloads,
 } from '../services/downloadService';
 import { EpisodeItem, OfflineDownloadItem } from '../types/models';
@@ -123,7 +126,7 @@ export function OfflineDownloadSheet({
 
   const buildEnqueueReq = (ep?: EpisodeItem): OfflineEnqueueParams => {
     const sc = ep?.stream_code || targetStreamCode;
-    const epTitle = ep?.episodes_name || currentEpisodeTitle;
+    const epTitle = formatEpisodeDisplayTitle(ep?.episodes_name || currentEpisodeTitle);
     const isTargetCurrent = Boolean(currentStreamCode && sc === currentStreamCode);
     const derivedKey = isTargetCurrent
       ? currentServerFileKey
@@ -184,7 +187,7 @@ export function OfflineDownloadSheet({
   }, [isSeries, targetStreamCode, settings.autoDownloadNextCount, nextTargets, offlineItems, videosId]);
 
   const handleDownloadNextPendingOnly = async () => {
-    if (pendingNextEpisodes.length === 0) return;
+    if (!isCurrentCompleted || pendingNextEpisodes.length === 0) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setSubmittingBatch(true);
     try {
@@ -204,16 +207,22 @@ export function OfflineDownloadSheet({
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setSubmittingBatch(true);
     try {
+      const curEp = orderedEpisodes.find((e) => e.stream_code === targetStreamCode);
+      const curItem = await enqueueOfflineDownload(buildEnqueueReq(curEp));
       if (includeNext && isSeries && settings.autoDownloadNextCount > 0) {
         const targets = getCurrentAndNextEpisodes(
           orderedEpisodes,
           targetStreamCode,
           settings.autoDownloadNextCount
         );
-        await enqueueEpisodeBatch(targets.map((ep) => buildEnqueueReq(ep)));
+        const nextOnlyReqs = targets
+          .filter((ep) => ep.stream_code !== targetStreamCode)
+          .map((ep) => buildEnqueueReq(ep));
+        if (nextOnlyReqs.length > 0) {
+          await setPendingFollowUpDownloads(curItem.id, nextOnlyReqs);
+        }
       } else {
-        const curEp = orderedEpisodes.find((e) => e.stream_code === targetStreamCode);
-        await enqueueOfflineDownload(buildEnqueueReq(curEp));
+        clearPendingFollowUpDownloads(curItem.id);
       }
     } catch (e: any) {
       showAppAlert('Lỗi tải ngoại tuyến', e?.message || 'Không thể đưa vào hàng chờ.');
@@ -225,6 +234,9 @@ export function OfflineDownloadSheet({
   const adjustNextCount = (delta: number) => {
     Haptics.selectionAsync();
     const next = Math.max(0, Math.min(20, (settings.autoDownloadNextCount || 0) + delta));
+    if (next === 0 && currentDownloadItem?.id) {
+      clearPendingFollowUpDownloads(currentDownloadItem.id);
+    }
     updateSetting('autoDownloadNextCount', next);
   };
 
@@ -360,7 +372,7 @@ export function OfflineDownloadSheet({
             </BouncyButton>
           ) : null}
         </View>
-      ) : isSeries && settings.autoDownloadNextCount > 0 && pendingNextEpisodes.length > 0 ? (
+      ) : isCurrentCompleted && isSeries && settings.autoDownloadNextCount > 0 && pendingNextEpisodes.length > 0 ? (
         <View style={{ gap: 7 }}>
           <BouncyButton
             bounciness="gentle"
@@ -375,9 +387,7 @@ export function OfflineDownloadSheet({
               <Ionicons name="cloud-download-outline" size={18} color="#FFF" />
             )}
             <Text style={styles.primaryBtnTxt} numberOfLines={1}>
-              {isCurrentCompleted
-                ? `Tải ${pendingNextEpisodes.length} tập tiếp theo về máy`
-                : `Tải thêm ${pendingNextEpisodes.length} tập tiếp theo`}
+              {`Tải ${pendingNextEpisodes.length} tập tiếp theo về máy`}
             </Text>
           </BouncyButton>
         </View>
@@ -408,7 +418,9 @@ export function OfflineDownloadSheet({
             <Text style={styles.settingTitle}>Tải thêm tập tiếp theo khi xem</Text>
             <Text style={styles.settingSub}>
               {settings.autoDownloadNextCount > 0
-                ? `Tự động xếp hàng ${settings.autoDownloadNextCount} tập kế tiếp`
+                ? isCurrentCompleted
+                  ? `Tự động xếp hàng ${settings.autoDownloadNextCount} tập kế tiếp`
+                  : `Chỉ tự động tải ${settings.autoDownloadNextCount} tập kế tiếp sau khi tập đang xem tải xong`
                 : 'Đang tắt tự động tải tập tiếp theo'}
             </Text>
           </View>
@@ -432,6 +444,9 @@ export function OfflineDownloadSheet({
                 style={[styles.presetChip, active && styles.presetChipActive]}
                 onPress={() => {
                   Haptics.selectionAsync();
+                  if (cnt === 0 && currentDownloadItem?.id) {
+                    clearPendingFollowUpDownloads(currentDownloadItem.id);
+                  }
                   updateSetting('autoDownloadNextCount', cnt);
                 }}
               >
@@ -511,7 +526,7 @@ export function OfflineDownloadSheet({
               >
                 <View style={{ flex: 1, paddingRight: 8 }}>
                   <Text style={styles.epName} numberOfLines={1}>
-                    {ep.episodes_name}
+                    {formatEpisodeDisplayTitle(ep.episodes_name) || ep.episodes_name}
                     {isCur ? ' • Đang chọn' : ''}
                   </Text>
                   {item ? (
@@ -575,7 +590,9 @@ export function OfflineDownloadSheet({
                   </Text>
                   <Text style={styles.headerSub} numberOfLines={1}>
                     {title}
-                    {currentEpisodeTitle ? ` • ${currentEpisodeTitle}` : ''}
+                    {formatEpisodeDisplayTitle(currentEpisodeTitle)
+                      ? ` • ${formatEpisodeDisplayTitle(currentEpisodeTitle)}`
+                      : ''}
                   </Text>
                   <Text style={styles.bgDownloadHint} numberOfLines={1}>
                     Hỗ trợ tải ngầm ngay cả khi thoát ra màn hình chính hoặc khóa máy

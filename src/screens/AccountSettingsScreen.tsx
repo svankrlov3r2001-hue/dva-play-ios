@@ -298,10 +298,11 @@ export function AccountSettingsScreen({
         );
         if (res.success) {
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          const webSuffix = res.web_latency_ms ? ` • Web: ${res.web_latency_ms} ms` : '';
           const suffix = !res.managed && res.exit_ip ? ` • IP: ${res.exit_ip}` : '';
           setProxyStatusMsg({
             ok: true,
-            text: `Đã kết nối ${res.label} • ${res.latency_ms} ms${suffix}`,
+            text: `Đã kết nối ${res.label} • ${res.latency_ms} ms${webSuffix}${suffix}`,
           });
         } else {
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
@@ -337,7 +338,7 @@ export function AccountSettingsScreen({
 
     let okCount = 0;
     let timeoutCount = 0;
-    let fastest: { name: string; latencyMs: number } | null = null;
+    let fastest: { name: string; latencyMs: number; webLatencyMs: number | null } | null = null;
     let firstErrorMsg = '';
 
     try {
@@ -378,7 +379,11 @@ export function AccountSettingsScreen({
         if (res.success) {
           okCount++;
           if (!fastest || res.latency_ms < fastest.latencyMs) {
-            fastest = { name: preset.name, latencyMs: res.latency_ms };
+            fastest = {
+              name: preset.name,
+              latencyMs: res.latency_ms,
+              webLatencyMs: res.web_latency_ms ?? null,
+            };
           }
           setPresetProbeMap((prev) => ({
             ...prev,
@@ -408,9 +413,10 @@ export function AccountSettingsScreen({
 
       if (okCount > 0 && fastest) {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        const fastestWeb = fastest.webLatencyMs ? ` • Web: ${fastest.webLatencyMs} ms` : '';
         setProxyStatusMsg({
           ok: true,
-          text: `Đã kiểm tra ${listToProbe.length} máy chủ (${okCount} hoạt động) • Nhanh nhất: ${fastest.name} (${fastest.latencyMs} ms)`,
+          text: `Đã kiểm tra ${listToProbe.length} máy chủ (${okCount} hoạt động) • Nhanh nhất: ${fastest.name} (${fastest.latencyMs} ms${fastestWeb})`,
         });
       } else {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);

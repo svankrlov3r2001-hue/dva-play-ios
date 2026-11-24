@@ -60,15 +60,19 @@ import {
   toggleWishlistApi,
 } from '../services/api';
 import {
+  clearPendingFollowUpDownloads,
   enqueueEpisodeBatch,
+  enqueueOfflineDownload,
   findCompletedOfflineItem,
   flushPendingOfflineProgressToServer,
+  formatEpisodeDisplayTitle,
   getCurrentAndNextEpisodes,
   getOfflineDownloadsSnapshot,
   getOfflineRootDir,
   loadOfflineDownloads,
   OfflineEnqueueParams,
   saveOfflineResumePosition,
+  setPendingFollowUpDownloads,
   subscribeOfflineDownloads,
   syncOfflineItemProgressToServer,
   syncOnlineProgressToOffline,
@@ -94,6 +98,9 @@ import {
   checkServerFileStatus,
   isServerPlayable,
   measureAllServerPings,
+  PREVIEW_10P_HARD_LIMIT_SEC,
+  PREVIEW_30P_HARD_LIMIT_SEC,
+  PREVIEW_30P_SAFE_LIMIT_SEC,
   probeVideoQualityLabel,
   selectOptimalServer,
   ServerRuntimeState,
@@ -475,6 +482,157 @@ function DownloadingIconAnim() {
   );
 }
 
+/**
+ * Geometric 10-second seek button keeping "10" dead-center inside the circular arc,
+ * with crisp rotational kick, elastic number bounce, and expanding glass halo ring on tap.
+ */
+function CenterSeekButton({
+  direction,
+  onPress,
+}: {
+  direction: 'backward' | 'forward';
+  onPress: () => void;
+}) {
+  const isBackward = direction === 'backward';
+  const spinAnim = useRef(new Animated.Value(0)).current;
+  const numScale = useRef(new Animated.Value(1)).current;
+  const numShiftX = useRef(new Animated.Value(0)).current;
+  const haloScale = useRef(new Animated.Value(0.75)).current;
+  const haloOpacity = useRef(new Animated.Value(0)).current;
+
+  const triggerAnim = useCallback(() => {
+    spinAnim.stopAnimation();
+    numScale.stopAnimation();
+    numShiftX.stopAnimation();
+    haloScale.stopAnimation();
+    haloOpacity.stopAnimation();
+
+    spinAnim.setValue(0);
+    numScale.setValue(0.88);
+    numShiftX.setValue(0);
+    haloScale.setValue(0.72);
+    haloOpacity.setValue(0.82);
+
+    Animated.parallel([
+      Animated.sequence([
+        Animated.timing(spinAnim, {
+          toValue: 1,
+          duration: 105,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+        Animated.spring(spinAnim, {
+          toValue: 0,
+          stiffness: 230,
+          damping: 12,
+          mass: 0.9,
+          useNativeDriver: true,
+        }),
+      ]),
+      Animated.sequence([
+        Animated.timing(numScale, {
+          toValue: 1.2,
+          duration: 105,
+          easing: Easing.bezier(0.34, 1.56, 0.64, 1),
+          useNativeDriver: true,
+        }),
+        Animated.spring(numScale, {
+          toValue: 1,
+          stiffness: 240,
+          damping: 10,
+          mass: 0.9,
+          useNativeDriver: true,
+        }),
+      ]),
+      Animated.sequence([
+        Animated.timing(numShiftX, {
+          toValue: isBackward ? -3.5 : 3.5,
+          duration: 95,
+          easing: Easing.out(Easing.quad),
+          useNativeDriver: true,
+        }),
+        Animated.spring(numShiftX, {
+          toValue: 0,
+          stiffness: 240,
+          damping: 12,
+          useNativeDriver: true,
+        }),
+      ]),
+      Animated.timing(haloScale, {
+        toValue: 1.42,
+        duration: 360,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.timing(haloOpacity, {
+        toValue: 0,
+        duration: 360,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, [isBackward, spinAnim, numScale, numShiftX, haloScale, haloOpacity]);
+
+  const spinDeg = spinAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['0deg', isBackward ? '-46deg' : '46deg'],
+  });
+
+  return (
+    <BouncyButton
+      activeOpacity={0.85}
+      pressScale={0.86}
+      style={playerSkStyles.centerSeekTouch}
+      onPress={() => {
+        triggerAnim();
+        onPress();
+      }}
+    >
+      <View style={playerSkStyles.centerSeekInner}>
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            playerSkStyles.centerSeekHalo,
+            { opacity: haloOpacity, transform: [{ scale: haloScale }] },
+          ]}
+        />
+        <Animated.View
+          pointerEvents="none"
+          style={[playerSkStyles.seekArcBox, { transform: [{ rotate: spinDeg }] }]}
+        >
+          <View
+            style={[
+              playerSkStyles.seekArcBox,
+              isBackward && { transform: [{ scaleX: -1 }] },
+            ]}
+          >
+            <View style={playerSkStyles.seekCircleFrame}>
+              <View style={playerSkStyles.seekRightHalfClip}>
+                <View style={playerSkStyles.seekRightCircleBorder} />
+              </View>
+              <View style={playerSkStyles.seekRotatedWrap}>
+                <View style={playerSkStyles.seekLeftHalfClip}>
+                  <View style={playerSkStyles.seekLeftCircleBorder} />
+                </View>
+              </View>
+            </View>
+            <View style={playerSkStyles.seekArrowHead} />
+          </View>
+        </Animated.View>
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            playerSkStyles.seekCenterNumWrap,
+            { transform: [{ scale: numScale }, { translateX: numShiftX }] },
+          ]}
+        >
+          <Text style={playerSkStyles.seekCenterNumTxt}>10</Text>
+        </Animated.View>
+      </View>
+    </BouncyButton>
+  );
+}
+
 const playerSkStyles = StyleSheet.create({
   centerSkeletonBox: {
     width: 78,
@@ -518,6 +676,112 @@ const playerSkStyles = StyleSheet.create({
     height: 2,
     borderRadius: 1,
     backgroundColor: '#30D158',
+  },
+  centerSeekTouch: {
+    width: 60,
+    height: 60,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  centerSeekInner: {
+    width: 48,
+    height: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+  },
+  centerSeekHalo: {
+    position: 'absolute',
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: 'rgba(255, 255, 255, 0.22)',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.5)',
+  },
+  seekArcBox: {
+    width: 48,
+    height: 48,
+    position: 'relative',
+  },
+  seekCircleFrame: {
+    position: 'absolute',
+    top: 5,
+    left: 5,
+    width: 38,
+    height: 38,
+  },
+  seekRightHalfClip: {
+    position: 'absolute',
+    top: 0,
+    left: 19,
+    width: 19,
+    height: 38,
+    overflow: 'hidden',
+  },
+  seekRightCircleBorder: {
+    position: 'absolute',
+    top: 0,
+    left: -19,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    borderWidth: 2.3,
+    borderColor: '#FFFFFF',
+  },
+  seekRotatedWrap: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    width: 38,
+    height: 38,
+    transform: [{ rotate: '-42deg' }],
+  },
+  seekLeftHalfClip: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    width: 19,
+    height: 38,
+    overflow: 'hidden',
+  },
+  seekLeftCircleBorder: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    borderWidth: 2.3,
+    borderColor: '#FFFFFF',
+  },
+  seekArrowHead: {
+    position: 'absolute',
+    top: 1.65,
+    left: 20,
+    width: 0,
+    height: 0,
+    borderTopWidth: 4.5,
+    borderBottomWidth: 4.5,
+    borderLeftWidth: 6.8,
+    borderTopColor: 'transparent',
+    borderBottomColor: 'transparent',
+    borderLeftColor: '#FFFFFF',
+  },
+  seekCenterNumWrap: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  seekCenterNumTxt: {
+    color: '#FFFFFF',
+    fontSize: 12.5,
+    lineHeight: 15,
+    fontWeight: '800',
+    fontVariant: ['tabular-nums'],
+    textAlign: 'center',
+    includeFontPadding: false,
   },
 });
 
@@ -653,6 +917,8 @@ export function PlayerModal({
   const activeServerIdRef = useRef<BackupServerId | null>(null);
   activeServerIdRef.current = activeServerId;
   const manualLockedServerRef = useRef<BackupServerId | null>(null);
+  const [isManualServerLocked, setIsManualServerLocked] = useState(false);
+  const lastAutoFollowUpParentIdRef = useRef<string | null>(null);
   const erroredServersRef = useRef<Set<BackupServerId>>(new Set());
   const pipProxyBrokenRef = useRef(false);
   const activeMediaUrlRef = useRef('');
@@ -776,6 +1042,7 @@ export function PlayerModal({
   const seekRippleScaleX = useRef(new Animated.Value(0.74)).current;
   const seekRippleScaleY = useRef(new Animated.Value(1.18)).current;
   const seekRippleTranslateY = useRef(new Animated.Value(-12)).current;
+  const seekRippleVisibleSideRef = useRef<'left' | 'right' | null>(null);
   const holdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const holdActivatedRef = useRef(false);
 
@@ -1133,7 +1400,9 @@ export function PlayerModal({
         episodeNumber,
         seasonId,
         title: resolvedRef.current?.title || params.title,
-        episodeTitle: activeEpTitle || resolvedRef.current?.episode_title || params.episodeTitle,
+        episodeTitle: formatEpisodeDisplayTitle(
+          activeEpTitle || resolvedRef.current?.episode_title || params.episodeTitle
+        ),
         posterUrl: moviePosterMeta.poster || params.posterUrl,
         thumbnailUrl: moviePosterMeta.thumb || params.thumbnailUrl,
         positionSec: Math.max(0, Math.floor(currentTimeRef.current || 0)),
@@ -1235,6 +1504,88 @@ export function PlayerModal({
     [cancelEpisodeCrossfade, ensureLiveLocalPort, getActivePlayer, getInactivePlayer]
   );
 
+  // When current episode finishes downloading offline while playing online, sync & auto-switch to '99'
+  useEffect(() => {
+    if (!visible || isOfflineOnlyMode || !matchedOfflineItem || matchedOfflineItem.status !== 'completed') {
+      return;
+    }
+    if (!activeStreamCode || matchedOfflineItem.stream_code !== activeStreamCode) {
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const livePort = await ensureLiveLocalPort(false);
+      if (cancelled) return;
+      const offMedia = buildOfflineServerUrl(matchedOfflineItem, livePort);
+      if (!offMedia.url) return;
+
+      const localSrvObj: ServerRuntimeState = {
+        id: '99',
+        codeName: 'Phiên 99',
+        label: 'Phát từ máy',
+        subtitle: 'Tệp ngoại tuyến đã lưu',
+        supported: true,
+        status: erroredServersRef.current.has('99') ? 'error' : 'ready',
+        progress: 100,
+        progressLabel: 'Sẵn sàng',
+        etaText: '',
+        format: offMedia.format,
+        preview10pReady: false,
+        preview30pReady: false,
+        totalSeconds: matchedOfflineItem.duration_sec || 0,
+        pingMs: 1,
+        pingFailed: false,
+        streamUrl: offMedia.url,
+        previewTag: '',
+        errored: erroredServersRef.current.has('99'),
+      };
+
+      const prevList = serversRef.current;
+      const has99 = prevList.some((s) => s.id === '99');
+      const nextList = has99
+        ? prevList.map((s) => (s.id === '99' ? localSrvObj : s))
+        : [localSrvObj, ...prevList];
+      serversRef.current = nextList;
+      setServers(nextList);
+
+      if (
+        settingsRef.current.autoOptimalServer &&
+        settingsRef.current.preferOfflineWhenOnline &&
+        !manualLockedServerRef.current &&
+        !erroredServersRef.current.has('99') &&
+        activeServerIdRef.current &&
+        activeServerIdRef.current !== '99'
+      ) {
+        lastAutoServerSwitchAtRef.current = Date.now();
+        await playServerOnActiveLayer(localSrvObj, {
+          seekToSec: currentTimeRef.current,
+          serverFileKey: resolvedRef.current?.server_file_key || matchedOfflineItem.server_file_key || '',
+          vnUrl: vnSubUrlRef.current,
+          enUrl: enSubUrlRef.current,
+          title: resolvedRef.current?.title || paramsRef.current?.title || matchedOfflineItem.title,
+        });
+        showToast('Đã chuyển sang Phát từ máy', 'Tệp ngoại tuyến đã sẵn sàng (1 ms)', 'success', {
+          family: 'ionicons',
+          name: 'phone-portrait-outline',
+          color: '#34D399',
+        });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    visible,
+    isOfflineOnlyMode,
+    activeStreamCode,
+    matchedOfflineItem?.id,
+    matchedOfflineItem?.status,
+    matchedOfflineItem?.local_uri,
+    ensureLiveLocalPort,
+    playServerOnActiveLayer,
+    showToast,
+  ]);
+
   // Start or restart polling for Phiên 11 / Phiên 36 readiness
   const startCheckFilePolling = useCallback(
     (pollOpts: {
@@ -1258,11 +1609,9 @@ export function PlayerModal({
         const pollRes = await checkServerFileStatus(sfk);
         if (loadSeqRef.current !== mySeq) return;
 
-        let updated: ServerRuntimeState[] = [];
-        setServers((prev) => {
-          updated = applyCheckFileToServers(prev, sfk, pollRes);
-          return updated;
-        });
+        const updated = applyCheckFileToServers(serversRef.current, sfk, pollRes, durationRef.current);
+        serversRef.current = updated;
+        setServers(updated);
 
         if (pollRes.status === 'success') {
           if (checkFilePollRef.current) {
@@ -1274,16 +1623,20 @@ export function PlayerModal({
         const curId = activeServerIdRef.current;
         const lockedId = manualLockedServerRef.current;
         const curSrv = updated.find((s) => s.id === curId);
+        const effectiveWatchPos = initialSeekPendingRef.current.done
+          ? currentTimeRef.current
+          : Math.max(targetStartSec, currentTimeRef.current);
 
         if (!curId || !curSrv || !isServerPlayable(curSrv)) {
           const firstPlayable = selectOptimalServer(updated, {
             preferOffline: settingsRef.current.preferOfflineWhenOnline,
             hasGgdDirect,
+            watchPosSec: effectiveWatchPos,
           });
           if (firstPlayable) {
             lastAutoServerSwitchAtRef.current = Date.now();
             await playServerOnActiveLayer(firstPlayable, {
-              seekToSec: Math.max(targetStartSec, currentTimeRef.current),
+              seekToSec: effectiveWatchPos,
               serverFileKey: sfk,
               vnUrl,
               enUrl,
@@ -1293,14 +1646,17 @@ export function PlayerModal({
           return;
         }
 
+        const effectiveTotalSec = Math.max(pollRes.total_seconds || 0, durationRef.current || 0);
         if (
           (curId === '11' || curId === '36') &&
           ((pollRes.status === 'success' && curSrv.previewTag !== '') ||
             (pollRes.preview_30p &&
-              pollRes.total_seconds >= 3600 &&
-              curSrv.previewTag === '10p'))
+              effectiveTotalSec >= 3600 &&
+              pollRes.format !== 'mp4' &&
+              curSrv.previewTag === '10p' &&
+              effectiveWatchPos < PREVIEW_30P_SAFE_LIMIT_SEC))
         ) {
-          const upgradedMedia = buildServer11Or36MediaUrl(curId, sfk, pollRes);
+          const upgradedMedia = buildServer11Or36MediaUrl(curId, sfk, pollRes, durationRef.current);
           if (upgradedMedia.url && upgradedMedia.url !== curSrv.streamUrl) {
             lastAutoServerSwitchAtRef.current = Date.now();
             await playServerOnActiveLayer(
@@ -1327,20 +1683,49 @@ export function PlayerModal({
             }
           }
         } else if (
+          (curId === '11' || curId === '36') &&
+          !lockedId &&
+          settingsRef.current.autoOptimalServer &&
+          ((curSrv.previewTag === '10p' && effectiveWatchPos >= PREVIEW_10P_HARD_LIMIT_SEC) ||
+            (curSrv.previewTag === '30p' && effectiveWatchPos >= PREVIEW_30P_HARD_LIMIT_SEC))
+        ) {
+          const fallbackTier2 = selectOptimalServer(updated, {
+            preferOffline: settingsRef.current.preferOfflineWhenOnline,
+            hasGgdDirect,
+            watchPosSec: effectiveWatchPos,
+          });
+          if (fallbackTier2 && fallbackTier2.id !== curId) {
+            lastAutoServerSwitchAtRef.current = Date.now();
+            await playServerOnActiveLayer(fallbackTier2, {
+              seekToSec: currentTimeRef.current,
+              serverFileKey: sfk,
+              vnUrl,
+              enUrl,
+              title: movieTitle,
+            });
+            showToast(
+              `Đã chuyển sang ${fallbackTier2.label}`,
+              'Đoạn xem trước sắp hết, tạm chuyển trong khi chờ máy chủ hoàn tất',
+              'info',
+              { family: 'ionicons', name: 'server-outline', color: '#38BDF8' }
+            );
+          }
+        } else if (
           settingsRef.current.autoOptimalServer &&
           !lockedId &&
           curId !== '99' &&
-          pollRes.status === 'success' &&
           curId !== '11' &&
-          curId !== '36' &&
-          isBufferingRef.current &&
-          Date.now() - lastAutoServerSwitchAtRef.current >= AUTO_SWITCH_COOLDOWN_MS
+          curId !== '36'
         ) {
+          // While running auto-selected Tier 2 (Phiên 40 / Hàn Quốc / fallback):
+          // Auto-switch immediately to Phiên 11 / Phiên 36 (prioritizing 11 + ms) when server completes
+          // or when _10p (< 8m) / _30p (< 28m) preview becomes eligible — even without buffering!
           const better = selectOptimalServer(updated, {
             preferOffline: settingsRef.current.preferOfflineWhenOnline,
             hasGgdDirect,
+            watchPosSec: effectiveWatchPos,
           });
-          if (better && better.id !== curId && (better.pingMs ?? 9999) + 40 < (curSrv.pingMs ?? 9999)) {
+          if (better && (better.id === '99' || better.id === '11' || better.id === '36')) {
             lastAutoServerSwitchAtRef.current = Date.now();
             await playServerOnActiveLayer(better, {
               seekToSec: currentTimeRef.current,
@@ -1349,11 +1734,27 @@ export function PlayerModal({
               enUrl,
               title: movieTitle,
             });
-            showToast(`Đã chuyển sang ${better.label} (${better.pingMs || 0} ms)`, undefined, 'info', {
-              family: 'ionicons',
-              name: 'server-outline',
-              color: '#38BDF8',
-            });
+            if (better.id === '99') {
+              showToast('Đã chuyển sang Phát từ máy', 'Tệp ngoại tuyến đã sẵn sàng', 'success', {
+                family: 'ionicons',
+                name: 'phone-portrait-outline',
+                color: '#34D399',
+              });
+            } else if (pollRes.status === 'success') {
+              showToast(
+                `Đã chuyển sang ${better.label}`,
+                `Máy chủ tốc độ cao đã hoàn tất (${better.pingMs || 0} ms)`,
+                'success',
+                { family: 'ionicons', name: 'server-outline', color: '#34D399' }
+              );
+            } else {
+              showToast(
+                `Đã chuyển sang ${better.label}`,
+                `Xem trước ${better.previewTag === '30p' ? '30 phút' : '10 phút'} (${better.pingMs || 0} ms)`,
+                'info',
+                { family: 'ionicons', name: 'server-outline', color: '#38BDF8' }
+              );
+            }
           }
         }
       }, 3200);
@@ -1380,6 +1781,7 @@ export function PlayerModal({
       }
 
       manualLockedServerRef.current = null;
+      setIsManualServerLocked(false);
       erroredServersRef.current = new Set();
       pipProxyBrokenRef.current = false;
       activeMediaUrlRef.current = '';
@@ -1396,7 +1798,7 @@ export function PlayerModal({
       durationRef.current = 0;
       setBufferedPos(0);
       setActiveStreamCode(streamCodeToLoad);
-      if (opts?.episodeTitleHint) setActiveEpTitle(opts.episodeTitleHint);
+      if (opts?.episodeTitleHint) setActiveEpTitle(formatEpisodeDisplayTitle(opts.episodeTitleHint));
 
       hasAutoHiddenInitialHudRef.current = false;
       userInteractedHudRef.current = false;
@@ -1479,7 +1881,7 @@ export function PlayerModal({
         };
         if (loadSeqRef.current !== mySeq) return;
         setResolved(synthResolved);
-        setActiveEpTitle(localOffline.episode_title || '');
+        setActiveEpTitle(formatEpisodeDisplayTitle(localOffline.episode_title || ''));
         setQualityBadge('1080pHD');
         if (localOffline.duration_sec) setDuration(localOffline.duration_sec);
         const livePort = await ensureLiveLocalPort(false);
@@ -1627,7 +2029,7 @@ export function PlayerModal({
             erroredIds: erroredServersRef.current,
           });
           if (cfRes && sfkBg) {
-            updatedList = applyCheckFileToServers(updatedList, sfkBg, cfRes);
+            updatedList = applyCheckFileToServers(updatedList, sfkBg, cfRes, durationRef.current);
           }
           setServers(updatedList);
         })();
@@ -1646,7 +2048,7 @@ export function PlayerModal({
         if (loadSeqRef.current !== mySeq) return;
 
         setResolved(resData);
-        if (resData.episode_title) setActiveEpTitle(resData.episode_title);
+        if (resData.episode_title) setActiveEpTitle(formatEpisodeDisplayTitle(resData.episode_title));
         if (resData.movie?.in_wishlist !== undefined) {
           setInWishlist(Boolean(resData.movie.in_wishlist));
         }
@@ -1703,26 +2105,6 @@ export function PlayerModal({
           erroredIds: erroredServersRef.current,
         });
 
-        if (checkFileRes) {
-          initialServers = applyCheckFileToServers(initialServers, sfk, checkFileRes);
-          if (
-            sfk &&
-            (checkFileRes.status === 'error_file' || checkFileRes.status === 'error_file_log')
-          ) {
-            void triggerServerPrepare(sfk);
-          }
-        }
-        setServers(initialServers);
-
-        const hasGgdDirect = Boolean(
-          apiGgd.ggdriver_1 || apiGgd.ggdriver_2 || apiGgd.ggdriver_3
-        );
-        const chosen = selectOptimalServer(initialServers, {
-          preferOffline: settingsRef.current.preferOfflineWhenOnline,
-          hasGgdDirect,
-        });
-
-        // Compute best resume position across server + local offline + auto-resume initialResumeSec
         const serverResumeSec =
           serverProgRes &&
           serverProgRes.resume_seconds > (resData.resume_seconds || 0)
@@ -1742,6 +2124,26 @@ export function PlayerModal({
             color: '#38BDF8',
           });
         }
+
+        if (checkFileRes) {
+          initialServers = applyCheckFileToServers(initialServers, sfk, checkFileRes, durationRef.current);
+          if (
+            sfk &&
+            (checkFileRes.status === 'error_file' || checkFileRes.status === 'error_file_log')
+          ) {
+            void triggerServerPrepare(sfk);
+          }
+        }
+        setServers(initialServers);
+
+        const hasGgdDirect = Boolean(
+          apiGgd.ggdriver_1 || apiGgd.ggdriver_2 || apiGgd.ggdriver_3
+        );
+        const chosen = selectOptimalServer(initialServers, {
+          preferOffline: settingsRef.current.preferOfflineWhenOnline,
+          hasGgdDirect,
+          watchPosSec: targetStartSec,
+        });
 
         if (chosen) {
           await playServerOnActiveLayer(chosen, {
@@ -1764,7 +2166,7 @@ export function PlayerModal({
         }
 
         // Poll Phiên 11 / Phiên 36 progress while preparing so user sees live % & auto-upgrades to 100%
-        if (sfk && checkFileRes && checkFileRes.status !== 'success') {
+        if (sfk && (!checkFileRes || checkFileRes.status !== 'success')) {
           startCheckFilePolling({
             mySeq,
             sfk,
@@ -1929,11 +2331,12 @@ export function PlayerModal({
         ggd: ggdRes,
         pings,
       });
-      if (cfRes) nextServers = applyCheckFileToServers(nextServers, nextSfk, cfRes);
+      if (cfRes) nextServers = applyCheckFileToServers(nextServers, nextSfk, cfRes, nextResolved.skip_intro_sec || 0);
 
       const best = selectOptimalServer(nextServers, {
         preferOffline: settingsRef.current.preferOfflineWhenOnline,
         hasGgdDirect: Boolean(ggdRes.ggdriver_1 || ggdRes.ggdriver_2 || ggdRes.ggdriver_3),
+        watchPosSec: nextResolved.skip_intro_sec || 0,
       });
 
       if (!best || !best.streamUrl) {
@@ -2176,9 +2579,12 @@ export function PlayerModal({
 
       activeLayerRef.current = newLayer;
       setActiveLayer(newLayer);
+      manualLockedServerRef.current = null;
+      setIsManualServerLocked(false);
+      erroredServersRef.current = new Set();
       setResolved(pkg.resolved);
       setActiveStreamCode(pkg.streamCode);
-      setActiveEpTitle(pkg.episode.episodes_name);
+      setActiveEpTitle(formatEpisodeDisplayTitle(pkg.episode.episodes_name));
       setVnCues(pkg.vnCues);
       setEnCues(pkg.enCues);
       setVnSubUrl(pkg.vnUrl);
@@ -2255,6 +2661,8 @@ export function PlayerModal({
 
       const dur = durationRef.current;
       if (dur <= 0 || !initialSeekPendingRef.current.done) return;
+      const curActiveSrv = serversRef.current.find((s) => s.id === activeServerIdRef.current);
+      if (curActiveSrv?.previewTag) return;
       const endCredits = resolvedRef.current?.end_credits_sec || 0;
 
       // Trigger Layer 2 preload at T - endCredits - 120s
@@ -2365,6 +2773,7 @@ export function PlayerModal({
             resolvedRef.current?.ggdriver_2 ||
             resolvedRef.current?.ggdriver_3
         ),
+        watchPosSec: currentTimeRef.current,
       });
       if (failover) {
         showToast(
@@ -2445,6 +2854,132 @@ export function PlayerModal({
     showToast,
   ]);
 
+  const refreshServerListState = useCallback(async (): Promise<ServerRuntimeState[]> => {
+    const sfk = resolvedRef.current?.server_file_key || '';
+    const online = await probeConnectivity(2000).catch(() => false);
+    const [p, checkRes, ggdRes] = await Promise.all([
+      measureAllServerPings(Boolean(matchedOfflineItem)),
+      online && sfk ? checkServerFileStatus(sfk) : Promise.resolve(null),
+      online && sfk
+        ? checkGgdriverApi(sfk, resolvedRef.current?.server_movie_title)
+        : Promise.resolve(null),
+    ]);
+    const hasAnyGgd = Boolean(
+      ggdRes && (ggdRes.ggdriver_1 || ggdRes.ggdriver_2 || ggdRes.ggdriver_3)
+    );
+    let next = serversRef.current.map((s) => {
+      if (s.id === '99') return { ...s, pingMs: p.ping99, pingFailed: false };
+      if (s.id === '11') return { ...s, pingMs: p.ping11, pingFailed: p.ping11 === null };
+      if (s.id === '36') return { ...s, pingMs: p.ping36, pingFailed: p.ping36 === null };
+      if (s.id === '40') {
+        const readyNow = online && (hasAnyGgd || Boolean(s.streamUrl));
+        return {
+          ...s,
+          pingMs: p.ping40,
+          pingFailed: !online,
+          status:
+            !online && s.status === 'checking'
+              ? ('error' as const)
+              : readyNow && s.status === 'checking'
+                ? ('ready' as const)
+                : s.status,
+          progressLabel:
+            !online && s.status === 'checking'
+              ? 'Mất kết nối'
+              : readyNow && s.status === 'checking'
+                ? 'Sẵn sàng'
+                : s.progressLabel,
+        };
+      }
+      if (s.id === '3') {
+        const readyNow = online && Boolean(s.streamUrl);
+        return {
+          ...s,
+          pingMs: p.ping3,
+          pingFailed: !online,
+          status:
+            !online && s.status === 'checking'
+              ? ('error' as const)
+              : readyNow && s.status === 'checking'
+                ? ('ready' as const)
+                : s.status,
+          progressLabel:
+            !online && s.status === 'checking'
+              ? 'Mất kết nối'
+              : readyNow && s.status === 'checking'
+                ? 'Sẵn sàng'
+                : s.progressLabel,
+        };
+      }
+      return s;
+    });
+    if (checkRes) {
+      next = applyCheckFileToServers(next, sfk, checkRes, durationRef.current);
+    } else if (!online) {
+      next = next.map((s) =>
+        s.id !== '99' && s.status === 'checking'
+          ? { ...s, status: 'error' as const, progressLabel: 'Mất kết nối' }
+          : s
+      );
+    }
+    serversRef.current = next;
+    setServers(next);
+    return next;
+  }, [matchedOfflineItem]);
+
+  const handleActiveLayerPlayToEnd = useCallback(() => {
+    const curSrv = serversRef.current.find((s) => s.id === activeServerIdRef.current);
+    if (curSrv?.previewTag) {
+      if (!manualLockedServerRef.current && settingsRef.current.autoOptimalServer) {
+        const candidates = serversRef.current.filter((s) => s.id !== curSrv.id);
+        const fallbackTier2 = selectOptimalServer(candidates, {
+          preferOffline: settingsRef.current.preferOfflineWhenOnline,
+          watchPosSec: currentTimeRef.current,
+        });
+        if (fallbackTier2) {
+          lastAutoServerSwitchAtRef.current = Date.now();
+          void playServerOnActiveLayer(fallbackTier2, {
+            seekToSec: currentTimeRef.current,
+            serverFileKey: resolvedRef.current?.server_file_key || '',
+            vnUrl: vnSubUrlRef.current,
+            enUrl: enSubUrlRef.current,
+            title: resolvedRef.current?.title || paramsRef.current?.title || '',
+          });
+          showToast(
+            `Đã chuyển sang ${fallbackTier2.label}`,
+            'Đoạn xem trước vừa kết thúc, đang tiếp tục phát trên máy chủ dự phòng',
+            'info',
+            { family: 'ionicons', name: 'server-outline', color: '#38BDF8' }
+          );
+          return;
+        }
+      }
+      userExplicitlyPausedRef.current = true;
+      return;
+    }
+
+    if (sleepTimerValue === 'end_of_episode') {
+      userExplicitlyPausedRef.current = true;
+      void clearActivePlaybackSession();
+      setSleepTimerValue(null);
+      setSleepSecondsLeft(null);
+      showAppAlert('Hẹn giờ ngủ', 'Đã phát hết tập phim và tự động dừng.');
+      return;
+    }
+    if (settingsRef.current.autoPlayNext && currentNextEpisode) {
+      triggerSwitchToNextEpisode();
+    } else {
+      userExplicitlyPausedRef.current = true;
+      void clearActivePlaybackSession();
+    }
+  }, [
+    sleepTimerValue,
+    currentNextEpisode,
+    triggerSwitchToNextEpisode,
+    playServerOnActiveLayer,
+    showToast,
+  ]);
+
   // Listeners for Player A
   useEffect(() => {
     const sSub = playerA.addListener('statusChange', (ev) => {
@@ -2518,20 +3053,7 @@ export function PlayerModal({
 
     const eSub = playerA.addListener('playToEnd', () => {
       if (activeLayerRef.current !== 'A') return;
-      if (sleepTimerValue === 'end_of_episode') {
-        userExplicitlyPausedRef.current = true;
-        void clearActivePlaybackSession();
-        setSleepTimerValue(null);
-        setSleepSecondsLeft(null);
-        showAppAlert('Hẹn giờ ngủ', 'Đã phát hết tập phim và tự động dừng.');
-        return;
-      }
-      if (settingsRef.current.autoPlayNext && currentNextEpisode) {
-        triggerSwitchToNextEpisode();
-      } else {
-        userExplicitlyPausedRef.current = true;
-        void clearActivePlaybackSession();
-      }
+      handleActiveLayerPlayToEnd();
     });
 
     return () => {
@@ -2542,14 +3064,12 @@ export function PlayerModal({
     };
   }, [
     playerA,
-    sleepTimerValue,
-    currentNextEpisode,
+    handleActiveLayerPlayToEnd,
     handleActivePlayerError,
     handleLayerTimeUpdate,
     flushActivePlaybackSessionNow,
     scheduleHudAutoHide,
     showToast,
-    triggerSwitchToNextEpisode,
   ]);
 
   // Listeners for Player B
@@ -2624,20 +3144,7 @@ export function PlayerModal({
 
     const eSub = playerB.addListener('playToEnd', () => {
       if (activeLayerRef.current !== 'B') return;
-      if (sleepTimerValue === 'end_of_episode') {
-        userExplicitlyPausedRef.current = true;
-        void clearActivePlaybackSession();
-        setSleepTimerValue(null);
-        setSleepSecondsLeft(null);
-        showAppAlert('Hẹn giờ ngủ', 'Đã phát hết tập phim và tự động dừng.');
-        return;
-      }
-      if (settingsRef.current.autoPlayNext && currentNextEpisode) {
-        triggerSwitchToNextEpisode();
-      } else {
-        userExplicitlyPausedRef.current = true;
-        void clearActivePlaybackSession();
-      }
+      handleActiveLayerPlayToEnd();
     });
 
     return () => {
@@ -2648,14 +3155,12 @@ export function PlayerModal({
     };
   }, [
     playerB,
-    sleepTimerValue,
-    currentNextEpisode,
+    handleActiveLayerPlayToEnd,
     handleActivePlayerError,
     handleLayerTimeUpdate,
     flushActivePlaybackSessionNow,
     scheduleHudAutoHide,
     showToast,
-    triggerSwitchToNextEpisode,
   ]);
 
   // Countdown tick for Next Episode Delay > 0s
@@ -2942,6 +3447,7 @@ export function PlayerModal({
     seekComboRef.current.side = null;
     seekComboRef.current.totalSec = 0;
     seekComboRef.current.lastTapAt = 0;
+    seekRippleVisibleSideRef.current = null;
     seekRippleOpacity.stopAnimation();
     seekRippleOpacity.setValue(0);
     seekRippleScaleX.stopAnimation();
@@ -2981,6 +3487,7 @@ export function PlayerModal({
       playerB.replaceAsync(null).catch(() => {});
 
       manualLockedServerRef.current = null;
+      setIsManualServerLocked(false);
       erroredServersRef.current = new Set();
       pipProxyBrokenRef.current = false;
       activeMediaUrlRef.current = '';
@@ -3107,7 +3614,7 @@ export function PlayerModal({
   ]);
 
   // Auto-download current / next episodes when enabled in settings
-  // Strictly guarded against stale resolved/detailEpisodes from previous movies (Item 6)
+  // Strictly gated: next episodes never download until current episode finishes (Item 4)
   useEffect(() => {
     if (!visible || isOfflineOnlyMode || !params?.videosId || !activeStreamCode) return;
     if (!resolved || resolved.stream_code !== activeStreamCode || activeStreamCode !== params.streamCode) {
@@ -3118,7 +3625,13 @@ export function PlayerModal({
     }
     const wantCurrent = settings.autoDownloadCurrentOnWatch;
     const rawNextCount = Math.max(0, settings.autoDownloadNextCount || 0);
-    if (!wantCurrent && rawNextCount === 0) return;
+    if (!wantCurrent && rawNextCount === 0) {
+      if (lastAutoFollowUpParentIdRef.current) {
+        clearPendingFollowUpDownloads(lastAutoFollowUpParentIdRef.current);
+        lastAutoFollowUpParentIdRef.current = null;
+      }
+      return;
+    }
 
     const trustedEpisodes =
       resolved.episodes && resolved.episodes.length > 0
@@ -3131,7 +3644,16 @@ export function PlayerModal({
       resolved.movie?.is_tvseries === 1 || trustedEpisodes.length > 1;
     const nextCount = isSeriesMovie ? rawNextCount : 0;
 
-    const sig = `${params.videosId}|${activeStreamCode}|${wantCurrent ? 1 : 0}|${nextCount}|${trustedEpisodes.length}`;
+    const isCurrentCompleted = Boolean(matchedOfflineItem?.status === 'completed');
+    const isCurrentActive = Boolean(
+      downloadingOfflineItem &&
+        (downloadingOfflineItem.status === 'downloading' ||
+          downloadingOfflineItem.status === 'preparing' ||
+          downloadingOfflineItem.status === 'queued')
+    );
+    const currentDlState = isCurrentCompleted ? 'done' : isCurrentActive ? 'active' : 'none';
+
+    const sig = `${params.videosId}|${activeStreamCode}|${wantCurrent ? 1 : 0}|${nextCount}|${trustedEpisodes.length}|${currentDlState}`;
     if (lastAutoQueuedSigRef.current === sig) return;
     lastAutoQueuedSigRef.current = sig;
 
@@ -3150,15 +3672,12 @@ export function PlayerModal({
             },
           ];
 
-    const filtered = wantCurrent ? targets : targets.filter((t) => t.stream_code !== activeStreamCode);
-    if (filtered.length === 0) return;
-
     const bestPoster =
       moviePosterMeta.poster || resolved.movie?.poster_url || params.posterUrl || moviePosterMeta.thumb || '';
     const bestThumb =
       moviePosterMeta.thumb || resolved.movie?.thumbnail_url || params.thumbnailUrl || bestPoster;
 
-    const requests: OfflineEnqueueParams[] = filtered.map((ep) => {
+    const toReq = (ep: EpisodeItem): OfflineEnqueueParams => {
       const isCur = ep.stream_code === activeStreamCode;
       return {
         videos_id: params.videosId,
@@ -3166,7 +3685,7 @@ export function PlayerModal({
         stream_code: ep.stream_code,
         title: resolved.title || params.title,
         episode_title: isSeriesMovie
-          ? ep.episodes_name || (isCur ? activeEpTitle : undefined)
+          ? formatEpisodeDisplayTitle(ep.episodes_name || (isCur ? activeEpTitle : undefined)) || undefined
           : undefined,
         server_movie_title: resolved.server_movie_title || undefined,
         server_file_key: isCur ? resolved.server_file_key || undefined : undefined,
@@ -3175,8 +3694,64 @@ export function PlayerModal({
         preferred_format: settings.offlineDownloadFormat,
         concurrency: settings.offlineDownloadConcurrency,
       };
-    });
-    void enqueueEpisodeBatch(requests);
+    };
+
+    const currentEpObj = targets.find((t) => t.stream_code === activeStreamCode) || targets[0];
+    const currentReq = currentEpObj ? toReq(currentEpObj) : null;
+    const nextOnlyReqs =
+      isSeriesMovie && nextCount > 0
+        ? targets.filter((t) => t.stream_code !== activeStreamCode).map(toReq)
+        : [];
+
+    void (async () => {
+      if (isCurrentCompleted) {
+        if (lastAutoFollowUpParentIdRef.current) {
+          clearPendingFollowUpDownloads(lastAutoFollowUpParentIdRef.current);
+          lastAutoFollowUpParentIdRef.current = null;
+        }
+        if (nextOnlyReqs.length > 0) {
+          await enqueueEpisodeBatch(nextOnlyReqs);
+        }
+        return;
+      }
+
+      if (isCurrentActive && downloadingOfflineItem) {
+        if (
+          lastAutoFollowUpParentIdRef.current &&
+          lastAutoFollowUpParentIdRef.current !== downloadingOfflineItem.id
+        ) {
+          clearPendingFollowUpDownloads(lastAutoFollowUpParentIdRef.current);
+        }
+        if (nextOnlyReqs.length > 0) {
+          lastAutoFollowUpParentIdRef.current = downloadingOfflineItem.id;
+          await setPendingFollowUpDownloads(downloadingOfflineItem.id, nextOnlyReqs);
+        } else {
+          clearPendingFollowUpDownloads(downloadingOfflineItem.id);
+          lastAutoFollowUpParentIdRef.current = null;
+        }
+        return;
+      }
+
+      if (wantCurrent && currentReq) {
+        const curItem = await enqueueOfflineDownload(currentReq);
+        if (
+          lastAutoFollowUpParentIdRef.current &&
+          lastAutoFollowUpParentIdRef.current !== curItem.id
+        ) {
+          clearPendingFollowUpDownloads(lastAutoFollowUpParentIdRef.current);
+        }
+        if (nextOnlyReqs.length > 0) {
+          lastAutoFollowUpParentIdRef.current = curItem.id;
+          await setPendingFollowUpDownloads(curItem.id, nextOnlyReqs);
+        } else {
+          clearPendingFollowUpDownloads(curItem.id);
+          lastAutoFollowUpParentIdRef.current = null;
+        }
+      } else if (lastAutoFollowUpParentIdRef.current) {
+        clearPendingFollowUpDownloads(lastAutoFollowUpParentIdRef.current);
+        lastAutoFollowUpParentIdRef.current = null;
+      }
+    })();
   }, [
     visible,
     isOfflineOnlyMode,
@@ -3186,6 +3761,9 @@ export function PlayerModal({
     resolved,
     detailEpisodes,
     moviePosterMeta,
+    matchedOfflineItem?.status,
+    downloadingOfflineItem?.id,
+    downloadingOfflineItem?.status,
     settings.autoDownloadCurrentOnWatch,
     settings.autoDownloadNextCount,
     settings.offlineDownloadFormat,
@@ -3324,6 +3902,7 @@ export function PlayerModal({
           const better = selectOptimalServer(candidates, {
             preferOffline: settingsRef.current.preferOfflineWhenOnline,
             hasGgdDirect,
+            watchPosSec: currentTimeRef.current,
           });
           if (better && better.id !== activeIdNow) {
             lastAutoServerSwitchAtRef.current = Date.now();
@@ -3359,7 +3938,15 @@ export function PlayerModal({
   const seekToWithWarning = useCallback(
     (targetSec: number) => {
       const dur = durationRef.current;
-      const clamped = dur > 0 ? Math.max(0, Math.min(dur, targetSec)) : Math.max(0, targetSec);
+      const curSrv = serversRef.current.find((s) => s.id === activeServerIdRef.current);
+      const isPreviewClip = Boolean(curSrv?.previewTag);
+      const effectiveMaxDur = isPreviewClip
+        ? Math.max(dur, curSrv?.totalSeconds || 0)
+        : dur;
+      const clamped =
+        effectiveMaxDur > 0
+          ? Math.max(0, Math.min(effectiveMaxDur, targetSec))
+          : Math.max(0, targetSec);
       const prevSec = currentTimeRef.current;
       if (
         settingsRef.current.seekWarningEnabled &&
@@ -3369,11 +3956,43 @@ export function PlayerModal({
         if (seekReturnTimerRef.current) clearTimeout(seekReturnTimerRef.current);
         seekReturnTimerRef.current = setTimeout(() => setSeekReturnSec(null), 9000);
       }
+
+      if (
+        curSrv &&
+        ((curSrv.previewTag === '10p' && clamped >= PREVIEW_10P_HARD_LIMIT_SEC) ||
+          (curSrv.previewTag === '30p' && clamped >= PREVIEW_30P_HARD_LIMIT_SEC)) &&
+        !manualLockedServerRef.current &&
+        settingsRef.current.autoOptimalServer
+      ) {
+        const candidates = serversRef.current.filter((s) => s.id !== curSrv.id);
+        const fallbackTier2 = selectOptimalServer(candidates, {
+          preferOffline: settingsRef.current.preferOfflineWhenOnline,
+          watchPosSec: clamped,
+        });
+        if (fallbackTier2) {
+          lastAutoServerSwitchAtRef.current = Date.now();
+          void playServerOnActiveLayer(fallbackTier2, {
+            seekToSec: clamped,
+            serverFileKey: resolvedRef.current?.server_file_key || '',
+            vnUrl: vnSubUrlRef.current,
+            enUrl: enSubUrlRef.current,
+            title: resolvedRef.current?.title || paramsRef.current?.title || '',
+          });
+          showToast(
+            `Đã chuyển sang ${fallbackTier2.label}`,
+            'Vị trí tua vượt quá đoạn xem trước, đang phát trên máy chủ dự phòng',
+            'info',
+            { family: 'ionicons', name: 'server-outline', color: '#38BDF8' }
+          );
+          return;
+        }
+      }
+
       try {
         getActivePlayer().currentTime = clamped;
       } catch {}
     },
-    [getActivePlayer]
+    [getActivePlayer, playServerOnActiveLayer, showToast]
   );
 
   const toggleHudImmediate = useCallback(() => {
@@ -3396,12 +4015,14 @@ export function PlayerModal({
         seekComboRef.current.hideTimer = null;
       }
       const now = Date.now();
+      const isAlreadyVisibleSameSide = seekRippleVisibleSideRef.current === side;
       const isContinuing =
-        seekComboRef.current.side === side && now - seekComboRef.current.lastTapAt < 950;
+        seekComboRef.current.side === side && now - seekComboRef.current.lastTapAt < 1050;
       const nextTotal = isContinuing ? seekComboRef.current.totalSec + 10 : 10;
       seekComboRef.current.side = side;
       seekComboRef.current.totalSec = nextTotal;
       seekComboRef.current.lastTapAt = now;
+      seekRippleVisibleSideRef.current = side;
 
       const delta = side === 'left' ? -10 : 10;
       seekToWithWarning(currentTimeRef.current + delta);
@@ -3413,99 +4034,99 @@ export function PlayerModal({
       seekRippleScaleY.stopAnimation();
       seekRippleTranslateY.stopAnimation();
 
-      if (isContinuing) {
-        seekRippleScaleX.setValue(0.86);
-        seekRippleScaleY.setValue(1.14);
-        seekRippleTranslateY.setValue(-4);
+      if (isAlreadyVisibleSameSide) {
+        // Already sitting on screen: keep vertical position stable & bounce elastically in place
         Animated.parallel([
           Animated.timing(seekRippleOpacity, {
             toValue: 1,
-            duration: 80,
+            duration: 75,
             useNativeDriver: true,
           }),
           Animated.spring(seekRippleTranslateY, {
             toValue: 0,
-            stiffness: 210,
-            damping: 10,
+            stiffness: 280,
+            damping: 22,
+            mass: 0.85,
+            useNativeDriver: true,
+          }),
+          Animated.sequence([
+            Animated.timing(seekRippleScaleX, {
+              toValue: 1.14,
+              duration: 85,
+              easing: Easing.out(Easing.cubic),
+              useNativeDriver: true,
+            }),
+            Animated.spring(seekRippleScaleX, {
+              toValue: 1,
+              stiffness: 245,
+              damping: 7.2,
+              mass: 0.86,
+              useNativeDriver: true,
+            }),
+          ]),
+          Animated.sequence([
+            Animated.timing(seekRippleScaleY, {
+              toValue: 0.88,
+              duration: 85,
+              easing: Easing.out(Easing.cubic),
+              useNativeDriver: true,
+            }),
+            Animated.spring(seekRippleScaleY, {
+              toValue: 1,
+              stiffness: 245,
+              damping: 7.2,
+              mass: 0.86,
+              useNativeDriver: true,
+            }),
+          ]),
+        ]).start();
+      } else {
+        // First appearance: drop in smoothly from above with soft jelly bounce
+        seekRippleOpacity.setValue(0);
+        seekRippleScaleX.setValue(0.7);
+        seekRippleScaleY.setValue(1.22);
+        seekRippleTranslateY.setValue(-16);
+        Animated.parallel([
+          Animated.timing(seekRippleOpacity, {
+            toValue: 1,
+            duration: 155,
+            easing: Easing.out(Easing.cubic),
+            useNativeDriver: true,
+          }),
+          Animated.spring(seekRippleTranslateY, {
+            toValue: 0,
+            stiffness: 190,
+            damping: 11,
             mass: 1.0,
             useNativeDriver: true,
           }),
           Animated.sequence([
             Animated.timing(seekRippleScaleX, {
               toValue: 1.12,
-              duration: 105,
+              duration: 120,
               easing: Easing.bezier(0.34, 1.56, 0.64, 1),
               useNativeDriver: true,
             }),
             Animated.spring(seekRippleScaleX, {
               toValue: 1,
               stiffness: 205,
-              damping: 7.2,
-              mass: 1.02,
+              damping: 7.4,
+              mass: 0.96,
               useNativeDriver: true,
             }),
           ]),
           Animated.sequence([
             Animated.timing(seekRippleScaleY, {
               toValue: 0.89,
-              duration: 105,
+              duration: 120,
               easing: Easing.bezier(0.34, 1.56, 0.64, 1),
               useNativeDriver: true,
             }),
             Animated.spring(seekRippleScaleY, {
               toValue: 1,
               stiffness: 205,
-              damping: 7.2,
-              mass: 1.02,
-              useNativeDriver: true,
-            }),
-          ]),
-        ]).start();
-      } else {
-        seekRippleScaleX.setValue(0.68);
-        seekRippleScaleY.setValue(1.22);
-        seekRippleTranslateY.setValue(-14);
-        Animated.parallel([
-          Animated.timing(seekRippleOpacity, {
-            toValue: 1,
-            duration: 160,
-            easing: Easing.out(Easing.cubic),
-            useNativeDriver: true,
-          }),
-          Animated.spring(seekRippleTranslateY, {
-            toValue: 0,
-            stiffness: 185,
-            damping: 11,
-            mass: 1.05,
-            useNativeDriver: true,
-          }),
-          Animated.sequence([
-            Animated.timing(seekRippleScaleX, {
-              toValue: 1.12,
-              duration: 130,
-              easing: Easing.bezier(0.34, 1.56, 0.64, 1),
-              useNativeDriver: true,
-            }),
-            Animated.spring(seekRippleScaleX, {
-              toValue: 1,
-              stiffness: 195,
-              damping: 7.5,
-              mass: 1.05,
-              useNativeDriver: true,
-            }),
-          ]),
-          Animated.sequence([
-            Animated.timing(seekRippleScaleY, {
-              toValue: 0.89,
-              duration: 130,
-              easing: Easing.bezier(0.34, 1.56, 0.64, 1),
-              useNativeDriver: true,
-            }),
-            Animated.spring(seekRippleScaleY, {
-              toValue: 1,
-              stiffness: 195,
-              damping: 7.5,
-              mass: 1.05,
+              damping: 7.4,
+              mass: 0.96,
               useNativeDriver: true,
             }),
           ]),
@@ -3536,6 +4157,7 @@ export function PlayerModal({
           }),
         ]).start(({ finished }) => {
           if (finished && seekComboRef.current.side === null) {
+            seekRippleVisibleSideRef.current = null;
             setSeekRipple(null);
           }
         });
@@ -3669,7 +4291,9 @@ export function PlayerModal({
 
   const displayTitle =
     resolved?.title || params.title || 'Đang phát phim';
-  const epDisplay = activeEpTitle || resolved?.episode_title || params.episodeTitle || '';
+  const epDisplay = formatEpisodeDisplayTitle(
+    activeEpTitle || resolved?.episode_title || params.episodeTitle || ''
+  );
   const fullHeaderTitle = epDisplay ? `${displayTitle} · ${epDisplay}` : displayTitle;
 
   const isContrastActive =
@@ -4288,27 +4912,15 @@ export function PlayerModal({
 
             {/* Center Playback Controls matching Image 1 */}
             <View style={styles.centerControlsRow} pointerEvents="box-none">
-              <BouncyButton
-                activeOpacity={0.75}
-                pressScale={0.84}
-                style={styles.centerSeekTouch}
+              <CenterSeekButton
+                direction="backward"
                 onPress={() => {
                   userInteractedHudRef.current = true;
                   Haptics.selectionAsync();
                   seekToWithWarning(currentTimeRef.current - 10);
                   showHudWithTimer();
                 }}
-              >
-                <View style={styles.seekRingWrap}>
-                  <Ionicons
-                    name="refresh-outline"
-                    size={42}
-                    color="#FFF"
-                    style={{ transform: [{ scaleX: -1 }] }}
-                  />
-                  <Text style={styles.seekRingTxt}>10</Text>
-                </View>
-              </BouncyButton>
+              />
 
               <BouncyButton
                 activeOpacity={0.8}
@@ -4348,22 +4960,15 @@ export function PlayerModal({
                 )}
               </BouncyButton>
 
-              <BouncyButton
-                activeOpacity={0.75}
-                pressScale={0.84}
-                style={styles.centerSeekTouch}
+              <CenterSeekButton
+                direction="forward"
                 onPress={() => {
                   userInteractedHudRef.current = true;
                   Haptics.selectionAsync();
                   seekToWithWarning(currentTimeRef.current + 10);
                   showHudWithTimer();
                 }}
-              >
-                <View style={styles.seekRingWrap}>
-                  <Ionicons name="refresh-outline" size={42} color="#FFF" />
-                  <Text style={styles.seekRingTxt}>10</Text>
-                </View>
-              </BouncyButton>
+              />
             </View>
 
             {/* Bottom Control Section matching Image 1 */}
@@ -4781,12 +5386,51 @@ export function PlayerModal({
           servers={servers}
           activeServerId={activeServerId}
           autoOptimal={settings.autoOptimalServer}
+          manualLocked={isManualServerLocked}
           onToggleAutoOptimal={(next) => {
             void updateSetting('autoOptimalServer', next);
             if (!next && activeServerId) {
               manualLockedServerRef.current = activeServerId;
+              setIsManualServerLocked(true);
             } else {
               manualLockedServerRef.current = null;
+              setIsManualServerLocked(false);
+              void (async () => {
+                setPingRefreshing(true);
+                try {
+                  const latest = await refreshServerListState();
+                  const best = selectOptimalServer(latest, {
+                    preferOffline: settingsRef.current.preferOfflineWhenOnline,
+                    hasGgdDirect: Boolean(
+                      resolvedRef.current?.ggdriver_1 ||
+                        resolvedRef.current?.ggdriver_2 ||
+                        resolvedRef.current?.ggdriver_3
+                    ),
+                    watchPosSec: currentTimeRef.current,
+                  });
+                  if (best && best.id !== activeServerIdRef.current) {
+                    lastAutoServerSwitchAtRef.current = Date.now();
+                    setServerModalOpen(false);
+                    await playServerOnActiveLayer(best, {
+                      seekToSec: currentTimeRef.current,
+                      serverFileKey: resolvedRef.current?.server_file_key || '',
+                      vnUrl: vnSubUrlRef.current,
+                      enUrl: enSubUrlRef.current,
+                      title: displayTitle,
+                    });
+                    showToast(
+                      `Đã chuyển sang ${best.label}`,
+                      best.id === '99'
+                        ? 'Phát ngoại tuyến (1 ms)'
+                        : `Máy chủ tối ưu (${best.pingMs || 0} ms)`,
+                      'success',
+                      { family: 'ionicons', name: 'server-outline', color: '#34D399' }
+                    );
+                  }
+                } finally {
+                  setPingRefreshing(false);
+                }
+              })();
             }
           }}
           onSelectServer={(id) => {
@@ -4794,6 +5438,7 @@ export function PlayerModal({
               const target = servers.find((s) => s.id === id);
               if (!target) return;
               manualLockedServerRef.current = id;
+              setIsManualServerLocked(true);
               lastAutoServerSwitchAtRef.current = Date.now();
               erroredServersRef.current.delete(id);
               const sfk = resolved?.server_file_key || '';
@@ -4904,76 +5549,7 @@ export function PlayerModal({
           onRefreshPings={async () => {
             setPingRefreshing(true);
             try {
-              const sfk = resolvedRef.current?.server_file_key || '';
-              const online = await probeConnectivity(2000).catch(() => false);
-              const [p, checkRes, ggdRes] = await Promise.all([
-                measureAllServerPings(Boolean(matchedOfflineItem)),
-                online && sfk ? checkServerFileStatus(sfk) : Promise.resolve(null),
-                online && sfk
-                  ? checkGgdriverApi(sfk, resolvedRef.current?.server_movie_title)
-                  : Promise.resolve(null),
-              ]);
-              const hasAnyGgd = Boolean(
-                ggdRes && (ggdRes.ggdriver_1 || ggdRes.ggdriver_2 || ggdRes.ggdriver_3)
-              );
-              setServers((prev) => {
-                let next = prev.map((s) => {
-                  if (s.id === '99') return { ...s, pingMs: p.ping99, pingFailed: false };
-                  if (s.id === '11') return { ...s, pingMs: p.ping11, pingFailed: p.ping11 === null };
-                  if (s.id === '36') return { ...s, pingMs: p.ping36, pingFailed: p.ping36 === null };
-                  if (s.id === '40') {
-                    const readyNow = online && (hasAnyGgd || Boolean(s.streamUrl));
-                    return {
-                      ...s,
-                      pingMs: p.ping40,
-                      pingFailed: !online,
-                      status:
-                        !online && s.status === 'checking'
-                          ? ('error' as const)
-                          : readyNow && s.status === 'checking'
-                            ? ('ready' as const)
-                            : s.status,
-                      progressLabel:
-                        !online && s.status === 'checking'
-                          ? 'Mất kết nối'
-                          : readyNow && s.status === 'checking'
-                            ? 'Sẵn sàng'
-                            : s.progressLabel,
-                    };
-                  }
-                  if (s.id === '3') {
-                    const readyNow = online && Boolean(s.streamUrl);
-                    return {
-                      ...s,
-                      pingMs: p.ping3,
-                      pingFailed: !online,
-                      status:
-                        !online && s.status === 'checking'
-                          ? ('error' as const)
-                          : readyNow && s.status === 'checking'
-                            ? ('ready' as const)
-                            : s.status,
-                      progressLabel:
-                        !online && s.status === 'checking'
-                          ? 'Mất kết nối'
-                          : readyNow && s.status === 'checking'
-                            ? 'Sẵn sàng'
-                            : s.progressLabel,
-                    };
-                  }
-                  return s;
-                });
-                if (checkRes) {
-                  next = applyCheckFileToServers(next, sfk, checkRes);
-                } else if (!online) {
-                  next = next.map((s) =>
-                    s.id !== '99' && s.status === 'checking'
-                      ? { ...s, status: 'error' as const, progressLabel: 'Mất kết nối' }
-                      : s
-                  );
-                }
-                return next;
-              });
+              await refreshServerListState();
             } finally {
               setPingRefreshing(false);
             }
@@ -5360,25 +5936,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 44,
     zIndex: 16,
-  },
-  centerSeekTouch: {
-    width: 56,
-    height: 56,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  seekRingWrap: {
-    width: 48,
-    height: 48,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  seekRingTxt: {
-    position: 'absolute',
-    color: '#FFF',
-    fontSize: 11,
-    fontWeight: '800',
-    marginTop: 2,
   },
   centerPlayBox: {
     width: 78,

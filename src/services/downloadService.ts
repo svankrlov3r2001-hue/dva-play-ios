@@ -72,6 +72,7 @@ const listeners = new Set<ProgressListener>();
 const activeControllers = new Map<string, AbortController>();
 const activeResumables = new Map<string, FileSystem.DownloadResumable>();
 const pendingManualRestartIds = new Set<string>();
+const pendingFollowUpByParentId = new Map<string, OfflineEnqueueParams[]>();
 const downloadQueue: string[] = [];
 
 export interface OfflineRetentionPolicy {
@@ -190,6 +191,22 @@ export function extractEpisodeNumberFromName(name?: string): number {
   if (mEp && mEp[1]) return parseInt(mEp[1], 10);
   const mAny = str.match(/0*(\d+)/);
   return mAny && mAny[1] ? parseInt(mAny[1], 10) : 0;
+}
+
+export function formatEpisodeDisplayTitle(raw?: string): string {
+  const clean = String(raw || '').trim();
+  if (!clean) return '';
+  if (/^\d+$/.test(clean)) {
+    return `Tập ${clean.padStart(2, '0')}`;
+  }
+  if (/^\d+(?:\.\d+)$/.test(clean)) {
+    return `Tập ${clean}`;
+  }
+  const epMatch = clean.match(/^(?:t[ậâa]p|tap|episode|ep)\s*0*(\d+)$/i);
+  if (epMatch && epMatch[1]) {
+    return `Tập ${epMatch[1].padStart(2, '0')}`;
+  }
+  return clean;
 }
 
 export function normalizeEpisodeOrder(episodes: EpisodeItem[]): EpisodeItem[] {
@@ -1756,6 +1773,11 @@ async function processSingleItem(id: string): Promise<void> {
 
     await persistIndex(cachedItems.map((it) => (it.id === id ? finalized : it)));
     void enforceOfflineRetentionPolicy();
+    const followUps = pendingFollowUpByParentId.get(id);
+    if (followUps && followUps.length > 0) {
+      pendingFollowUpByParentId.delete(id);
+      await enqueueEpisodeBatch(followUps).catch(() => {});
+    }
   } catch (err: any) {
     const latest = cachedItems.find((i) => i.id === id);
     if (!latest) return;
@@ -1931,6 +1953,37 @@ export async function enqueueEpisodeBatch(
   return queuedResults;
 }
 
+export async function setPendingFollowUpDownloads(
+  parentId: string,
+  followUps: OfflineEnqueueParams[]
+): Promise<void> {
+  if (!parentId) return;
+  const validFollowUps = followUps.filter((r) => Boolean(r.stream_code));
+  if (validFollowUps.length === 0) {
+    pendingFollowUpByParentId.delete(parentId);
+    return;
+  }
+  await loadOfflineDownloads();
+  const parentItem = cachedItems.find((i) => i.id === parentId);
+  if (parentItem && parentItem.status === 'completed') {
+    const info = await FileSystem.getInfoAsync(parentItem.local_uri).catch(() => ({ exists: false }));
+    if (info.exists) {
+      pendingFollowUpByParentId.delete(parentId);
+      await enqueueEpisodeBatch(validFollowUps);
+      return;
+    }
+  }
+  pendingFollowUpByParentId.set(parentId, validFollowUps);
+}
+
+export function clearPendingFollowUpDownloads(parentId?: string): void {
+  if (parentId) {
+    pendingFollowUpByParentId.delete(parentId);
+  } else {
+    pendingFollowUpByParentId.clear();
+  }
+}
+
 /**
  * Backward-compatible alias used by earlier callers.
  */
@@ -2094,6 +2147,7 @@ export async function retryOfflineDownload(id: string): Promise<void> {
 
 export async function removeOfflineDownload(id: string): Promise<void> {
   await loadOfflineDownloads();
+  pendingFollowUpByParentId.delete(id);
   const qIdx = downloadQueue.indexOf(id);
   if (qIdx >= 0) downloadQueue.splice(qIdx, 1);
 
@@ -2130,6 +2184,7 @@ export async function cancelOfflineDownload(id: string): Promise<void> {
 
 export async function clearAllOfflineDownloads(): Promise<void> {
   await loadOfflineDownloads();
+  pendingFollowUpByParentId.clear();
   downloadQueue.length = 0;
   for (const [, ctrl] of activeControllers) {
     ctrl.abort();

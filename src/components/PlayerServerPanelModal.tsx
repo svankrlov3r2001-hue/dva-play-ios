@@ -26,6 +26,7 @@ interface PlayerServerPanelModalProps {
   servers: ServerRuntimeState[];
   activeServerId: BackupServerId | null;
   autoOptimal: boolean;
+  manualLocked?: boolean;
   onToggleAutoOptimal: (next: boolean) => void;
   onSelectServer: (id: BackupServerId) => void;
   onRefreshPings: () => void;
@@ -42,6 +43,7 @@ export function PlayerServerPanelModal({
   servers,
   activeServerId,
   autoOptimal,
+  manualLocked = false,
   onToggleAutoOptimal,
   onSelectServer,
   onRefreshPings,
@@ -54,6 +56,7 @@ export function PlayerServerPanelModal({
 
   const activeServer = servers.find((s) => s.id === activeServerId);
   const activeServerLabel = activeServer?.label || 'Tự chọn';
+  const isAutoEffective = autoOptimal && !manualLocked;
 
   return (
     <Modal
@@ -92,6 +95,7 @@ export function PlayerServerPanelModal({
                   </Text>
                   <Text style={styles.headerSubtitle} numberOfLines={1}>
                     Đang chọn: {activeServerLabel}
+                    {manualLocked ? ' (Thủ công)' : isAutoEffective ? ' • Tự tối ưu' : ''}
                   </Text>
                 </View>
               </View>
@@ -100,19 +104,19 @@ export function PlayerServerPanelModal({
                 <BouncyButton
                   bounciness="gentle"
                   activeOpacity={0.8}
-                  style={[styles.autoToggleBtn, autoOptimal && styles.autoToggleBtnActive]}
+                  style={[styles.autoToggleBtn, isAutoEffective && styles.autoToggleBtnActive]}
                   onPress={() => {
                     Haptics.selectionAsync();
-                    onToggleAutoOptimal(!autoOptimal);
+                    onToggleAutoOptimal(!isAutoEffective);
                   }}
                 >
                   <View
                     style={[
                       styles.autoDot,
-                      { backgroundColor: autoOptimal ? '#30D158' : 'rgba(255,255,255,0.4)' },
+                      { backgroundColor: isAutoEffective ? '#30D158' : 'rgba(255,255,255,0.4)' },
                     ]}
                   />
-                  <Text style={[styles.autoBtnTxt, autoOptimal && styles.autoBtnTxtActive]}>
+                  <Text style={[styles.autoBtnTxt, isAutoEffective && styles.autoBtnTxtActive]}>
                     Tự tối ưu
                   </Text>
                 </BouncyButton>

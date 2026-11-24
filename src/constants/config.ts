@@ -6,8 +6,8 @@ export const EXPO_UPDATES_URL = 'https://dangvietanh.com/dva_ios/api/updates.php
 
 export const APP_NAME = 'Đặng Việt Anh';
 export const APP_BUNDLE_ID = 'com.dangvietanh.dvaplay';
-export const APP_VERSION = '1.0.35';
-export const APP_VERSION_CODE = 36;
+export const APP_VERSION = '1.0.36';
+export const APP_VERSION_CODE = 37;
 export const APP_RUNTIME_VERSION = '1.0.0';
 export const APP_RELEASE_DATE = '24/11/2026';
 

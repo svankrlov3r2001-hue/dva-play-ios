@@ -1807,6 +1807,7 @@ private func dvaApplyWebKitProxy(_ spec: DvaProxySpec?, completion: @escaping @S
 private func dvaEncodeProxyTestResult(
   success: Bool,
   latencyMs: Int,
+  webLatencyMs: Int? = nil,
   exitIp: String?,
   error: String?
 ) -> String {
@@ -1814,6 +1815,9 @@ private func dvaEncodeProxyTestResult(
     "success": success,
     "latency_ms": latencyMs
   ]
+  if let webLatencyMs {
+    dict["web_latency_ms"] = webLatencyMs
+  }
   if let exitIp {
     dict["exit_ip"] = exitIp
   }
@@ -1827,10 +1831,101 @@ private func dvaEncodeProxyTestResult(
   return "{\\"success\\":false,\\"latency_ms\\":0,\\"error\\":\\"Lỗi xử lý kết quả kiểm tra proxy.\\"}"
 }
 
+private func dvaProbeHttpConnectHandshake(
+  spec: DvaProxySpec,
+  targetHost: String,
+  targetPort: UInt16,
+  timeoutMs: Int32
+) -> (ok: Bool, latencyMs: Int, error: String?) {
+  let startNs = DispatchTime.now().uptimeNanoseconds
+  let upstreamFd = dvaConnectUpstream(host: spec.host, port: spec.port, timeoutMs: timeoutMs)
+  if upstreamFd < 0 {
+    let nowNs = DispatchTime.now().uptimeNanoseconds
+    let diffNs = nowNs >= startNs ? nowNs - startNs : 0
+    let elapsedMs = max(1, Int(diffNs / 1_000_000))
+    return (false, elapsedMs, "Không thể kết nối tới máy chủ Proxy.")
+  }
+  defer {
+    _ = Darwin.close(upstreamFd)
+  }
+
+  let timeoutSec = max(1, Int((timeoutMs + 999) / 1000))
+  dvaSetSocketTimeouts(upstreamFd, seconds: timeoutSec)
+
+  var headerLines = [
+    "CONNECT \\(targetHost):\\(targetPort) HTTP/1.1",
+    "Host: \\(targetHost):\\(targetPort)",
+    "Proxy-Connection: Keep-Alive"
+  ]
+  if !spec.username.isEmpty || !spec.password.isEmpty {
+    let credData = Data("\\(spec.username):\\(spec.password)".utf8)
+    let credB64 = credData.base64EncodedString()
+    headerLines.append("Proxy-Authorization: Basic \\(credB64)")
+  }
+  let requestStr = headerLines.joined(separator: "\\r\\n") + "\\r\\n\\r\\n"
+  guard dvaWriteAll(upstreamFd, Array(requestStr.utf8)) else {
+    let nowNs = DispatchTime.now().uptimeNanoseconds
+    let diffNs = nowNs >= startNs ? nowNs - startNs : 0
+    let elapsedMs = max(1, Int(diffNs / 1_000_000))
+    return (false, elapsedMs, "Không thể gửi yêu cầu bắt tay tới máy chủ Proxy.")
+  }
+
+  var respBuf = [UInt8]()
+  respBuf.reserveCapacity(1024)
+  var temp = [UInt8](repeating: 0, count: 1024)
+  var headerEndIndex: Int? = nil
+
+  while respBuf.count < 4096 {
+    let n = temp.withUnsafeMutableBytes { rawBuf -> Int in
+      guard let base = rawBuf.baseAddress else { return -1 }
+      return Darwin.recv(upstreamFd, base, rawBuf.count, 0)
+    }
+    if n < 0 {
+      if errno == EINTR { continue }
+      break
+    }
+    if n == 0 {
+      break
+    }
+    respBuf.append(contentsOf: temp[0..<n])
+    if respBuf.count >= 4 {
+      for i in 0...(respBuf.count - 4) {
+        if respBuf[i] == 13 && respBuf[i + 1] == 10 && respBuf[i + 2] == 13 && respBuf[i + 3] == 10 {
+          headerEndIndex = i
+          break
+        }
+      }
+    }
+    if headerEndIndex != nil {
+      break
+    }
+  }
+
+  let nowNs = DispatchTime.now().uptimeNanoseconds
+  let diffNs = nowNs >= startNs ? nowNs - startNs : 0
+  let elapsedMs = max(1, Int(diffNs / 1_000_000))
+
+  guard !respBuf.isEmpty else {
+    return (false, elapsedMs, "Máy chủ Proxy không phản hồi bắt tay HTTP CONNECT.")
+  }
+
+  let headerSlice = headerEndIndex != nil ? Array(respBuf[0..<headerEndIndex!]) : respBuf
+  let respStr = String(decoding: headerSlice, as: UTF8.self)
+  let firstLine = respStr.components(separatedBy: "\\r\\n").first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  if firstLine.hasPrefix("HTTP/1.0 200") || firstLine.hasPrefix("HTTP/1.1 200") || firstLine.hasPrefix("HTTP/2 200") {
+    return (true, elapsedMs, nil)
+  }
+  if firstLine.hasPrefix("HTTP/1.0 407") || firstLine.hasPrefix("HTTP/1.1 407") {
+    return (false, elapsedMs, "Sai tài khoản (TK) hoặc mật khẩu (MK) của máy chủ Proxy.")
+  }
+  return (false, elapsedMs, "Máy chủ Proxy từ chối kết nối (\\(firstLine.isEmpty ? "unknown" : firstLine)).")
+}
+
 private func dvaRunProxyProbe(
   relay: DvaLocalProxyRelay,
   urls: [String],
   index: Int,
+  connectLatencyMs: Int? = nil,
   completion: @escaping @Sendable (String) -> Void
 ) {
   if index >= urls.count {
@@ -1918,12 +2013,13 @@ private func dvaRunProxyProbe(
 
     if let error {
       if index + 1 < urls.count {
-        dvaRunProxyProbe(relay: relay, urls: urls, index: index + 1, completion: completion)
+        dvaRunProxyProbe(relay: relay, urls: urls, index: index + 1, connectLatencyMs: connectLatencyMs, completion: completion)
       } else {
         relay.stop()
         completion(dvaEncodeProxyTestResult(
           success: false,
-          latencyMs: elapsedMs,
+          latencyMs: connectLatencyMs ?? elapsedMs,
+          webLatencyMs: elapsedMs,
           exitIp: nil,
           error: "Không thể kết nối qua proxy (\\(error.localizedDescription))."
         ))
@@ -1943,7 +2039,8 @@ private func dvaRunProxyProbe(
       relay.stop()
       completion(dvaEncodeProxyTestResult(
         success: true,
-        latencyMs: elapsedMs,
+        latencyMs: connectLatencyMs ?? elapsedMs,
+        webLatencyMs: elapsedMs,
         exitIp: exitIp,
         error: nil
       ))
@@ -1951,12 +2048,13 @@ private func dvaRunProxyProbe(
     }
 
     if index + 1 < urls.count {
-      dvaRunProxyProbe(relay: relay, urls: urls, index: index + 1, completion: completion)
+      dvaRunProxyProbe(relay: relay, urls: urls, index: index + 1, connectLatencyMs: connectLatencyMs, completion: completion)
     } else {
       relay.stop()
       completion(dvaEncodeProxyTestResult(
         success: false,
-        latencyMs: elapsedMs,
+        latencyMs: connectLatencyMs ?? elapsedMs,
+        webLatencyMs: elapsedMs,
         exitIp: nil,
         error: "Không thể kết nối qua proxy (HTTP \\(statusCode))."
       ))
@@ -2416,22 +2514,48 @@ public final class ExpoFetchModule: Module {
         return
       }
       let upstreamSpec = DvaProxySpec(host: cleanHost, port: portU16, username: username, password: password)
-      guard let testRelay = DvaLocalProxyRelay(upstreamSpec: upstreamSpec) else {
-        promise.resolve(dvaEncodeProxyTestResult(
-          success: false,
-          latencyMs: 0,
-          exitIp: nil,
-          error: "Không thể khởi tạo kênh kiểm tra Proxy nội bộ."
-        ))
-        return
-      }
-      var probeUrls = ["https://api.ipify.org?format=json"]
-      let trimmedFallback = fallbackUrl.trimmingCharacters(in: .whitespacesAndNewlines)
-      if !trimmedFallback.isEmpty {
-        probeUrls.append(trimmedFallback)
-      }
-      dvaRunProxyProbe(relay: testRelay, urls: probeUrls, index: 0) { resultJson in
-        promise.resolve(resultJson)
+      let trimmedTarget = fallbackUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+      let probeUrl = trimmedTarget.isEmpty ? "https://dangvietanh.com/dva_ios/api/auth.php?action=status" : trimmedTarget
+      let targetHost = URL(string: probeUrl)?.host ?? "dangvietanh.com"
+      let targetPort = UInt16(URL(string: probeUrl)?.port ?? 443)
+
+      DispatchQueue.global(qos: .userInitiated).async {
+        let connectRes = dvaProbeHttpConnectHandshake(
+          spec: upstreamSpec,
+          targetHost: targetHost,
+          targetPort: targetPort,
+          timeoutMs: 2500
+        )
+        if !connectRes.ok {
+          promise.resolve(dvaEncodeProxyTestResult(
+            success: false,
+            latencyMs: connectRes.latencyMs,
+            webLatencyMs: nil,
+            exitIp: nil,
+            error: connectRes.error
+          ))
+          return
+        }
+
+        guard let testRelay = DvaLocalProxyRelay(upstreamSpec: upstreamSpec) else {
+          promise.resolve(dvaEncodeProxyTestResult(
+            success: false,
+            latencyMs: connectRes.latencyMs,
+            webLatencyMs: nil,
+            exitIp: nil,
+            error: "Không thể khởi tạo kênh kiểm tra Proxy nội bộ."
+          ))
+          return
+        }
+
+        dvaRunProxyProbe(
+          relay: testRelay,
+          urls: [probeUrl],
+          index: 0,
+          connectLatencyMs: connectRes.latencyMs
+        ) { resultJson in
+          promise.resolve(resultJson)
+        }
       }
     }.runOnQueue(fetchRequestQueue)`
   );

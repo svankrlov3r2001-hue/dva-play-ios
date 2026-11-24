@@ -41,6 +41,7 @@ export interface ProxyTestResult {
   success: boolean;
   timedOut?: boolean;
   latency_ms: number;
+  web_latency_ms?: number | null;
   label: string;
   managed: boolean;
   exit_ip?: string | null;
@@ -527,7 +528,7 @@ export async function testProxyDirectAsync(
       endpoint.port,
       endpoint.username,
       endpoint.password,
-      managed ? '' : `${API_BASE_URL}/auth.php?action=status`
+      `${API_BASE_URL}/auth.php?action=status`
     ),
     new Promise<string>((resolve) => {
       timerId = setTimeout(() => {
@@ -573,6 +574,7 @@ export async function testProxyDirectAsync(
     success: true,
     timedOut: false,
     latency_ms: Math.max(1, Number(parsed.latency_ms) || 1),
+    web_latency_ms: Number(parsed.web_latency_ms) > 0 ? Number(parsed.web_latency_ms) : null,
     label,
     managed,
     // Keep managed preset server IP hidden from UI

@@ -71,6 +71,12 @@ const PING_36_URL = 'https://handle.dangvietanh.com/delay_ms.jpg';
 const QUALITY_KTCL_DEFAULT = 'https://ktcl.s1dangvietanh.io.vn/kiem_tra_chat_luong_video';
 const QUALITY_KTCL_36 = 'https://handle.dangvietanh.com/kiem_tra_chat_luong_video';
 const KOREA_WORKERS_BASE = 'https://dangvietanh.svankrlov3r2001.workers.dev/0:/movie';
+const KOREA_WORKERS_BASE_2 = 'https://dangvietanh2.svankrlov3r2001.workers.dev/0:/movie';
+
+export const PREVIEW_10P_SAFE_LIMIT_SEC = 480; // 10 phút trừ hao 2 phút còn 8 phút
+export const PREVIEW_30P_SAFE_LIMIT_SEC = 1680; // 30 phút trừ hao 2 phút còn 28 phút
+export const PREVIEW_10P_HARD_LIMIT_SEC = 590;
+export const PREVIEW_30P_HARD_LIMIT_SEC = 1790;
 
 function parseProgressNum(raw: string, status: string): number {
   if (status === 'success') return 100;
@@ -275,18 +281,20 @@ export async function measureAllServerPings(hasOffline: boolean): Promise<{
 export function buildServer11Or36MediaUrl(
   serverId: '11' | '36',
   serverFileKey: string,
-  checkRes: Pick<CheckFileResult, 'status' | 'format' | 'preview_10p' | 'preview_30p' | 'total_seconds'>
+  checkRes: Pick<CheckFileResult, 'status' | 'format' | 'preview_10p' | 'preview_30p' | 'total_seconds'>,
+  knownDurationSec = 0
 ): { url: string; format: 'hls' | 'mp4'; previewTag: '' | '10p' | '30p' } {
   const cleanKey = String(serverFileKey || '').trim();
   if (!cleanKey) return { url: '', format: 'hls', previewTag: '' };
   const ext = checkRes.format === 'mp4' ? 'mp4' : 'm3u8';
+  const effectiveTotalSec = Math.max(checkRes.total_seconds || 0, knownDurationSec || 0);
   let suffix = '';
   let previewTag: '' | '10p' | '30p' = '';
 
   if (checkRes.status === 'success') {
     suffix = '';
     previewTag = '';
-  } else if (checkRes.preview_30p && checkRes.total_seconds >= 3600 && ext === 'm3u8') {
+  } else if (checkRes.preview_30p && effectiveTotalSec >= 3600 && ext === 'm3u8') {
     suffix = '_30p';
     previewTag = '30p';
   } else if (checkRes.preview_10p) {
@@ -339,18 +347,22 @@ export function buildOfflineServerUrl(
 
 export function buildKoreaWorkerUrl(
   serverFileKey: string,
-  resolved?: Pick<StreamResolvedData, 'hanquoc_url' | 'server_tap_phim' | 'movie'> | null
+  resolved?: Pick<StreamResolvedData, 'hanquoc_url' | 'server_tap_phim' | 'movie' | 'ggdriver_1' | 'ggdriver_2'> | null,
+  ggd?: Pick<GgdriverCheckResult, 'ggdriver_1' | 'ggdriver_2'> | null
 ): string {
   if (resolved?.hanquoc_url) {
     return resolved.hanquoc_url;
   }
   const cleanKey = String(serverFileKey || '').trim();
   if (!cleanKey) return '';
+  const hasGgd1 = Boolean(ggd?.ggdriver_1 ?? resolved?.ggdriver_1);
+  const hasGgd2 = Boolean(ggd?.ggdriver_2 ?? resolved?.ggdriver_2);
+  const workerBase = !hasGgd1 && hasGgd2 ? KOREA_WORKERS_BASE_2 : KOREA_WORKERS_BASE;
   const isSeries =
     cleanKey.includes('.Tập.') ||
     Boolean(resolved?.server_tap_phim) ||
     resolved?.movie?.is_tvseries === 1;
-  return `${KOREA_WORKERS_BASE}/${isSeries ? 'B' : 'L'}/${encodeURIComponent(cleanKey)}.mp4`;
+  return `${workerBase}/${isSeries ? 'B' : 'L'}/${encodeURIComponent(cleanKey)}.mp4`;
 }
 
 export function buildPhien40Url(
@@ -488,7 +500,7 @@ export function buildInitialServerStates(opts: {
     errored: erroredIds.has('40'),
   });
 
-  const hqUrl = hasKorea ? buildKoreaWorkerUrl(serverFileKey, resolved) : '';
+  const hqUrl = hasKorea ? buildKoreaWorkerUrl(serverFileKey, resolved, ggd) : '';
   list.push({
     id: '3',
     codeName: 'Hàn Quốc',
@@ -542,8 +554,10 @@ export function buildInitialServerStates(opts: {
 export function applyCheckFileToServers(
   prev: ServerRuntimeState[],
   serverFileKey: string,
-  checkRes: CheckFileResult
+  checkRes: CheckFileResult,
+  knownDurationSec = 0
 ): ServerRuntimeState[] {
+  const effectiveTotalSec = Math.max(checkRes.total_seconds || 0, knownDurationSec || 0);
   return prev.map((srv) => {
     if (srv.id !== '11' && srv.id !== '36') return srv;
     if (!serverFileKey) {
@@ -560,22 +574,29 @@ export function applyCheckFileToServers(
       };
     }
 
-    const media = buildServer11Or36MediaUrl(srv.id, serverFileKey, checkRes);
+    const media = buildServer11Or36MediaUrl(srv.id, serverFileKey, checkRes, knownDurationSec);
     let nextStatus: ServerReadinessStatus = 'downloading';
     let progressLabel = checkRes.progress || `${checkRes.progressNum}%`;
 
     if (checkRes.status === 'success' && media.url) {
       nextStatus = 'ready';
       progressLabel = '100%';
-    } else if (checkRes.preview_30p && checkRes.total_seconds >= 3600 && media.url) {
+    } else if (
+      checkRes.preview_30p &&
+      effectiveTotalSec >= 3600 &&
+      checkRes.format !== 'mp4' &&
+      media.url
+    ) {
       nextStatus = 'preview_30p';
       progressLabel = `${checkRes.progressNum}% (Xem trước 30p)`;
     } else if (checkRes.preview_10p && media.url) {
       nextStatus = 'preview_10p';
       progressLabel = `${checkRes.progressNum}% (Xem trước 10p)`;
+    } else if (checkRes.status === 'error_ffmpeg') {
+      nextStatus = 'downloading';
+      progressLabel = checkRes.message || 'Hàng đợi...';
     } else if (
       checkRes.status === 'error' ||
-      checkRes.status === 'error_ffmpeg' ||
       checkRes.status === 'error_disk_quota'
     ) {
       nextStatus = 'error';
@@ -595,7 +616,7 @@ export function applyCheckFileToServers(
       format: media.format,
       preview10pReady: checkRes.preview_10p,
       preview30pReady: checkRes.preview_30p,
-      totalSeconds: checkRes.total_seconds,
+      totalSeconds: effectiveTotalSec,
       streamUrl: media.url,
       previewTag: media.previewTag,
     };
@@ -611,60 +632,76 @@ export function isServerPlayable(srv: ServerRuntimeState): boolean {
   );
 }
 
+export function isServerEligibleForWatchTime(
+  srv: ServerRuntimeState,
+  watchPosSec = 0
+): boolean {
+  if (!isServerPlayable(srv)) return false;
+  const pos = Math.max(0, Number(watchPosSec) || 0);
+  if (srv.status === 'preview_10p' || srv.previewTag === '10p') {
+    return pos < PREVIEW_10P_SAFE_LIMIT_SEC;
+  }
+  if (srv.status === 'preview_30p' || srv.previewTag === '30p') {
+    return pos < PREVIEW_30P_SAFE_LIMIT_SEC;
+  }
+  return true;
+}
+
 /**
- * Mirrors jw.php selectBestEligibleServer_va priority & ping logic:
- * - Local offline ('99') wins first when preferOffline = true
- * - Full ready servers win over partial preview streams unless full isn't available yet
- * - Among equivalent tier servers, lowest ping wins; tie-breaker matches hasGgdDirect ? [40, 3, 11, 36] : [11, 36, 40, 3]
+ * Priority tiers for Auto-Optimal server selection:
+ * 0. Local ('99') when preferOffline = true
+ * 1. Phiên 11 & Phiên 36 (prioritizing Phiên 11, combined with latency ms & preview time-safety limits)
+ * 2. Phiên 40 & Hàn Quốc (prioritizing Phiên 40, combined with latency ms)
+ * 3. Direct fallback / local (when preferOffline = false)
  */
 export function selectOptimalServer(
   servers: ServerRuntimeState[],
-  opts: { preferOffline: boolean; hasGgdDirect: boolean }
+  opts: { preferOffline: boolean; hasGgdDirect?: boolean; watchPosSec?: number }
 ): ServerRuntimeState | null {
-  const playable = servers.filter(isServerPlayable);
-  if (playable.length === 0) return null;
+  const watchPosSec = Math.max(0, Number(opts.watchPosSec) || 0);
+  const eligible = servers.filter((s) => isServerEligibleForWatchTime(s, watchPosSec));
+  if (eligible.length === 0) return null;
 
   if (opts.preferOffline) {
-    const localSrv = playable.find((s) => s.id === '99');
+    const localSrv = eligible.find((s) => s.id === '99');
     if (localSrv) return localSrv;
   }
 
-  const order: BackupServerId[] = opts.hasGgdDirect
-    ? ['99', '11', '36', '40', '3', 'fallback']
-    : ['99', '11', '36', '40', '3', 'fallback'];
+  const pickBestFromPair = (ids: BackupServerId[]): ServerRuntimeState | null => {
+    const pair = eligible.filter((s) => ids.includes(s.id));
+    if (pair.length === 0) return null;
+    pair.sort((a, b) => {
+      const readinessScore = (s: ServerRuntimeState) => {
+        if (s.status === 'ready') return 3;
+        if (s.status === 'preview_30p') return 2;
+        if (s.status === 'preview_10p') return 1;
+        return 0;
+      };
+      const rDiff = readinessScore(b) - readinessScore(a);
+      if (rDiff !== 0) return rDiff;
 
-  const fullServers = playable.filter((s) => s.status === 'ready' && s.id !== 'fallback');
-  const pool =
-    fullServers.length > 0
-      ? fullServers
-      : playable.filter((s) => s.id !== 'fallback');
+      const pingA = a.pingMs !== null && !a.pingFailed ? a.pingMs : 9999;
+      const pingB = b.pingMs !== null && !b.pingFailed ? b.pingMs : 9999;
+      if (Math.abs(pingA - pingB) >= 25) {
+        return pingA - pingB;
+      }
+      return ids.indexOf(a.id) - ids.indexOf(b.id);
+    });
+    return pair[0] || null;
+  };
 
-  const finalPool = pool.length > 0 ? pool : playable;
+  // Tier 1: Phiên 11 & Phiên 36 (ưu tiên 11, kết hợp ping ms)
+  const tier1 = pickBestFromPair(['11', '36']);
+  if (tier1) return tier1;
 
-  const sorted = [...finalPool].sort((a, b) => {
-    // 99 always top when eligible
-    if (a.id === '99' && opts.preferOffline) return -1;
-    if (b.id === '99' && opts.preferOffline) return 1;
+  // Tier 2: Phiên 40 & Hàn Quốc (ưu tiên 40, kết hợp ping ms)
+  const tier2 = pickBestFromPair(['40', '3']);
+  if (tier2) return tier2;
 
-    // Preview tier: 30p beats 10p
-    const tierScore = (s: ServerRuntimeState) => {
-      if (s.status === 'ready') return 3;
-      if (s.status === 'preview_30p') return 2;
-      if (s.status === 'preview_10p') return 1;
-      return 0;
-    };
-    const tDiff = tierScore(b) - tierScore(a);
-    if (tDiff !== 0) return tDiff;
+  const fallbackSrv = eligible.find((s) => s.id === 'fallback');
+  if (fallbackSrv) return fallbackSrv;
 
-    const pingA = a.pingMs !== null && !a.pingFailed ? a.pingMs : 9999;
-    const pingB = b.pingMs !== null && !b.pingFailed ? b.pingMs : 9999;
-    if (Math.abs(pingA - pingB) >= 25) {
-      return pingA - pingB;
-    }
-    return order.indexOf(a.id) - order.indexOf(b.id);
-  });
-
-  return sorted[0] || null;
+  return eligible[0] || null;
 }
 
 export function wrapUrlForIosNativePlayer(opts: {
