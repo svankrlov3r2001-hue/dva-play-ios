@@ -93,7 +93,6 @@ import {
   BackupServerId,
   buildInitialServerStates,
   buildOfflineServerUrl,
-  buildServer11Or36MediaUrl,
   checkGgdriverApi,
   checkServerFileStatus,
   isServerPlayable,
@@ -922,6 +921,8 @@ export function PlayerModal({
   const erroredServersRef = useRef<Set<BackupServerId>>(new Set());
   const pipProxyBrokenRef = useRef(false);
   const activeMediaUrlRef = useRef('');
+  const activeRawStreamUrlRef = useRef('');
+  const activeLoadedPreviewTagRef = useRef<'' | '10p' | '30p'>('');
   const [pingRefreshing, setPingRefreshing] = useState(false);
 
   // Playback & timeline states
@@ -1333,27 +1334,37 @@ export function PlayerModal({
       }
 
       if (!isOfflineOnlyMode && params.videosId > 0) {
+        const curCode = activeStreamCodeRef.current || activeStreamCode;
+        const resolvedVid = resolvedRef.current?.movie?.videos_id;
+        const matchesResolvedMovie = !resolvedVid || resolvedVid === params.videosId;
+        const codeBelongsToCurrentMovie =
+          Boolean(curCode) &&
+          (curCode === params.streamCode ||
+            effectiveEpisodes.some((ep) => ep.stream_code === curCode));
+
         const { episodeNumber, seasonId } = resolveEpisodeMetaFromParams(
           effectiveEpisodes,
-          activeStreamCode,
+          curCode,
           params.episodeNumber,
           params.seasonId,
           params.episodeId
         );
-        jobs.push(
-          saveWatchProgressApi({
-            videos_id: params.videosId,
-            stream_code: activeStreamCode,
-            position_sec: pos,
-            duration_sec: dur,
-            episode_number: episodeNumber,
-            season_id: seasonId,
-            title: params.title,
-          }).catch(() => {})
-        );
+        if (matchesResolvedMovie && codeBelongsToCurrentMovie) {
+          jobs.push(
+            saveWatchProgressApi({
+              videos_id: params.videosId,
+              stream_code: curCode,
+              position_sec: pos,
+              duration_sec: dur,
+              episode_number: episodeNumber,
+              season_id: seasonId,
+              title: params.title,
+            }).catch(() => {})
+          );
+        }
         jobs.push(
           syncOnlineProgressToOffline({
-            streamCode: activeStreamCode,
+            streamCode: curCode,
             videosId: params.videosId,
             episodeId: params.episodeId,
             positionSec: pos,
@@ -1479,6 +1490,8 @@ export function PlayerModal({
 
       if (!wrapped.uri) return;
       activeMediaUrlRef.current = wrapped.uri;
+      activeRawStreamUrlRef.current = srv.streamUrl;
+      activeLoadedPreviewTagRef.current = srv.previewTag;
       setActiveServerId(srv.id);
       activeServerIdRef.current = srv.id;
       setIsBuffering(true);
@@ -1510,6 +1523,9 @@ export function PlayerModal({
       return;
     }
     if (!activeStreamCode || matchedOfflineItem.stream_code !== activeStreamCode) {
+      return;
+    }
+    if (params?.videosId && matchedOfflineItem.videos_id && matchedOfflineItem.videos_id !== params.videosId) {
       return;
     }
     let cancelled = false;
@@ -1623,6 +1639,8 @@ export function PlayerModal({
         const curId = activeServerIdRef.current;
         const lockedId = manualLockedServerRef.current;
         const curSrv = updated.find((s) => s.id === curId);
+        const loadedTag = activeLoadedPreviewTagRef.current;
+        const loadedRawUrl = activeRawStreamUrlRef.current;
         const effectiveWatchPos = initialSeekPendingRef.current.done
           ? currentTimeRef.current
           : Math.max(targetStartSec, currentTimeRef.current);
@@ -1646,57 +1664,31 @@ export function PlayerModal({
           return;
         }
 
-        const effectiveTotalSec = Math.max(pollRes.total_seconds || 0, durationRef.current || 0);
-        if (
-          (curId === '11' || curId === '36') &&
-          ((pollRes.status === 'success' && curSrv.previewTag !== '') ||
-            (pollRes.preview_30p &&
-              effectiveTotalSec >= 3600 &&
-              pollRes.format !== 'mp4' &&
-              curSrv.previewTag === '10p' &&
-              effectiveWatchPos < PREVIEW_30P_SAFE_LIMIT_SEC))
-        ) {
-          const upgradedMedia = buildServer11Or36MediaUrl(curId, sfk, pollRes, durationRef.current);
-          if (upgradedMedia.url && upgradedMedia.url !== curSrv.streamUrl) {
+        const effectiveTotalSec = Math.max(
+          pollRes.total_seconds || 0,
+          durationRef.current || 0,
+          curSrv.totalSeconds || 0
+        );
+        if (curId === '11' || curId === '36') {
+          if (
+            pollRes.status === 'success' &&
+            curSrv.status === 'ready' &&
+            curSrv.streamUrl &&
+            (loadedTag !== '' || (loadedRawUrl !== '' && curSrv.streamUrl !== loadedRawUrl))
+          ) {
+            const preferredTier1 =
+              !lockedId && settingsRef.current.autoOptimalServer
+                ? selectOptimalServer(
+                    updated.filter((s) => s.id === '11' || s.id === '36'),
+                    {
+                      preferOffline: false,
+                      hasGgdDirect,
+                      watchPosSec: effectiveWatchPos,
+                    }
+                  ) || curSrv
+                : curSrv;
             lastAutoServerSwitchAtRef.current = Date.now();
-            await playServerOnActiveLayer(
-              {
-                ...curSrv,
-                streamUrl: upgradedMedia.url,
-                format: upgradedMedia.format,
-                previewTag: upgradedMedia.previewTag,
-              },
-              {
-                seekToSec: currentTimeRef.current,
-                serverFileKey: sfk,
-                vnUrl,
-                enUrl,
-                title: movieTitle,
-              }
-            );
-            if (pollRes.status === 'success') {
-              showToast(`${curSrv.label}: Đã nâng cấp luồng đầy đủ 100%`, undefined, 'success', {
-                family: 'ionicons',
-                name: 'server-outline',
-                color: '#34D399',
-              });
-            }
-          }
-        } else if (
-          (curId === '11' || curId === '36') &&
-          !lockedId &&
-          settingsRef.current.autoOptimalServer &&
-          ((curSrv.previewTag === '10p' && effectiveWatchPos >= PREVIEW_10P_HARD_LIMIT_SEC) ||
-            (curSrv.previewTag === '30p' && effectiveWatchPos >= PREVIEW_30P_HARD_LIMIT_SEC))
-        ) {
-          const fallbackTier2 = selectOptimalServer(updated, {
-            preferOffline: settingsRef.current.preferOfflineWhenOnline,
-            hasGgdDirect,
-            watchPosSec: effectiveWatchPos,
-          });
-          if (fallbackTier2 && fallbackTier2.id !== curId) {
-            lastAutoServerSwitchAtRef.current = Date.now();
-            await playServerOnActiveLayer(fallbackTier2, {
+            await playServerOnActiveLayer(preferredTier1, {
               seekToSec: currentTimeRef.current,
               serverFileKey: sfk,
               vnUrl,
@@ -1704,18 +1696,75 @@ export function PlayerModal({
               title: movieTitle,
             });
             showToast(
-              `Đã chuyển sang ${fallbackTier2.label}`,
-              'Đoạn xem trước sắp hết, tạm chuyển trong khi chờ máy chủ hoàn tất',
-              'info',
-              { family: 'ionicons', name: 'server-outline', color: '#38BDF8' }
+              `Đã nâng cấp ${preferredTier1.label} lên bản đầy đủ`,
+              'Phát toàn thời lượng không giới hạn',
+              'success',
+              {
+                family: 'ionicons',
+                name: 'server-outline',
+                color: '#34D399',
+              }
             );
+          } else if (
+            pollRes.preview_30p &&
+            effectiveTotalSec >= 3600 &&
+            pollRes.format !== 'mp4' &&
+            loadedTag === '10p' &&
+            curSrv.previewTag === '30p' &&
+            curSrv.streamUrl &&
+            curSrv.streamUrl !== loadedRawUrl &&
+            effectiveWatchPos < PREVIEW_30P_SAFE_LIMIT_SEC
+          ) {
+            lastAutoServerSwitchAtRef.current = Date.now();
+            await playServerOnActiveLayer(curSrv, {
+              seekToSec: currentTimeRef.current,
+              serverFileKey: sfk,
+              vnUrl,
+              enUrl,
+              title: movieTitle,
+            });
+            showToast(
+              `${curSrv.label}: Đã mở rộng xem trước 30 phút`,
+              'Đang tiếp tục hoàn tất liên kết đầy đủ',
+              'info',
+              {
+                family: 'ionicons',
+                name: 'server-outline',
+                color: '#38BDF8',
+              }
+            );
+          } else if (
+            !lockedId &&
+            settingsRef.current.autoOptimalServer &&
+            ((loadedTag === '10p' && effectiveWatchPos >= PREVIEW_10P_HARD_LIMIT_SEC) ||
+              (loadedTag === '30p' && effectiveWatchPos >= PREVIEW_30P_HARD_LIMIT_SEC))
+          ) {
+            const fallbackTier2 = selectOptimalServer(updated, {
+              preferOffline: settingsRef.current.preferOfflineWhenOnline,
+              hasGgdDirect,
+              watchPosSec: effectiveWatchPos,
+            });
+            if (fallbackTier2 && fallbackTier2.id !== curId) {
+              lastAutoServerSwitchAtRef.current = Date.now();
+              await playServerOnActiveLayer(fallbackTier2, {
+                seekToSec: currentTimeRef.current,
+                serverFileKey: sfk,
+                vnUrl,
+                enUrl,
+                title: movieTitle,
+              });
+              showToast(
+                `Đã chuyển sang ${fallbackTier2.label}`,
+                'Đoạn xem trước sắp hết, tạm chuyển trong khi chờ máy chủ hoàn tất',
+                'info',
+                { family: 'ionicons', name: 'server-outline', color: '#38BDF8' }
+              );
+            }
           }
         } else if (
           settingsRef.current.autoOptimalServer &&
           !lockedId &&
-          curId !== '99' &&
-          curId !== '11' &&
-          curId !== '36'
+          curId !== '99'
         ) {
           // While running auto-selected Tier 2 (Phiên 40 / Hàn Quốc / fallback):
           // Auto-switch immediately to Phiên 11 / Phiên 36 (prioritizing 11 + ms) when server completes
@@ -1768,7 +1817,24 @@ export function PlayerModal({
       streamCodeToLoad: string,
       opts?: { episodeTitleHint?: string; offlineOverride?: OfflineDownloadItem | null }
     ) => {
-      if (!params || !streamCodeToLoad) return;
+      if (!params) return;
+      let resolvedCode = String(streamCodeToLoad || '').trim();
+      if (!resolvedCode && params.videosId > 0 && !isOfflineOnlyMode) {
+        try {
+          const det = await fetchMovieDetailsApi(params.videosId);
+          resolvedCode = String(
+            det?.movie?.watch_history?.last_stream_code ||
+              det?.movie?.stream_code ||
+              ''
+          ).trim();
+        } catch {}
+      }
+      if (!resolvedCode) {
+        setFirstFrameReady(true);
+        setIsBuffering(false);
+        return;
+      }
+      streamCodeToLoad = resolvedCode;
       const mySeq = ++loadSeqRef.current;
       offlineRetryAttemptedRef.current = false;
       rewoundToastPendingRef.current = false;
@@ -1785,6 +1851,8 @@ export function PlayerModal({
       erroredServersRef.current = new Set();
       pipProxyBrokenRef.current = false;
       activeMediaUrlRef.current = '';
+      activeRawStreamUrlRef.current = '';
+      activeLoadedPreviewTagRef.current = '';
       preloadedNextRef.current = null;
       nextAutoSwitchTriggeredRef.current = false;
       setPreloadState('idle');
@@ -1797,6 +1865,9 @@ export function PlayerModal({
       setDuration(0);
       durationRef.current = 0;
       setBufferedPos(0);
+      resolvedRef.current = null;
+      serversRef.current = [];
+      activeStreamCodeRef.current = streamCodeToLoad;
       setActiveStreamCode(streamCodeToLoad);
       if (opts?.episodeTitleHint) setActiveEpTitle(formatEpisodeDisplayTitle(opts.episodeTitleHint));
 
@@ -2134,6 +2205,7 @@ export function PlayerModal({
             void triggerServerPrepare(sfk);
           }
         }
+        serversRef.current = initialServers;
         setServers(initialServers);
 
         const hasGgdDirect = Boolean(
@@ -3491,7 +3563,10 @@ export function PlayerModal({
       erroredServersRef.current = new Set();
       pipProxyBrokenRef.current = false;
       activeMediaUrlRef.current = '';
+      activeRawStreamUrlRef.current = '';
+      activeLoadedPreviewTagRef.current = '';
       preloadedNextRef.current = null;
+      nextAutoSwitchTriggeredRef.current = false;
       skipNextReloadCodeRef.current = null;
       lastAutoQueuedSigRef.current = '';
       detailEpisodesVideosIdRef.current = 0;
@@ -3502,11 +3577,14 @@ export function PlayerModal({
       layerAOpacity.setValue(1);
       layerBOpacity.setValue(0);
 
+      resolvedRef.current = null;
       setResolved(null);
       setDetailEpisodes([]);
+      serversRef.current = [];
       setServers([]);
       setActiveServerId(null);
       activeServerIdRef.current = null;
+      activeStreamCodeRef.current = '';
       setActiveStreamCode('');
       setActiveEpTitle('');
       setVnCues([]);

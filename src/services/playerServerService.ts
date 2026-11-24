@@ -557,7 +557,6 @@ export function applyCheckFileToServers(
   checkRes: CheckFileResult,
   knownDurationSec = 0
 ): ServerRuntimeState[] {
-  const effectiveTotalSec = Math.max(checkRes.total_seconds || 0, knownDurationSec || 0);
   return prev.map((srv) => {
     if (srv.id !== '11' && srv.id !== '36') return srv;
     if (!serverFileKey) {
@@ -574,7 +573,12 @@ export function applyCheckFileToServers(
       };
     }
 
-    const media = buildServer11Or36MediaUrl(srv.id, serverFileKey, checkRes, knownDurationSec);
+    const effectiveTotalSec = Math.max(
+      checkRes.total_seconds || 0,
+      knownDurationSec || 0,
+      srv.totalSeconds || 0
+    );
+    const media = buildServer11Or36MediaUrl(srv.id, serverFileKey, checkRes, effectiveTotalSec);
     let nextStatus: ServerReadinessStatus = 'downloading';
     let progressLabel = checkRes.progress || `${checkRes.progressNum}%`;
 

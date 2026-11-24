@@ -530,6 +530,10 @@ export function PreviewSheetModal({
                           player.pause();
                         } catch {}
                         onClose();
+                        if (!info.movies_url_getlink) {
+                          onOpenDetail(info.videos_id);
+                          return;
+                        }
                         onPlay({
                           videosId: info.videos_id,
                           streamCode: info.movies_url_getlink,

@@ -40,6 +40,26 @@ import {
   SourceItem,
 } from '../types/models';
 
+function parseEpisodeNumberForFirst(name?: string): number | null {
+  const str = String(name || '').trim();
+  if (!str) return null;
+  const mEp = str.match(/(?:tập|tap|episode|ep)\s*0*(\d+(?:\.\d+)?)/i);
+  if (mEp) return parseFloat(mEp[1]);
+  const mAny = str.match(/0*(\d+(?:\.\d+)?)/);
+  return mAny ? parseFloat(mAny[1]) : null;
+}
+
+function pickFirstEpisodeInList(eps?: EpisodeItem[] | null): EpisodeItem | undefined {
+  if (!eps || eps.length === 0) return undefined;
+  if (eps.length === 1) return eps[0];
+  const firstN = parseEpisodeNumberForFirst(eps[0]?.episodes_name);
+  const lastN = parseEpisodeNumberForFirst(eps[eps.length - 1]?.episodes_name);
+  if (firstN !== null && lastN !== null && firstN > lastN) {
+    return eps[eps.length - 1];
+  }
+  return eps[0];
+}
+
 function formatCompactResumeText(raw?: string): string {
   const txt = String(raw || '').trim();
   if (!txt) return '';
@@ -104,6 +124,7 @@ export function MovieDetailScreen({
   const [offlineItems, setOfflineItems] = useState<OfflineDownloadItem[]>([]);
   const [offlineSheetOpen, setOfflineSheetOpen] = useState(false);
   const enterAnim = useRef(new Animated.Value(0)).current;
+  const detailReqSeqRef = useRef(0);
 
   useEffect(() => {
     if (visible) {
@@ -121,6 +142,7 @@ export function MovieDetailScreen({
   }, [visible, enterAnim]);
 
   const loadDetails = useCallback(async (id: number, silent = false) => {
+    const seq = ++detailReqSeqRef.current;
     if (!silent) {
       setLoading(true);
       setMovie(null);
@@ -129,6 +151,7 @@ export function MovieDetailScreen({
     }
     try {
       const res = await fetchMovieDetailsApi(id);
+      if (detailReqSeqRef.current !== seq) return;
       setMovie(res.movie);
       setRelated(res.related || []);
       setInWishlist(Boolean(res.movie?.in_wishlist));
@@ -145,13 +168,14 @@ export function MovieDetailScreen({
         });
       }
     } catch (err: any) {
+      if (detailReqSeqRef.current !== seq) return;
       if (isNetworkError(err)) {
         void reportNetworkFailure();
       } else if (!silent) {
         showAppAlert('Lỗi', err?.message || 'Không thể tải chi tiết phim.');
       }
     } finally {
-      if (!silent) setLoading(false);
+      if (!silent && detailReqSeqRef.current === seq) setLoading(false);
     }
   }, []);
 
@@ -195,8 +219,10 @@ export function MovieDetailScreen({
   const handlePlayPrimary = () => {
     if (!movie || movie.videos_id !== videosId) return;
     const hist = movie.watch_history;
-    const targetCode = hist?.last_stream_code || movie.stream_code;
-    const targetEpId = hist?.last_episode_id || movie.episodes?.[0]?.episodes_id || 0;
+    const defaultSeasonEps = movie.seasons?.[0]?.episodes?.length ? movie.seasons[0].episodes : movie.episodes;
+    const firstEp = pickFirstEpisodeInList(defaultSeasonEps);
+    const targetCode = hist?.last_stream_code || firstEp?.stream_code || movie.stream_code;
+    const targetEpId = hist?.last_episode_id || firstEp?.episodes_id || 0;
     const matchedEpIdx = movie.episodes.findIndex((e) => e.stream_code === targetCode);
 
     onPlay({
@@ -610,24 +636,31 @@ export function MovieDetailScreen({
           ) : null}
         </SkeletonCrossfade>
         {obscuredByPlayer ? <View style={styles.playerLaunchVeil} /> : null}
-        {movie ? (
-          <OfflineDownloadSheet
-            visible={offlineSheetOpen}
-            onClose={() => setOfflineSheetOpen(false)}
-            videosId={movie.videos_id}
-            title={movie.title}
-            posterUrl={movie.poster_url}
-            thumbnailUrl={movie.thumbnail_url}
-            currentStreamCode={
-              movie.watch_history?.last_stream_code ||
-              seasonEpisodes[0]?.stream_code ||
-              movie.stream_code
-            }
-            currentEpisodeTitle={seasonEpisodes[0]?.episodes_name}
-            currentEpisodeId={seasonEpisodes[0]?.episodes_id}
-            episodes={seasonEpisodes}
-          />
-        ) : null}
+        {movie ? (() => {
+          const firstSheetEp = pickFirstEpisodeInList(seasonEpisodes);
+          const watchedEp = movie.watch_history?.last_stream_code
+            ? seasonEpisodes.find((e) => e.stream_code === movie.watch_history?.last_stream_code)
+            : undefined;
+          const activeSheetEp = watchedEp || firstSheetEp;
+          return (
+            <OfflineDownloadSheet
+              visible={offlineSheetOpen}
+              onClose={() => setOfflineSheetOpen(false)}
+              videosId={movie.videos_id}
+              title={movie.title}
+              posterUrl={movie.poster_url}
+              thumbnailUrl={movie.thumbnail_url}
+              currentStreamCode={
+                movie.watch_history?.last_stream_code ||
+                activeSheetEp?.stream_code ||
+                movie.stream_code
+              }
+              currentEpisodeTitle={activeSheetEp?.episodes_name}
+              currentEpisodeId={activeSheetEp?.episodes_id}
+              episodes={seasonEpisodes}
+            />
+          );
+        })() : null}
       </View>
     </Animated.View>
   );
