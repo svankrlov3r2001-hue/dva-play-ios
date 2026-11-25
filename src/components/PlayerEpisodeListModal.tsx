@@ -211,6 +211,10 @@ function EpisodeCardThumb({
   );
 }
 
+const EMPTY_SEASONS: SeasonItem[] = [];
+const EMPTY_EPISODES: EpisodeItem[] = [];
+const EMPTY_OFFLINE_ITEMS: OfflineDownloadItem[] = [];
+
 export function PlayerEpisodeListModal({
   visible,
   onClose,
@@ -220,9 +224,9 @@ export function PlayerEpisodeListModal({
   serverTapPhim,
   currentStreamCode,
   posterUrl = '',
-  fallbackSeasons = [],
-  fallbackEpisodes = [],
-  offlineItems = [],
+  fallbackSeasons = EMPTY_SEASONS,
+  fallbackEpisodes = EMPTY_EPISODES,
+  offlineItems = EMPTY_OFFLINE_ITEMS,
   onSelectEpisode,
 }: PlayerEpisodeListModalProps) {
   const insets = useSafeAreaInsets();
@@ -354,22 +358,30 @@ export function PlayerEpisodeListModal({
     ]
   );
 
+  const loadEpisodesRef = useRef(loadEpisodes);
+  loadEpisodesRef.current = loadEpisodes;
+  const wasVisibleRef = useRef(false);
+
   useEffect(() => {
     if (!visible) {
-      setSeasonPopupOpen(false);
-      setHasLoadedOnce(false);
-      setLoading(false);
-      setEpisodes([]);
-      setSeasons([]);
-      setSelectedSeasonId(null);
-      setWatchingSeasonId(null);
+      if (wasVisibleRef.current) {
+        wasVisibleRef.current = false;
+        setSeasonPopupOpen(false);
+        setHasLoadedOnce(false);
+        setLoading(false);
+        setEpisodes((prev) => (prev.length === 0 ? prev : []));
+        setSeasons((prev) => (prev.length === 0 ? prev : []));
+        setSelectedSeasonId(null);
+        setWatchingSeasonId(null);
+      }
       return;
     }
+    wasVisibleRef.current = true;
     setHeaderTitle(movieTitle);
     setResolvedPoster(posterUrl);
     setLoading(true);
-    void loadEpisodes(null);
-  }, [visible, movieTitle, posterUrl, loadEpisodes]);
+    void loadEpisodesRef.current(null);
+  }, [visible, movieTitle, posterUrl, currentStreamCode]);
 
   const activeSeasonNum = useMemo(() => {
     if (seasons.length > 0 && selectedSeasonId) {
