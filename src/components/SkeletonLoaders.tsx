@@ -402,6 +402,47 @@ export function PlayerLandscapeSkeleton({
   );
 }
 
+/**
+ * Episode grid skeleton matching PlayerEpisodeListModal cards inside the right pane.
+ */
+export function EpisodeGridSkeleton({
+  cardWidth,
+  numCols,
+  rowCount = 2,
+  active = true,
+}: {
+  cardWidth: number;
+  numCols: number;
+  rowCount?: number;
+  active?: boolean;
+}) {
+  const progress = useShimmerProgress(active);
+  const safeCardW = Math.max(88, cardWidth);
+  const thumbH = Math.max(50, Math.round((safeCardW * 9) / 16));
+  const totalCards = Math.max(2, numCols * rowCount);
+  const sweepMax = safeCardW + 140;
+
+  return (
+    <View style={styles.epGridWrap}>
+      {Array.from({ length: totalCards }, (_, idx) => (
+        <View key={idx} style={[styles.epSkCard, { width: safeCardW }]}>
+          <SkeletonBox
+            progress={progress}
+            width={safeCardW}
+            height={thumbH}
+            radius={0}
+            maxSweep={sweepMax}
+          />
+          <View style={styles.epSkMeta}>
+            <SkeletonBox progress={progress} width="58%" height={13} radius={6} maxSweep={sweepMax} />
+            <SkeletonBox progress={progress} width="78%" height={10} radius={5} maxSweep={sweepMax} />
+          </View>
+        </View>
+      ))}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   skBase: {
     overflow: 'hidden',
@@ -526,5 +567,22 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+  },
+  epGridWrap: {
+    flex: 1,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    overflow: 'hidden',
+  },
+  epSkCard: {
+    borderRadius: 22,
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    overflow: 'hidden',
+  },
+  epSkMeta: {
+    paddingHorizontal: 11,
+    paddingVertical: 9,
+    gap: 6,
   },
 });

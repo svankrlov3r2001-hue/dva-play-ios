@@ -1062,6 +1062,11 @@ export function PlayerModal({
   playbackRateRef.current = playbackRate;
   const isBufferingRef = useRef(isBuffering);
   isBufferingRef.current = isBuffering;
+  const isPlayingRef = useRef(isPlaying);
+  isPlayingRef.current = isPlaying;
+  const firstFrameReadyRef = useRef(firstFrameReady);
+  firstFrameReadyRef.current = firstFrameReady;
+  const lastTimeAdvanceRef = useRef<{ layer: 'A' | 'B'; pos: number; at: number } | null>(null);
   const onEnterOfflineModeRef = useRef(onEnterOfflineMode);
   onEnterOfflineModeRef.current = onEnterOfflineMode;
   const onWatchProgressSavedRef = useRef(onWatchProgressSaved);
@@ -1496,6 +1501,7 @@ export function PlayerModal({
       activeLoadedPreviewTagRef.current = srv.previewTag;
       setActiveServerId(srv.id);
       activeServerIdRef.current = srv.id;
+      lastTimeAdvanceRef.current = null;
       setIsBuffering(true);
 
       if (opts.seekToSec && opts.seekToSec > 0) {
@@ -1513,6 +1519,16 @@ export function PlayerModal({
         player.playbackRate = playbackRateRef.current;
         if (!isLockedRef.current) {
           player.play();
+        }
+        if (player === getActivePlayer()) {
+          if (player.playing) {
+            setIsPlaying(true);
+            setIsBuffering(false);
+            setFirstFrameReady(true);
+          } else if (player.status === 'readyToPlay') {
+            setIsBuffering(false);
+            setFirstFrameReady(true);
+          }
         }
       } catch {}
     },
@@ -1885,7 +1901,9 @@ export function PlayerModal({
       setNextCountdownSec(null);
       setSeekReturnSec(null);
       setFirstFrameReady(false);
+      setIsPlaying(false);
       setIsBuffering(true);
+      lastTimeAdvanceRef.current = null;
       setCurrentTime(0);
       currentTimeRef.current = 0;
       setDuration(0);
@@ -2697,9 +2715,11 @@ export function PlayerModal({
       setPreloadState('idle');
       setCurrentTime(pkg.skipIntroSec || 0);
       currentTimeRef.current = pkg.skipIntroSec || 0;
+      lastTimeAdvanceRef.current = null;
       setDuration(promotedPlayer.duration || 0);
       setFirstFrameReady(true);
       setIsBuffering(false);
+      setIsPlaying(Boolean(promotedPlayer.playing));
 
       skipNextReloadCodeRef.current = pkg.streamCode;
       if (pkg.offlineItem && onSwitchOfflineItem) {
@@ -2753,6 +2773,20 @@ export function PlayerModal({
       currentTimeRef.current = pos;
       setBufferedPos(buf);
 
+      const activeP = layer === 'A' ? playerA : playerB;
+      const prevTick = lastTimeAdvanceRef.current;
+      const nowMs = Date.now();
+      const delta = prevTick && prevTick.layer === layer ? pos - prevTick.pos : 0;
+      const dtMs = prevTick && prevTick.layer === layer ? nowMs - prevTick.at : 0;
+      const isAdvancing = delta > 0.04 && delta < 6.0 && dtMs > 40 && dtMs < 4000;
+      lastTimeAdvanceRef.current = { layer, pos, at: nowMs };
+
+      if (activeP.playing || (isAdvancing && !userExplicitlyPausedRef.current && !isLockedRef.current)) {
+        if (isBufferingRef.current) setIsBuffering(false);
+        if (!firstFrameReadyRef.current) setFirstFrameReady(true);
+        if (!isPlayingRef.current) setIsPlaying(true);
+      }
+
       if (pos > 2 && !userExplicitlyPausedRef.current) {
         flushActivePlaybackSessionNow(false);
       }
@@ -2791,7 +2825,14 @@ export function PlayerModal({
         }
       }
     },
-    [currentNextEpisode, flushActivePlaybackSessionNow, preloadNextEpisodeToInactiveLayer, triggerSwitchToNextEpisode]
+    [
+      playerA,
+      playerB,
+      currentNextEpisode,
+      flushActivePlaybackSessionNow,
+      preloadNextEpisodeToInactiveLayer,
+      triggerSwitchToNextEpisode,
+    ]
   );
 
   // Shared failure recovery for both Player A & Player B (eliminates duplication & self-heals offline socket)
@@ -3078,180 +3119,116 @@ export function PlayerModal({
     showToast,
   ]);
 
-  // Listeners for Player A
+  // Unified listeners for Layer A and Layer B
   useEffect(() => {
-    const sSub = playerA.addListener('statusChange', (ev) => {
-      const st = ev.status;
-      if (activeLayerRef.current !== 'A') {
-        // Inactive Layer A finishing preload
-        if (st === 'readyToPlay' && preloadStateRef.current === 'loading') {
-          try {
-            const pkg = preloadedNextRef.current;
-            playerA.muted = true;
-            if (pkg && pkg.skipIntroSec > 0) {
-              playerA.currentTime = pkg.skipIntroSec;
-            }
-            playerA.pause();
-            setPreloadState('ready');
-          } catch {}
-        } else if (st === 'error' && preloadStateRef.current === 'loading') {
-          setPreloadState('failed');
-        }
-        return;
-      }
-
-      if (st === 'loading') {
-        setIsBuffering(true);
-      } else if (st === 'readyToPlay') {
-        setIsBuffering(false);
-        setFirstFrameReady(true);
-        const dur = playerA.duration || 0;
-        if (dur > 0) setDuration(dur);
-        if (!initialSeekPendingRef.current.done && initialSeekPendingRef.current.sec > 0) {
-          const endCreds = resolvedRef.current?.end_credits_sec || 0;
-          const safe = computeSafeResumeSec(initialSeekPendingRef.current.sec, dur, endCreds);
-          initialSeekPendingRef.current.done = true;
-          try {
-            playerA.currentTime = safe.sec;
-          } catch {}
-          if (safe.rewound && !rewoundToastPendingRef.current) {
-            rewoundToastPendingRef.current = true;
-            showToast(
-              'Đã tự động lùi lại 2 phút',
-              'Phát từ vị trí trước đoạn chuyển tập',
-              'info',
-              { family: 'ionicons', name: 'play-back-circle-outline', color: '#38BDF8' }
-            );
+    const bindLayerListeners = (layer: 'A' | 'B', player: VideoPlayer) => {
+      const sSub = player.addListener('statusChange', (ev) => {
+        const st = ev.status;
+        if (activeLayerRef.current !== layer) {
+          // Inactive layer finishing preload
+          if (st === 'readyToPlay' && preloadStateRef.current === 'loading') {
+            try {
+              const pkg = preloadedNextRef.current;
+              player.muted = true;
+              if (pkg && pkg.skipIntroSec > 0) {
+                player.currentTime = pkg.skipIntroSec;
+              }
+              player.pause();
+              setPreloadState('ready');
+            } catch {}
+          } else if (st === 'error' && preloadStateRef.current === 'loading') {
+            setPreloadState('failed');
           }
+          return;
         }
-      } else if (st === 'error') {
-        void handleActivePlayerError();
-      }
-    });
 
-    const pSub = playerA.addListener('playingChange', (ev) => {
-      if (activeLayerRef.current !== 'A') return;
-      setIsPlaying(ev.isPlaying);
-      if (ev.isPlaying) {
-        userExplicitlyPausedRef.current = false;
-        flushActivePlaybackSessionNow(true);
-      }
-      if (ev.isPlaying && !hasAutoHiddenInitialHudRef.current && !userInteractedHudRef.current) {
-        hasAutoHiddenInitialHudRef.current = true;
-        scheduleHudAutoHide(450);
-      }
-    });
+        if (st === 'loading') {
+          if (!player.playing && !userExplicitlyPausedRef.current) {
+            setIsBuffering(true);
+          }
+        } else if (st === 'readyToPlay') {
+          setIsBuffering(false);
+          setFirstFrameReady(true);
+          if (player.playing && !isPlayingRef.current) {
+            setIsPlaying(true);
+          }
+          const dur = player.duration || 0;
+          if (dur > 0) setDuration(dur);
+          if (!initialSeekPendingRef.current.done && initialSeekPendingRef.current.sec > 0) {
+            const endCreds = resolvedRef.current?.end_credits_sec || 0;
+            const safe = computeSafeResumeSec(initialSeekPendingRef.current.sec, dur, endCreds);
+            initialSeekPendingRef.current.done = true;
+            try {
+              player.currentTime = safe.sec;
+            } catch {}
+            if (safe.rewound && !rewoundToastPendingRef.current) {
+              rewoundToastPendingRef.current = true;
+              showToast(
+                'Đã tự động lùi lại 2 phút',
+                'Phát từ vị trí trước đoạn chuyển tập',
+                'info',
+                { family: 'ionicons', name: 'play-back-circle-outline', color: '#38BDF8' }
+              );
+            }
+          }
+        } else if (st === 'idle') {
+          setIsBuffering(false);
+        } else if (st === 'error') {
+          void handleActivePlayerError();
+        }
+      });
 
-    const tSub = playerA.addListener('timeUpdate', (ev) => {
-      if (playerA.duration > 0 && activeLayerRef.current === 'A') {
-        setDuration(playerA.duration);
-      }
-      handleLayerTimeUpdate('A', ev.currentTime, Math.max(0, ev.bufferedPosition || 0));
-    });
+      const pSub = player.addListener('playingChange', (ev) => {
+        if (activeLayerRef.current !== layer) return;
+        setIsPlaying(ev.isPlaying);
+        if (ev.isPlaying) {
+          userExplicitlyPausedRef.current = false;
+          setIsBuffering(false);
+          setFirstFrameReady(true);
+          flushActivePlaybackSessionNow(true);
+          if (!hasAutoHiddenInitialHudRef.current && !userInteractedHudRef.current) {
+            hasAutoHiddenInitialHudRef.current = true;
+            scheduleHudAutoHide(450);
+          }
+        } else if (userExplicitlyPausedRef.current || isLockedRef.current) {
+          setIsBuffering(false);
+        } else if (
+          player.status === 'loading' &&
+          !(durationRef.current > 0 && currentTimeRef.current >= durationRef.current - 0.8)
+        ) {
+          setIsBuffering(true);
+        }
+      });
 
-    const eSub = playerA.addListener('playToEnd', () => {
-      if (activeLayerRef.current !== 'A') return;
-      handleActiveLayerPlayToEnd();
-    });
+      const tSub = player.addListener('timeUpdate', (ev) => {
+        if (player.duration > 0 && activeLayerRef.current === layer) {
+          setDuration(player.duration);
+        }
+        handleLayerTimeUpdate(layer, ev.currentTime, Math.max(0, ev.bufferedPosition || 0));
+      });
 
+      const eSub = player.addListener('playToEnd', () => {
+        if (activeLayerRef.current !== layer) return;
+        setIsBuffering(false);
+        handleActiveLayerPlayToEnd();
+      });
+
+      return () => {
+        sSub.remove();
+        pSub.remove();
+        tSub.remove();
+        eSub.remove();
+      };
+    };
+
+    const unbindA = bindLayerListeners('A', playerA);
+    const unbindB = bindLayerListeners('B', playerB);
     return () => {
-      sSub.remove();
-      pSub.remove();
-      tSub.remove();
-      eSub.remove();
+      unbindA();
+      unbindB();
     };
   }, [
     playerA,
-    handleActiveLayerPlayToEnd,
-    handleActivePlayerError,
-    handleLayerTimeUpdate,
-    flushActivePlaybackSessionNow,
-    scheduleHudAutoHide,
-    showToast,
-  ]);
-
-  // Listeners for Player B
-  useEffect(() => {
-    const sSub = playerB.addListener('statusChange', (ev) => {
-      const st = ev.status;
-      if (activeLayerRef.current !== 'B') {
-        if (st === 'readyToPlay' && preloadStateRef.current === 'loading') {
-          try {
-            const pkg = preloadedNextRef.current;
-            playerB.muted = true;
-            if (pkg && pkg.skipIntroSec > 0) {
-              playerB.currentTime = pkg.skipIntroSec;
-            }
-            playerB.pause();
-            setPreloadState('ready');
-          } catch {}
-        } else if (st === 'error' && preloadStateRef.current === 'loading') {
-          setPreloadState('failed');
-        }
-        return;
-      }
-
-      if (st === 'loading') {
-        setIsBuffering(true);
-      } else if (st === 'readyToPlay') {
-        setIsBuffering(false);
-        setFirstFrameReady(true);
-        const dur = playerB.duration || 0;
-        if (dur > 0) setDuration(dur);
-        if (!initialSeekPendingRef.current.done && initialSeekPendingRef.current.sec > 0) {
-          const endCreds = resolvedRef.current?.end_credits_sec || 0;
-          const safe = computeSafeResumeSec(initialSeekPendingRef.current.sec, dur, endCreds);
-          initialSeekPendingRef.current.done = true;
-          try {
-            playerB.currentTime = safe.sec;
-          } catch {}
-          if (safe.rewound && !rewoundToastPendingRef.current) {
-            rewoundToastPendingRef.current = true;
-            showToast(
-              'Đã tự động lùi lại 2 phút',
-              'Phát từ vị trí trước đoạn chuyển tập',
-              'info',
-              { family: 'ionicons', name: 'play-back-circle-outline', color: '#38BDF8' }
-            );
-          }
-        }
-      } else if (st === 'error') {
-        void handleActivePlayerError();
-      }
-    });
-
-    const pSub = playerB.addListener('playingChange', (ev) => {
-      if (activeLayerRef.current !== 'B') return;
-      setIsPlaying(ev.isPlaying);
-      if (ev.isPlaying) {
-        userExplicitlyPausedRef.current = false;
-        flushActivePlaybackSessionNow(true);
-      }
-      if (ev.isPlaying && !hasAutoHiddenInitialHudRef.current && !userInteractedHudRef.current) {
-        hasAutoHiddenInitialHudRef.current = true;
-        scheduleHudAutoHide(450);
-      }
-    });
-
-    const tSub = playerB.addListener('timeUpdate', (ev) => {
-      if (playerB.duration > 0 && activeLayerRef.current === 'B') {
-        setDuration(playerB.duration);
-      }
-      handleLayerTimeUpdate('B', ev.currentTime, Math.max(0, ev.bufferedPosition || 0));
-    });
-
-    const eSub = playerB.addListener('playToEnd', () => {
-      if (activeLayerRef.current !== 'B') return;
-      handleActiveLayerPlayToEnd();
-    });
-
-    return () => {
-      sSub.remove();
-      pSub.remove();
-      tSub.remove();
-      eSub.remove();
-    };
-  }, [
     playerB,
     handleActiveLayerPlayToEnd,
     handleActivePlayerError,
@@ -3290,6 +3267,8 @@ export function PlayerModal({
       try {
         getActivePlayer().pause();
       } catch {}
+      setIsPlaying(false);
+      setIsBuffering(false);
       setSleepTimerValue(null);
       setSleepSecondsLeft(null);
       showAppAlert('Hẹn giờ ngủ', 'Đã hết thời gian hẹn giờ, phim đã được tạm dừng.');
@@ -3622,7 +3601,9 @@ export function PlayerModal({
         thumb: preservePosterForParams?.thumbnailUrl || '',
       });
       setFirstFrameReady(false);
+      setIsPlaying(false);
       setIsBuffering(true);
+      lastTimeAdvanceRef.current = null;
       setCurrentTime(0);
       currentTimeRef.current = 0;
       setDuration(0);
@@ -4095,6 +4076,7 @@ export function PlayerModal({
         }
       }
 
+      lastTimeAdvanceRef.current = null;
       try {
         getActivePlayer().currentTime = clamped;
       } catch {}
@@ -5036,19 +5018,25 @@ export function PlayerModal({
                   userInteractedHudRef.current = true;
                   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                   const p = getActivePlayer();
-                  if (p.playing) {
+                  if (p.playing || isPlayingRef.current) {
                     cancelEpisodeCrossfade();
                     userExplicitlyPausedRef.current = true;
                     void clearActivePlaybackSession();
                     p.pause();
+                    setIsPlaying(false);
+                    setIsBuffering(false);
                   } else {
                     userExplicitlyPausedRef.current = false;
                     p.play();
+                    if (p.playing) {
+                      setIsPlaying(true);
+                      setIsBuffering(false);
+                    }
                   }
                   showHudWithTimer();
                 }}
               >
-                {isBuffering ? (
+                {isBuffering && !isPlaying ? (
                   <BufferingSkeletonCenterButton />
                 ) : (
                   <GlassSurface

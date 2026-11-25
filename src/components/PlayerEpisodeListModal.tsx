@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
   FlatList,
   Image,
   Modal,
@@ -17,6 +16,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AppAlertInlineHost } from './AppAlertModal';
 import { BouncyButton } from './BouncyButton';
 import { GlassSurface, WaterDropPopupView } from './GlassSurface';
+import { SkeletonCrossfade } from './SkeletonCrossfade';
+import { EpisodeGridSkeleton } from './SkeletonLoaders';
 import { COLORS } from '../constants/config';
 import { EpisodeItem, OfflineDownloadItem, SeasonItem } from '../types/models';
 
@@ -228,7 +229,8 @@ export function PlayerEpisodeListModal({
   const { width: winWidth, height: winHeight } = useWindowDimensions();
   const isLandscape = winWidth > winHeight;
 
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
   const [episodes, setEpisodes] = useState<ApiEpisodeItem[]>([]);
   const [seasons, setSeasons] = useState<ApiSeasonItem[]>([]);
   const [selectedSeasonId, setSelectedSeasonId] = useState<string | null>(null);
@@ -339,6 +341,7 @@ export function PlayerEpisodeListModal({
         seedFromFallback(targetSeasonId);
       } finally {
         setLoading(false);
+        setHasLoadedOnce(true);
       }
     },
     [
@@ -354,10 +357,17 @@ export function PlayerEpisodeListModal({
   useEffect(() => {
     if (!visible) {
       setSeasonPopupOpen(false);
+      setHasLoadedOnce(false);
+      setLoading(false);
+      setEpisodes([]);
+      setSeasons([]);
+      setSelectedSeasonId(null);
+      setWatchingSeasonId(null);
       return;
     }
     setHeaderTitle(movieTitle);
     setResolvedPoster(posterUrl);
+    setLoading(true);
     void loadEpisodes(null);
   }, [visible, movieTitle, posterUrl, loadEpisodes]);
 
@@ -423,6 +433,8 @@ export function PlayerEpisodeListModal({
     numCols > 1
       ? Math.max(88, Math.floor((innerGridWidth - 10 * (numCols - 1)) / numCols))
       : innerGridWidth;
+
+  const isSkeletonLoading = loading || !hasLoadedOnce;
 
   return (
     <Modal
@@ -533,18 +545,27 @@ export function PlayerEpisodeListModal({
                 }
               }}
             >
-              {loading && episodes.length === 0 ? (
-                <View style={styles.centerState}>
-                  <ActivityIndicator size="large" color={COLORS.accent} />
-                  <Text style={styles.stateTxt}>Đang tải danh sách tập...</Text>
-                </View>
-              ) : episodes.length === 0 ? (
-                <View style={styles.centerState}>
-                  <Ionicons name="film-outline" size={32} color="rgba(255,255,255,0.45)" />
-                  <Text style={styles.stateTxt}>Chưa có tập phim nào trong mùa này.</Text>
-                </View>
-              ) : (
-                <FlatList
+              <SkeletonCrossfade
+                loading={isSkeletonLoading}
+                keepSkeletonMounted={false}
+                backgroundColor="transparent"
+                style={{ flex: 1 }}
+                skeleton={
+                  <EpisodeGridSkeleton
+                    cardWidth={epCardWidth}
+                    numCols={numCols}
+                    rowCount={isLandscape ? 2 : 4}
+                    active={visible && isSkeletonLoading}
+                  />
+                }
+              >
+                {episodes.length === 0 ? (
+                  <View style={styles.centerState}>
+                    <Ionicons name="film-outline" size={32} color="rgba(255,255,255,0.45)" />
+                    <Text style={styles.stateTxt}>Chưa có tập phim nào trong mùa này.</Text>
+                  </View>
+                ) : (
+                  <FlatList
                   ref={listRef}
                   key={`ep-grid-${numCols}`}
                   data={episodes}
@@ -635,7 +656,8 @@ export function PlayerEpisodeListModal({
                     );
                   }}
                 />
-              )}
+                )}
+              </SkeletonCrossfade>
             </View>
           </View>
 
