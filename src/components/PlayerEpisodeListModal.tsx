@@ -68,6 +68,34 @@ function formatSeasonName(rawName: string, fallbackIdx: number): string {
   return name.replace(/(^|[^\d])(\d)(?!\d)/g, '$10$2');
 }
 
+function stripHtmlText(raw?: string): string {
+  const input = String(raw || '');
+  if (!input) return '';
+  return input
+    .replace(/<\s*br\s*\/?>/gi, ' ')
+    .replace(/<\/\s*(?:p|div|li|h[1-6]|span|strong|em|b|i)\s*>/gi, ' ')
+    .replace(/<\/?[a-zA-Z][^>]*>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#0*39;|&apos;/gi, "'")
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&ndash;|&mdash;/gi, '-')
+    .replace(/&hellip;/gi, '...')
+    .replace(/&#(\d+);/g, (_, dec) => {
+      const code = parseInt(dec, 10);
+      return Number.isFinite(code) ? String.fromCharCode(code) : '';
+    })
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => {
+      const code = parseInt(hex, 16);
+      return Number.isFinite(code) ? String.fromCharCode(code) : '';
+    })
+    .replace(/<\/?(?:p|div|br|span|strong|em|b|i|li|ul|ol|h[1-6])\b[^>]*>/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function getCandidateImageUrls(
   rawTitle: string,
   titleVa: string,
@@ -207,6 +235,7 @@ export function PlayerEpisodeListModal({
   const [seasonPopupOpen, setSeasonPopupOpen] = useState(false);
   const [headerTitle, setHeaderTitle] = useState(movieTitle);
   const [resolvedPoster, setResolvedPoster] = useState(posterUrl);
+  const [gridPaneWidth, setGridPaneWidth] = useState(0);
 
   const listRef = useRef<FlatList<ApiEpisodeItem> | null>(null);
 
@@ -385,6 +414,14 @@ export function PlayerEpisodeListModal({
   const cardHeight = isLandscape
     ? Math.min(358, winHeight - 16)
     : Math.min(winHeight * 0.84, 660);
+  const sidebarWidth = Math.round(cardWidth * (isLandscape ? 0.3 : 0.36));
+  const effectiveGridWidth =
+    gridPaneWidth > 0 ? gridPaneWidth : Math.max(120, cardWidth - sidebarWidth);
+  const innerGridWidth = Math.max(100, effectiveGridWidth - 28);
+  const epCardWidth =
+    numCols > 1
+      ? Math.max(88, Math.floor((innerGridWidth - 10 * (numCols - 1)) / numCols))
+      : innerGridWidth;
 
   return (
     <Modal
@@ -406,7 +443,7 @@ export function PlayerEpisodeListModal({
           >
             <View style={styles.splitRow}>
               {/* Left Sidebar matching danh_sach_tap */}
-              <View style={[styles.sidebar, isLandscape ? { width: '30%' } : { width: '36%' }]}>
+              <View style={[styles.sidebar, { width: sidebarWidth }]}>
                 <View pointerEvents="none" style={styles.sidebarBgClip}>
                   {resolvedPoster ? (
                     <Image
@@ -486,7 +523,15 @@ export function PlayerEpisodeListModal({
             </View>
 
             {/* Right Episodes Grid */}
-            <View style={styles.gridPane}>
+            <View
+              style={styles.gridPane}
+              onLayout={(e) => {
+                const measured = Math.floor(e.nativeEvent.layout.width);
+                if (measured > 0 && Math.abs(measured - gridPaneWidth) > 1) {
+                  setGridPaneWidth(measured);
+                }
+              }}
+            >
               {loading && episodes.length === 0 ? (
                 <View style={styles.centerState}>
                   <ActivityIndicator size="large" color={COLORS.accent} />
@@ -526,11 +571,14 @@ export function PlayerEpisodeListModal({
                       (off) =>
                         off.status === 'completed' && off.stream_code === item.stream_key
                     );
+                    const cleanedEpName = stripHtmlText(item.episode_name) || item.episode_name;
+                    const cleanedStatus = stripHtmlText(item.watched_status);
+                    const cleanedRemaining = stripHtmlText(item.remaining_time);
                     const thumbCandidates = getCandidateImageUrls(
                       serverMovieTitle || '',
                       headerTitle || movieTitle,
                       activeSeasonNum,
-                      item.episode_name,
+                      cleanedEpName,
                       item.poster_url || resolvedPoster
                     );
 
@@ -540,13 +588,14 @@ export function PlayerEpisodeListModal({
                         activeOpacity={0.82}
                         style={[
                           styles.epCard,
+                          { width: epCardWidth },
                           isWatching && styles.epCardWatching,
                         ]}
                         onPress={() => {
                           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                           onSelectEpisode(
                             item.stream_key,
-                            item.episode_name,
+                            cleanedEpName,
                             index,
                             item.seasons_id ? String(item.seasons_id) : selectedSeasonId || undefined
                           );
@@ -564,20 +613,20 @@ export function PlayerEpisodeListModal({
                             style={[styles.epName, isWatching && { color: '#FF6B72' }]}
                             numberOfLines={1}
                           >
-                            {item.episode_name}
+                            {cleanedEpName}
                           </Text>
                           {isWatching ? (
                             <Text style={styles.epStatusWatching} numberOfLines={1}>
                               Đang xem...
                             </Text>
-                          ) : item.watched_status ? (
+                          ) : cleanedStatus ? (
                             <Text style={styles.epStatusSub} numberOfLines={1}>
-                              {item.watched_status}
+                              {cleanedStatus}
                             </Text>
                           ) : null}
-                          {item.remaining_time ? (
+                          {cleanedRemaining ? (
                             <Text style={styles.epRemaining} numberOfLines={1}>
-                              {item.remaining_time}
+                              {cleanedRemaining}
                             </Text>
                           ) : null}
                         </View>
@@ -772,9 +821,11 @@ const styles = StyleSheet.create({
   },
   gridRow: {
     gap: 10,
+    justifyContent: 'flex-start',
   },
   epCard: {
-    flex: 1,
+    flexGrow: 0,
+    flexShrink: 0,
     backgroundColor: 'rgba(255, 255, 255, 0.08)',
     borderRadius: 22,
     overflow: 'hidden',
