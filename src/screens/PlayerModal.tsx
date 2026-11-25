@@ -3858,7 +3858,7 @@ export function PlayerModal({
     settings.offlineDownloadConcurrency,
   ]);
 
-  // Skeleton fade animation (minimum 260ms smooth reveal, max 5s fallback)
+  // Skeleton fade animation (minimum 220ms smooth reveal, guaranteed unmount even if iOS interrupts CoreAnimation)
   const showPlayerSkeleton = visible && !firstFrameReady;
   useEffect(() => {
     if (!visible) {
@@ -3869,38 +3869,66 @@ export function PlayerModal({
       return;
     }
     if (showPlayerSkeleton) {
+      let active = true;
       if (skeletonShownAtRef.current === 0) {
         skeletonShownAtRef.current = Date.now();
+        skeletonOpacity.stopAnimation();
         skeletonOpacity.setValue(0);
       }
       setRenderSkeleton(true);
-      Animated.timing(skeletonOpacity, {
+      const fadeInAnim = Animated.timing(skeletonOpacity, {
         toValue: 1,
-        duration: 220,
+        duration: 200,
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
-      }).start();
-      const safetyTimer = setTimeout(() => setFirstFrameReady(true), 5200);
-      return () => clearTimeout(safetyTimer);
+      });
+      fadeInAnim.start();
+      const safetyTimer = setTimeout(() => {
+        if (active) setFirstFrameReady(true);
+      }, 4500);
+      return () => {
+        active = false;
+        clearTimeout(safetyTimer);
+        fadeInAnim.stop();
+        skeletonOpacity.stopAnimation();
+      };
     }
 
     let cancelled = false;
-    const elapsed = skeletonShownAtRef.current > 0 ? Date.now() - skeletonShownAtRef.current : 260;
+    let fadeOutAnim: Animated.CompositeAnimation | null = null;
+    const elapsed = skeletonShownAtRef.current > 0 ? Date.now() - skeletonShownAtRef.current : 220;
+    const waitMs = Math.max(0, 220 - elapsed);
+
+    const finishHide = () => {
+      if (cancelled) return;
+      skeletonShownAtRef.current = 0;
+      skeletonOpacity.stopAnimation();
+      skeletonOpacity.setValue(0);
+      setRenderSkeleton(false);
+    };
+
     const timer = setTimeout(() => {
       if (cancelled) return;
-      Animated.timing(skeletonOpacity, {
+      skeletonOpacity.stopAnimation();
+      fadeOutAnim = Animated.timing(skeletonOpacity, {
         toValue: 0,
-        duration: 300,
+        duration: 260,
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
-      }).start(({ finished }) => {
-        if (finished && !cancelled) setRenderSkeleton(false);
       });
-    }, Math.max(0, 260 - elapsed));
+      fadeOutAnim.start(() => {
+        finishHide();
+      });
+    }, waitMs);
+
+    const hardHideTimer = setTimeout(finishHide, waitMs + 360);
 
     return () => {
       cancelled = true;
       clearTimeout(timer);
+      clearTimeout(hardHideTimer);
+      if (fadeOutAnim) fadeOutAnim.stop();
+      skeletonOpacity.stopAnimation();
     };
   }, [visible, showPlayerSkeleton, skeletonOpacity]);
 

@@ -64,11 +64,20 @@ export function SkeletonCrossfade({
       wasLoadingRef.current = false;
       setRenderSkeleton(true);
       let cancelled = false;
+      let anim: Animated.CompositeAnimation | null = null;
+      const finishReveal = () => {
+        if (cancelled) return;
+        skeletonOpacity.stopAnimation();
+        contentOpacity.stopAnimation();
+        skeletonOpacity.setValue(0);
+        contentOpacity.setValue(1);
+        setRenderSkeleton(false);
+      };
       const rafId = requestAnimationFrame(() => {
         if (cancelled) return;
         skeletonOpacity.stopAnimation();
         contentOpacity.stopAnimation();
-        Animated.parallel([
+        anim = Animated.parallel([
           Animated.timing(skeletonOpacity, {
             toValue: 0,
             duration: fadeDurationMs,
@@ -81,15 +90,19 @@ export function SkeletonCrossfade({
             easing: Easing.out(Easing.cubic),
             useNativeDriver: true,
           }),
-        ]).start(({ finished }) => {
-          if (finished && !cancelled) {
-            setRenderSkeleton(false);
-          }
+        ]);
+        anim.start(() => {
+          finishReveal();
         });
       });
+      const fallbackTimer = setTimeout(finishReveal, fadeDurationMs + 160);
       return () => {
         cancelled = true;
         cancelAnimationFrame(rafId);
+        clearTimeout(fallbackTimer);
+        if (anim) anim.stop();
+        skeletonOpacity.stopAnimation();
+        contentOpacity.stopAnimation();
       };
     }
 
