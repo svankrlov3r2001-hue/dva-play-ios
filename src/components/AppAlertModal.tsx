@@ -1,6 +1,5 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
-  Modal,
   Pressable,
   StyleSheet,
   Text,
@@ -22,6 +21,7 @@ export interface AppAlertButton {
 export interface AppAlertOptions {
   cancelable?: boolean;
   tone?: 'info' | 'success' | 'warning' | 'error';
+  skipHaptic?: boolean;
 }
 
 interface AlertPayload {
@@ -31,14 +31,23 @@ interface AlertPayload {
   buttons: AppAlertButton[];
   cancelable: boolean;
   tone: 'info' | 'success' | 'warning' | 'error';
+  skipHaptic?: boolean;
 }
 
-type AlertListener = (current: AlertPayload | null) => void;
+interface AlertSnapshot {
+  current: AlertPayload | null;
+  topInlineHostId: number | null;
+}
+
+type AlertListener = (snapshot: AlertSnapshot) => void;
 
 const listeners = new Set<AlertListener>();
 const queue: AlertPayload[] = [];
+const inlineHosts: number[] = [];
 let activeAlert: AlertPayload | null = null;
+let displayedOwner: { alertId: number; hostId: number } | null = null;
 let seq = 1;
+let inlineHostSeq = 1;
 
 function inferAlertTone(
   title: string,
@@ -69,16 +78,50 @@ function inferAlertTone(
   return 'info';
 }
 
+function getSnapshot(): AlertSnapshot {
+  return {
+    current: activeAlert,
+    topInlineHostId: inlineHosts.length > 0 ? inlineHosts[inlineHosts.length - 1] : null,
+  };
+}
+
 function emitCurrent(): void {
+  const snap = getSnapshot();
   listeners.forEach((fn) => {
     try {
-      fn(activeAlert);
+      fn(snap);
     } catch {}
   });
 }
 
 function advanceQueue(): void {
+  displayedOwner = null;
   activeAlert = queue.length > 0 ? queue.shift() || null : null;
+  emitCurrent();
+}
+
+function registerInlineHost(hostId: number): void {
+  if (!inlineHosts.includes(hostId)) {
+    inlineHosts.push(hostId);
+    emitCurrent();
+  }
+}
+
+function unregisterInlineHost(hostId: number): void {
+  const idx = inlineHosts.indexOf(hostId);
+  if (idx >= 0) {
+    inlineHosts.splice(idx, 1);
+  }
+  // Dismiss orphaned alert owned by a modal that closed before the alert was dismissed
+  if (
+    displayedOwner &&
+    displayedOwner.hostId === hostId &&
+    activeAlert &&
+    activeAlert.id === displayedOwner.alertId
+  ) {
+    displayedOwner = null;
+    activeAlert = queue.length > 0 ? queue.shift() || null : null;
+  }
   emitCurrent();
 }
 
@@ -98,6 +141,7 @@ export function showAppAlert(
     buttons: normalizedButtons,
     cancelable: options?.cancelable !== undefined ? options.cancelable : normalizedButtons.length <= 1,
     tone,
+    skipHaptic: options?.skipHaptic,
   };
 
   if (!activeAlert) {
@@ -114,23 +158,23 @@ export function dismissCurrentAppAlert(): void {
   }
 }
 
-export function AppAlertHost(): React.ReactElement | null {
+function AppAlertOverlayCard({
+  current,
+  hostId,
+  isInline,
+}: {
+  current: AlertPayload;
+  hostId: number;
+  isInline: boolean;
+}) {
   const { width: winWidth } = useWindowDimensions();
-  const [current, setCurrent] = useState<AlertPayload | null>(() => activeAlert);
 
   useEffect(() => {
-    const listener: AlertListener = (next) => {
-      setCurrent(next);
-    };
-    listeners.add(listener);
-    setCurrent(activeAlert);
-    return () => {
-      listeners.delete(listener);
-    };
-  }, []);
+    displayedOwner = { alertId: current.id, hostId };
+  }, [current.id, hostId]);
 
   useEffect(() => {
-    if (!current) return;
+    if (current.skipHaptic) return;
     try {
       if (current.tone === 'success') {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -142,13 +186,9 @@ export function AppAlertHost(): React.ReactElement | null {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       }
     } catch {}
-  }, [current?.id]);
+  }, [current.id, current.skipHaptic, current.tone]);
 
-  if (!current) {
-    return null;
-  }
-
-  const cardWidth = Math.min(390, Math.max(290, winWidth - 40));
+  const cardWidth = Math.min(390, Math.max(280, winWidth - 40));
 
   const badgeConfig =
     current.tone === 'success'
@@ -189,85 +229,151 @@ export function AppAlertHost(): React.ReactElement | null {
     current.buttons.every((b) => (b.text || 'OK').length <= 16);
 
   return (
-    <Modal
-      visible={Boolean(current)}
-      transparent
-      animationType="fade"
-      statusBarTranslucent
-      supportedOrientations={['portrait', 'landscape', 'landscape-left', 'landscape-right']}
-      onRequestClose={handleBackdropDismiss}
+    <View
+      pointerEvents="auto"
+      style={isInline ? styles.inlineBackdrop : styles.rootBackdrop}
     >
-      <View style={styles.backdrop}>
-        <Pressable style={StyleSheet.absoluteFill} onPress={handleBackdropDismiss} />
-        <WaterDropPopupView key={current.id} visible={Boolean(current)} triggerKey={current.id} from="center">
-          <GlassSurface
-            variant="liquid"
-            radius={40}
-            intensity={34}
-            style={[styles.cardWrap, { width: cardWidth }]}
-          >
-            <View style={styles.cardInner}>
-              <View style={[styles.badgeCircle, { backgroundColor: badgeConfig.bg }]}>
-                <Ionicons name={badgeConfig.icon} size={26} color={badgeConfig.color} />
-              </View>
+      <Pressable style={StyleSheet.absoluteFill} onPress={handleBackdropDismiss} />
+      <WaterDropPopupView key={current.id} visible triggerKey={current.id} from="center">
+        <GlassSurface
+          variant="liquid"
+          radius={40}
+          intensity={34}
+          style={[styles.cardWrap, { width: cardWidth }]}
+        >
+          <View style={styles.cardInner}>
+            <View style={[styles.badgeCircle, { backgroundColor: badgeConfig.bg }]}>
+              <Ionicons name={badgeConfig.icon} size={26} color={badgeConfig.color} />
+            </View>
 
-              <Text style={styles.title}>{current.title}</Text>
+            <Text style={styles.title}>{current.title}</Text>
 
-              {current.message ? (
-                <Text style={styles.message}>{current.message}</Text>
-              ) : null}
+            {current.message ? (
+              <Text style={styles.message}>{current.message}</Text>
+            ) : null}
 
-              <View
-                style={[
-                  styles.actionsWrap,
-                  isHorizontalTwoButtons ? styles.actionsRow : styles.actionsCol,
-                ]}
-              >
-                {current.buttons.map((btn, idx) => {
-                  const isCancel = btn.style === 'cancel';
-                  const isDestructive = btn.style === 'destructive';
-                  const isPrimary =
-                    !isCancel &&
-                    !isDestructive &&
-                    (current.buttons.length === 1 || idx === current.buttons.length - 1);
+            <View
+              style={[
+                styles.actionsWrap,
+                isHorizontalTwoButtons ? styles.actionsRow : styles.actionsCol,
+              ]}
+            >
+              {current.buttons.map((btn, idx) => {
+                const isCancel = btn.style === 'cancel';
+                const isDestructive = btn.style === 'destructive';
+                const isPrimary =
+                  !isCancel &&
+                  !isDestructive &&
+                  (current.buttons.length === 1 || idx === current.buttons.length - 1);
 
-                  return (
-                    <BouncyButton
-                      key={`${current.id}-${idx}`}
-                      activeOpacity={0.82}
-                      onPress={() => handlePressButton(btn)}
+                return (
+                  <BouncyButton
+                    key={`${current.id}-${idx}`}
+                    activeOpacity={0.82}
+                    onPress={() => handlePressButton(btn)}
+                    style={[
+                      styles.btnBase,
+                      isHorizontalTwoButtons && styles.btnFlex,
+                      isCancel && styles.btnCancel,
+                      isDestructive && styles.btnDestructive,
+                      isPrimary && styles.btnPrimary,
+                    ]}
+                  >
+                    <Text
+                      numberOfLines={2}
                       style={[
-                        styles.btnBase,
-                        isHorizontalTwoButtons && styles.btnFlex,
-                        isCancel && styles.btnCancel,
-                        isDestructive && styles.btnDestructive,
-                        isPrimary && styles.btnPrimary,
+                        styles.btnTxt,
+                        isCancel && styles.btnTxtCancel,
                       ]}
                     >
-                      <Text
-                        numberOfLines={2}
-                        style={[
-                          styles.btnTxt,
-                          isCancel && styles.btnTxtCancel,
-                        ]}
-                      >
-                        {btn.text || 'OK'}
-                      </Text>
-                    </BouncyButton>
-                  );
-                })}
-              </View>
+                      {btn.text || 'OK'}
+                    </Text>
+                  </BouncyButton>
+                );
+              })}
             </View>
-          </GlassSurface>
-        </WaterDropPopupView>
-      </View>
-    </Modal>
+          </View>
+        </GlassSurface>
+      </WaterDropPopupView>
+    </View>
   );
 }
 
+export function AppAlertInlineHost({ active }: { active: boolean }): React.ReactElement | null {
+  const hostIdRef = useRef<number>(0);
+  if (hostIdRef.current === 0) {
+    hostIdRef.current = inlineHostSeq++;
+  }
+  const hostId = hostIdRef.current;
+  const [snap, setSnap] = useState<AlertSnapshot>(getSnapshot);
+
+  useEffect(() => {
+    const listener: AlertListener = (nextSnap) => {
+      setSnap(nextSnap);
+    };
+    listeners.add(listener);
+    if (active) {
+      registerInlineHost(hostId);
+    } else {
+      unregisterInlineHost(hostId);
+    }
+    setSnap(getSnapshot());
+    return () => {
+      listeners.delete(listener);
+      unregisterInlineHost(hostId);
+    };
+  }, [active, hostId]);
+
+  if (!active || !snap.current || snap.topInlineHostId !== hostId) {
+    return null;
+  }
+
+  return <AppAlertOverlayCard current={snap.current} hostId={hostId} isInline />;
+}
+
+export function AppAlertHost(): React.ReactElement | null {
+  const [snap, setSnap] = useState<AlertSnapshot>(getSnapshot);
+
+  useEffect(() => {
+    const listener: AlertListener = (nextSnap) => {
+      setSnap(nextSnap);
+    };
+    listeners.add(listener);
+    setSnap(getSnapshot());
+    return () => {
+      listeners.delete(listener);
+    };
+  }, []);
+
+  if (snap.topInlineHostId !== null || !snap.current) {
+    return null;
+  }
+
+  return <AppAlertOverlayCard current={snap.current} hostId={0} isInline={false} />;
+}
+
 const styles = StyleSheet.create({
-  backdrop: {
-    flex: 1,
+  rootBackdrop: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    zIndex: 999999,
+    elevation: 999999,
+    backgroundColor: 'rgba(0, 0, 0, 0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  inlineBackdrop: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    zIndex: 99999,
+    elevation: 99999,
     backgroundColor: 'rgba(0, 0, 0, 0.45)',
     alignItems: 'center',
     justifyContent: 'center',

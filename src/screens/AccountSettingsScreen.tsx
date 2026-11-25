@@ -27,6 +27,7 @@ import {
   APP_VERSION_CODE,
   COLORS,
   GLASS_SHADOW,
+  MAX_AUTO_DOWNLOAD_NEXT_COUNT,
   PORTAL_URL,
   RADII,
 } from '../constants/config';
@@ -437,6 +438,10 @@ export function AccountSettingsScreen({
     }
   };
 
+  const safeAutoNextCount = Math.max(
+    0,
+    Math.min(MAX_AUTO_DOWNLOAD_NEXT_COUNT, settings.autoDownloadNextCount || 0)
+  );
   const totalBytes = offlineItems.reduce((acc, i) => acc + (i.size_bytes || 0), 0);
   const storageLimitGb = Math.max(10, Math.min(100, settings.offlineStorageLimitGb || 20));
   const storageLimitBytes = storageLimitGb * 1024 * 1024 * 1024;
@@ -903,32 +908,37 @@ export function AccountSettingsScreen({
             <View style={{ flex: 1 }}>
               <Text style={styles.settingLabel}>Tải thêm tập tiếp theo</Text>
               <Text style={styles.settingDesc}>
-                {settings.autoDownloadNextCount > 0
-                  ? `Tự động tải trước ${settings.autoDownloadNextCount} tập tiếp theo`
-                  : 'Đang tắt tải trước tập kế tiếp'}
+                {safeAutoNextCount > 0
+                  ? `Tự động tải trước ${safeAutoNextCount} tập tiếp theo (tối đa ${MAX_AUTO_DOWNLOAD_NEXT_COUNT} tập)`
+                  : `Đang tắt tải trước • Tối đa ${MAX_AUTO_DOWNLOAD_NEXT_COUNT} tập`}
               </Text>
             </View>
             <View style={styles.offlineStepperRow}>
               <BouncyButton
-                style={styles.offlineStepBtn}
+                disabled={safeAutoNextCount <= 0}
+                style={[styles.offlineStepBtn, safeAutoNextCount <= 0 && styles.offlineStepBtnDisabled]}
                 onPress={() => {
                   Haptics.selectionAsync();
                   void updateSetting(
                     'autoDownloadNextCount',
-                    Math.max(0, (settings.autoDownloadNextCount || 0) - 1)
+                    Math.max(0, safeAutoNextCount - 1)
                   );
                 }}
               >
                 <Ionicons name="remove" size={15} color="#FFFFFF" />
               </BouncyButton>
-              <Text style={styles.offlineStepVal}>{settings.autoDownloadNextCount || 0}</Text>
+              <Text style={styles.offlineStepVal}>{safeAutoNextCount}</Text>
               <BouncyButton
-                style={styles.offlineStepBtn}
+                disabled={safeAutoNextCount >= MAX_AUTO_DOWNLOAD_NEXT_COUNT}
+                style={[
+                  styles.offlineStepBtn,
+                  safeAutoNextCount >= MAX_AUTO_DOWNLOAD_NEXT_COUNT && styles.offlineStepBtnDisabled,
+                ]}
                 onPress={() => {
                   Haptics.selectionAsync();
                   void updateSetting(
                     'autoDownloadNextCount',
-                    Math.min(20, (settings.autoDownloadNextCount || 0) + 1)
+                    Math.min(MAX_AUTO_DOWNLOAD_NEXT_COUNT, safeAutoNextCount + 1)
                   );
                 }}
               >
@@ -1758,6 +1768,9 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255, 255, 255, 0.14)',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  offlineStepBtnDisabled: {
+    opacity: 0.36,
   },
   offlineStepVal: {
     color: '#FFFFFF',

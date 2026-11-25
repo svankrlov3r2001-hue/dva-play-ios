@@ -17,6 +17,7 @@ export interface BouncyButtonProps {
   style?: StyleProp<ViewStyle>;
   onPress?: (event: GestureResponderEvent) => void;
   onLongPress?: (event: GestureResponderEvent) => void;
+  delayLongPress?: number;
   onPressIn?: (event: GestureResponderEvent) => void;
   onPressOut?: (event: GestureResponderEvent) => void;
   disabled?: boolean;
@@ -38,6 +39,7 @@ export function BouncyButton({
   style,
   onPress,
   onLongPress,
+  delayLongPress,
   onPressIn,
   onPressOut,
   disabled = false,
@@ -174,6 +176,7 @@ export function BouncyButton({
       disabled={disabled}
       onPress={onPress}
       onLongPress={onLongPress}
+      delayLongPress={delayLongPress}
       onPressIn={handlePressIn}
       onPressOut={handlePressOut}
       hitSlop={hitSlop}

@@ -13,10 +13,10 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { showAppAlert } from './AppAlertModal';
+import { AppAlertInlineHost, showAppAlert } from './AppAlertModal';
 import { BouncyButton } from './BouncyButton';
 import { GlassSurface, WaterDropPopupView } from './GlassSurface';
-import { COLORS } from '../constants/config';
+import { COLORS, MAX_AUTO_DOWNLOAD_NEXT_COUNT } from '../constants/config';
 import { useSettings } from '../context/SettingsContext';
 import { fetchMovieDetailsApi } from '../services/api';
 import {
@@ -123,6 +123,10 @@ export function OfflineDownloadSheet({
   const isSeries = orderedEpisodes.length > 1;
   const targetStreamCode =
     currentStreamCode || orderedEpisodes[0]?.stream_code || '';
+  const safeNextCount = Math.max(
+    0,
+    Math.min(MAX_AUTO_DOWNLOAD_NEXT_COUNT, settings.autoDownloadNextCount || 0)
+  );
 
   const buildEnqueueReq = (ep?: EpisodeItem): OfflineEnqueueParams => {
     const sc = ep?.stream_code || targetStreamCode;
@@ -171,12 +175,12 @@ export function OfflineDownloadSheet({
     return getCurrentAndNextEpisodes(
       orderedEpisodes,
       targetStreamCode,
-      settings.autoDownloadNextCount
+      safeNextCount
     );
-  }, [isSeries, orderedEpisodes, targetStreamCode, settings.autoDownloadNextCount]);
+  }, [isSeries, orderedEpisodes, targetStreamCode, safeNextCount]);
 
   const pendingNextEpisodes = useMemo(() => {
-    if (!isSeries || !targetStreamCode || (settings.autoDownloadNextCount || 0) <= 0) return [];
+    if (!isSeries || !targetStreamCode || safeNextCount <= 0) return [];
     return nextTargets.filter((ep) => {
       if (ep.stream_code === targetStreamCode) return false;
       const ex = offlineItems.find(
@@ -184,7 +188,7 @@ export function OfflineDownloadSheet({
       );
       return !ex || ex.status === 'failed' || ex.status === 'paused';
     });
-  }, [isSeries, targetStreamCode, settings.autoDownloadNextCount, nextTargets, offlineItems, videosId]);
+  }, [isSeries, targetStreamCode, safeNextCount, nextTargets, offlineItems, videosId]);
 
   const handleDownloadNextPendingOnly = async () => {
     if (!isCurrentCompleted || pendingNextEpisodes.length === 0) return;
@@ -209,11 +213,11 @@ export function OfflineDownloadSheet({
     try {
       const curEp = orderedEpisodes.find((e) => e.stream_code === targetStreamCode);
       const curItem = await enqueueOfflineDownload(buildEnqueueReq(curEp));
-      if (includeNext && isSeries && settings.autoDownloadNextCount > 0) {
+      if (includeNext && isSeries && safeNextCount > 0) {
         const targets = getCurrentAndNextEpisodes(
           orderedEpisodes,
           targetStreamCode,
-          settings.autoDownloadNextCount
+          safeNextCount
         );
         const nextOnlyReqs = targets
           .filter((ep) => ep.stream_code !== targetStreamCode)
@@ -233,11 +237,38 @@ export function OfflineDownloadSheet({
 
   const adjustNextCount = (delta: number) => {
     Haptics.selectionAsync();
-    const next = Math.max(0, Math.min(20, (settings.autoDownloadNextCount || 0) + delta));
+    const next = Math.max(0, Math.min(MAX_AUTO_DOWNLOAD_NEXT_COUNT, safeNextCount + delta));
     if (next === 0 && currentDownloadItem?.id) {
       clearPendingFollowUpDownloads(currentDownloadItem.id);
     }
     updateSetting('autoDownloadNextCount', next);
+  };
+
+  const confirmDeleteCompletedItem = (
+    targetItem: OfflineDownloadItem,
+    displayLabel?: string,
+    fromLongPress = false
+  ) => {
+    if (fromLongPress) {
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    }
+    showAppAlert(
+      fromLongPress ? 'Xóa tập đã tải?' : 'Xóa tệp ngoại tuyến?',
+      displayLabel
+        ? `Xóa "${displayLabel}" khỏi bộ nhớ máy?`
+        : 'Tệp phim này sẽ bị xóa khỏi bộ nhớ máy.',
+      [
+        { text: 'Giữ lại', style: 'cancel' },
+        {
+          text: 'Xóa',
+          style: 'destructive',
+          onPress: () => {
+            void removeOfflineDownload(targetItem.id);
+          },
+        },
+      ],
+      fromLongPress ? { skipHaptic: true } : undefined
+    );
   };
 
   const handleEpisodePress = async (ep: EpisodeItem) => {
@@ -254,20 +285,23 @@ export function OfflineDownloadSheet({
     } else if (existing.status === 'queued') {
       await cancelOfflineDownload(existing.id);
     } else if (existing.status === 'completed') {
-      showAppAlert('Đã tải ngoại tuyến', `Xóa "${ep.episodes_name}" khỏi máy?`, [
-        { text: 'Giữ lại', style: 'cancel' },
-        {
-          text: 'Xóa',
-          style: 'destructive',
-          onPress: () => removeOfflineDownload(existing.id),
-        },
-      ]);
+      const epLabel = formatEpisodeDisplayTitle(ep.episodes_name) || ep.episodes_name;
+      confirmDeleteCompletedItem(existing, epLabel, false);
     }
+  };
+
+  const handleEpisodeLongPress = (ep: EpisodeItem) => {
+    const existing = findItemForEpisode(ep.stream_code);
+    if (!existing || existing.status !== 'completed') return;
+    const epLabel = formatEpisodeDisplayTitle(ep.episodes_name) || ep.episodes_name;
+    confirmDeleteCompletedItem(existing, epLabel, true);
   };
 
   const renderStatusPill = (item: OfflineDownloadItem | null) => {
     if (!item) return null;
     if (item.status === 'completed') {
+      const targetLabel =
+        formatEpisodeDisplayTitle(item.episode_title || currentEpisodeTitle) || title;
       return (
         <View style={styles.statusBannerOk}>
           <Ionicons name="checkmark-circle" size={16} color="#30D158" />
@@ -275,12 +309,13 @@ export function OfflineDownloadSheet({
             Đã lưu trên máy • {formatBytes(item.size_bytes)}
           </Text>
           <BouncyButton
-            onPress={() =>
-              showAppAlert('Xóa tệp ngoại tuyến?', 'Tệp phim này sẽ bị xóa khỏi bộ nhớ máy.', [
-                { text: 'Hủy', style: 'cancel' },
-                { text: 'Xóa', style: 'destructive', onPress: () => removeOfflineDownload(item.id) },
-              ])
-            }
+            hitSlop={10}
+            style={styles.statusTrashBtn}
+            accessibilityLabel="Xóa tệp ngoại tuyến"
+            onPress={() => {
+              void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+              confirmDeleteCompletedItem(item, targetLabel, false);
+            }}
           >
             <Ionicons name="trash-outline" size={16} color="#FCA5A5" />
           </BouncyButton>
@@ -352,7 +387,7 @@ export function OfflineDownloadSheet({
               <Ionicons name="cloud-download-outline" size={18} color="#FFF" />
             )}
             <Text style={styles.primaryBtnTxt} numberOfLines={1}>
-              {isSeries && settings.autoDownloadNextCount > 0
+              {isSeries && safeNextCount > 0
                 ? `Tải tập hiện tại + ${Math.max(0, nextTargets.length - 1)} tập tiếp theo`
                 : isSeries
                   ? 'Tải tập hiện tại về máy'
@@ -360,7 +395,7 @@ export function OfflineDownloadSheet({
             </Text>
           </BouncyButton>
 
-          {isSeries && settings.autoDownloadNextCount > 0 ? (
+          {isSeries && safeNextCount > 0 ? (
             <BouncyButton
               bounciness="gentle"
               activeOpacity={0.8}
@@ -372,7 +407,7 @@ export function OfflineDownloadSheet({
             </BouncyButton>
           ) : null}
         </View>
-      ) : isCurrentCompleted && isSeries && settings.autoDownloadNextCount > 0 && pendingNextEpisodes.length > 0 ? (
+      ) : isCurrentCompleted && isSeries && safeNextCount > 0 && pendingNextEpisodes.length > 0 ? (
         <View style={{ gap: 7 }}>
           <BouncyButton
             bounciness="gentle"
@@ -417,27 +452,38 @@ export function OfflineDownloadSheet({
           <View style={{ flex: 1, paddingRight: 8 }}>
             <Text style={styles.settingTitle}>Tải thêm tập tiếp theo khi xem</Text>
             <Text style={styles.settingSub}>
-              {settings.autoDownloadNextCount > 0
+              {safeNextCount > 0
                 ? isCurrentCompleted
-                  ? `Tự động xếp hàng ${settings.autoDownloadNextCount} tập kế tiếp`
-                  : `Chỉ tự động tải ${settings.autoDownloadNextCount} tập kế tiếp sau khi tập đang xem tải xong`
-                : 'Đang tắt tự động tải tập tiếp theo'}
+                  ? `Tự động xếp hàng ${safeNextCount} tập kế tiếp (tối đa ${MAX_AUTO_DOWNLOAD_NEXT_COUNT})`
+                  : `Chỉ tự động tải ${safeNextCount} tập kế tiếp sau khi tập đang xem tải xong`
+                : `Đang tắt • Tối đa ${MAX_AUTO_DOWNLOAD_NEXT_COUNT} tập tiếp theo`}
             </Text>
           </View>
           <View style={styles.stepper}>
-            <BouncyButton style={styles.stepBtn} onPress={() => adjustNextCount(-1)}>
+            <BouncyButton
+              disabled={safeNextCount <= 0}
+              style={[styles.stepBtn, safeNextCount <= 0 && styles.stepBtnDisabled]}
+              onPress={() => adjustNextCount(-1)}
+            >
               <Ionicons name="remove" size={15} color="#FFF" />
             </BouncyButton>
-            <Text style={styles.stepValue}>{settings.autoDownloadNextCount}</Text>
-            <BouncyButton style={styles.stepBtn} onPress={() => adjustNextCount(1)}>
+            <Text style={styles.stepValue}>{safeNextCount}</Text>
+            <BouncyButton
+              disabled={safeNextCount >= MAX_AUTO_DOWNLOAD_NEXT_COUNT}
+              style={[
+                styles.stepBtn,
+                safeNextCount >= MAX_AUTO_DOWNLOAD_NEXT_COUNT && styles.stepBtnDisabled,
+              ]}
+              onPress={() => adjustNextCount(1)}
+            >
               <Ionicons name="add" size={15} color="#FFF" />
             </BouncyButton>
           </View>
         </View>
 
         <View style={styles.presetRow}>
-          {[0, 1, 2, 3, 5, 10].map((cnt) => {
-            const active = settings.autoDownloadNextCount === cnt;
+          {[0, 1, 2, 3, 4, 5].map((cnt) => {
+            const active = safeNextCount === cnt;
             return (
               <BouncyButton
                 key={cnt}
@@ -523,6 +569,8 @@ export function OfflineDownloadSheet({
                 activeOpacity={0.8}
                 style={[styles.epRow, isCur && styles.epRowCurrent]}
                 onPress={() => handleEpisodePress(ep)}
+                onLongPress={item?.status === 'completed' ? () => handleEpisodeLongPress(ep) : undefined}
+                delayLongPress={360}
               >
                 <View style={{ flex: 1, paddingRight: 8 }}>
                   <Text style={styles.epName} numberOfLines={1}>
@@ -564,7 +612,8 @@ export function OfflineDownloadSheet({
       visible={visible}
       transparent
       animationType="fade"
-      supportedOrientations={['portrait', 'landscape-left', 'landscape-right']}
+      statusBarTranslucent
+      supportedOrientations={['portrait', 'landscape', 'landscape-left', 'landscape-right']}
       onRequestClose={onClose}
     >
       <View style={styles.modalBackdrop}>
@@ -626,6 +675,7 @@ export function OfflineDownloadSheet({
             </View>
           </GlassSurface>
         </WaterDropPopupView>
+        <AppAlertInlineHost active={visible} />
       </View>
     </Modal>
   );
@@ -770,6 +820,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  stepBtnDisabled: {
+    opacity: 0.36,
+  },
   stepValue: {
     color: '#FFF',
     fontSize: 13,
@@ -818,6 +871,14 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     borderRadius: 18,
     backgroundColor: 'rgba(48, 209, 88, 0.16)',
+  },
+  statusTrashBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: 'rgba(252, 165, 165, 0.16)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   statusBannerDl: {
     paddingHorizontal: 12,

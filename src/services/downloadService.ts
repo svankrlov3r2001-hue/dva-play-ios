@@ -1,5 +1,6 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
+import { MAX_AUTO_DOWNLOAD_NEXT_COUNT } from '../constants/config';
 import {
   EpisodeItem,
   OfflineDownloadItem,
@@ -21,6 +22,7 @@ const OFFLINE_DIR = `${FileSystem.documentDirectory ?? ''}dva_offline/`;
 const INDEX_FILE = `${FileSystem.documentDirectory ?? ''}dva_offline_index.json`;
 
 const CHECK_API_URL = 'https://dangvietanh.io.vn/check_file';
+const TRIGGER_GDRIVE_PRIMARY = 'https://download.s1dangvietanh.io.vn/download_file_gdrive';
 const TRIGGER_DOWNLOAD_API = 'https://dangvietanh.io.vn/download_file_gdrive';
 const SHARD_DOMAINS = ['s1dangvietanh.io.vn'];
 
@@ -74,6 +76,10 @@ const activeResumables = new Map<string, FileSystem.DownloadResumable>();
 const pendingManualRestartIds = new Set<string>();
 const pendingFollowUpByParentId = new Map<string, OfflineEnqueueParams[]>();
 const downloadQueue: string[] = [];
+const prewarmedItemIds = new Set<string>();
+const prewarmCooldownUntil = new Map<string, number>();
+let activePrewarm: { id: string; controller: AbortController } | null = null;
+let currentItemPrewarmGateOpen = false;
 
 export interface OfflineRetentionPolicy {
   storageLimitGb: number;
@@ -228,9 +234,10 @@ export function getCurrentAndNextEpisodes(
 ): EpisodeItem[] {
   const ordered = normalizeEpisodeOrder(episodes);
   if (ordered.length === 0) return [];
+  const clampedNext = Math.max(0, Math.min(MAX_AUTO_DOWNLOAD_NEXT_COUNT, nextCount || 0));
   const curIdx = ordered.findIndex((e) => e.stream_code === currentStreamCode);
-  if (curIdx < 0) return ordered.slice(0, Math.max(1, 1 + Math.max(0, nextCount)));
-  const count = 1 + Math.max(0, nextCount);
+  if (curIdx < 0) return ordered.slice(0, Math.max(1, 1 + clampedNext));
+  const count = 1 + clampedNext;
   return ordered.slice(curIdx, curIdx + count);
 }
 
@@ -775,6 +782,207 @@ interface ResolvedMediaCandidate {
   format: 'hls' | 'mp4';
 }
 
+async function checkServerFileQuick(
+  serverFileKey: string,
+  signal: AbortSignal
+): Promise<any | null> {
+  const cleanKey = String(serverFileKey || '').trim();
+  if (!cleanKey) return null;
+  const fd = new FormData();
+  fd.append('name_movies', cleanKey);
+  const res = await fetch(CHECK_API_URL, {
+    method: 'POST',
+    body: fd as any,
+    signal,
+  });
+  return res.json().catch(() => null);
+}
+
+async function triggerGdriveOnServer(
+  serverFileKey: string,
+  signal: AbortSignal
+): Promise<any | null> {
+  const cleanKey = String(serverFileKey || '').trim();
+  if (!cleanKey) return null;
+  const postTo = async (url: string) => {
+    const fd = new FormData();
+    fd.append('name_movies', cleanKey);
+    const res = await fetch(url, {
+      method: 'POST',
+      body: fd as any,
+      signal,
+    });
+    if (!res.ok) throw new Error(`HTTP_${res.status}`);
+    return res.json().catch(() => null);
+  };
+  try {
+    return await postTo(TRIGGER_GDRIVE_PRIMARY);
+  } catch (err: any) {
+    if (signal.aborted || err?.name === 'AbortError') throw err;
+    return await postTo(TRIGGER_DOWNLOAD_API);
+  }
+}
+
+function abortActivePrewarm(onlyIfId?: string): void {
+  if (!activePrewarm) return;
+  if (onlyIfId && activePrewarm.id !== onlyIfId) return;
+  const target = activePrewarm;
+  activePrewarm = null;
+  try {
+    target.controller.abort();
+  } catch {}
+}
+
+/**
+ * Finds strictly ONE immediate next queued item behind the currently active download.
+ * Never pre-triggers multiple queued episodes at once to protect server load.
+ */
+function findNextPrewarmCandidate(): OfflineDownloadItem | null {
+  if (!currentDownloadingId || !currentItemPrewarmGateOpen) return null;
+  const activeItem = cachedItems.find((it) => it.id === currentDownloadingId);
+  if (!activeItem || (activeItem.status !== 'downloading' && activeItem.status !== 'preparing')) {
+    return null;
+  }
+  for (const qId of downloadQueue) {
+    if (qId === currentDownloadingId) continue;
+    const queuedItem = cachedItems.find((it) => it.id === qId);
+    if (queuedItem && queuedItem.status === 'queued') {
+      return queuedItem;
+    }
+  }
+  return null;
+}
+
+async function runPrewarmForItem(candidate: OfflineDownloadItem): Promise<void> {
+  const controller = new AbortController();
+  activePrewarm = { id: candidate.id, controller };
+  const timeoutTimer = setTimeout(() => {
+    try {
+      controller.abort();
+    } catch {}
+  }, 15000);
+
+  try {
+    let resolvedData: StreamResolvedData | null = null;
+    let resolveSucceeded = false;
+    if (candidate.stream_code) {
+      try {
+        resolvedData = await resolveStreamApi(
+          candidate.stream_code,
+          candidate.videos_id,
+          controller.signal
+        );
+        resolveSucceeded = true;
+      } catch (err: any) {
+        if (controller.signal.aborted || err?.name === 'AbortError') return;
+      }
+    }
+
+    if (controller.signal.aborted) return;
+    const currentHead = findNextPrewarmCandidate();
+    if (!currentHead || currentHead.id !== candidate.id) return;
+
+    const serverMovieTitle =
+      resolvedData?.server_movie_title || candidate.server_movie_title || '';
+    const serverFileKey = resolveSucceeded
+      ? resolvedData?.server_file_key || ''
+      : candidate.server_file_key ||
+        (serverMovieTitle
+          ? candidate.episode_number && candidate.episode_number > 0
+            ? `${serverMovieTitle}.Tập.${String(candidate.episode_number).padStart(2, '0')}`
+            : serverMovieTitle
+          : '');
+
+    if (!serverFileKey) {
+      prewarmedItemIds.add(candidate.id);
+      return;
+    }
+
+    if (
+      serverFileKey !== candidate.server_file_key ||
+      (serverMovieTitle && serverMovieTitle !== candidate.server_movie_title)
+    ) {
+      const latestBeforeKey = cachedItems.find((it) => it.id === candidate.id);
+      if (latestBeforeKey && latestBeforeKey.status === 'queued') {
+        updateItemInMemory(candidate.id, {
+          server_file_key: serverFileKey,
+          server_movie_title: serverMovieTitle || latestBeforeKey.server_movie_title,
+        });
+      }
+    }
+
+    const checkData = await checkServerFileQuick(serverFileKey, controller.signal).catch(
+      () => null
+    );
+    if (controller.signal.aborted) return;
+
+    const latestAfterCheck = cachedItems.find((it) => it.id === candidate.id);
+    if (!latestAfterCheck || latestAfterCheck.status !== 'queued') return;
+
+    if (checkData && (checkData.status === 'success' || checkData.status === 'progress')) {
+      prewarmedItemIds.add(candidate.id);
+      prewarmCooldownUntil.delete(candidate.id);
+      updateItemInMemory(candidate.id, {
+        status_text:
+          checkData.status === 'success'
+            ? 'Máy chủ đã sẵn sàng chờ tải...'
+            : `Máy chủ đang xử lý trước (${checkData.progress || '...'})...`,
+      });
+      return;
+    }
+
+    const trigData = await triggerGdriveOnServer(serverFileKey, controller.signal).catch(
+      () => null
+    );
+    if (controller.signal.aborted) return;
+
+    const st = String(trigData?.status || '');
+    if (st === 'success' || st === 'downloading' || st === 'file đã tồn tại' || st === 'locked') {
+      prewarmedItemIds.add(candidate.id);
+      prewarmCooldownUntil.delete(candidate.id);
+      const latestAfterTrig = cachedItems.find((it) => it.id === candidate.id);
+      if (latestAfterTrig && latestAfterTrig.status === 'queued') {
+        updateItemInMemory(candidate.id, {
+          status_text:
+            st === 'file đã tồn tại'
+              ? 'Máy chủ đã sẵn sàng chờ tải...'
+              : 'Đang chuẩn bị trước trên máy chủ...',
+        });
+      }
+    } else {
+      // Server busy or temporary error: wait before allowing another prewarm attempt
+      prewarmCooldownUntil.set(candidate.id, Date.now() + 15000);
+    }
+  } finally {
+    clearTimeout(timeoutTimer);
+    if (activePrewarm?.id === candidate.id && activePrewarm.controller === controller) {
+      activePrewarm = null;
+    }
+  }
+}
+
+function scheduleNextQueuePrewarm(): void {
+  const candidate = findNextPrewarmCandidate();
+  if (!candidate) {
+    abortActivePrewarm();
+    return;
+  }
+  if (activePrewarm && activePrewarm.id !== candidate.id) {
+    abortActivePrewarm();
+  }
+  if (activePrewarm?.id === candidate.id) {
+    return;
+  }
+  if (prewarmedItemIds.has(candidate.id)) {
+    return;
+  }
+  const cooldownUntil = prewarmCooldownUntil.get(candidate.id) || 0;
+  if (cooldownUntil > Date.now()) {
+    return;
+  }
+  void runPrewarmForItem(candidate);
+}
+
 async function resolveDownloadCandidates(
   item: OfflineDownloadItem,
   signal: AbortSignal
@@ -824,14 +1032,7 @@ async function resolveDownloadCandidates(
 
     while (!serverReady && !signal.aborted && Date.now() - startPollMs < maxWaitMs) {
       try {
-        const fd = new FormData();
-        fd.append('name_movies', serverFileKey);
-        const checkRes = await fetch(CHECK_API_URL, {
-          method: 'POST',
-          body: fd as any,
-          signal,
-        });
-        const resData = await checkRes.json().catch(() => null);
+        const resData = await checkServerFileQuick(serverFileKey, signal);
         if (resData && resData.status === 'success') {
           serverReady = true;
           serverFormatHint =
@@ -839,29 +1040,30 @@ async function resolveDownloadCandidates(
           if (resData.total_seconds && Number(resData.total_seconds) > 0) {
             serverDurationSec = Math.round(Number(resData.total_seconds));
           }
+          currentItemPrewarmGateOpen = true;
+          scheduleNextQueuePrewarm();
           break;
         }
         if (resData && resData.status === 'progress') {
+          currentItemPrewarmGateOpen = true;
+          scheduleNextQueuePrewarm();
           updateItemInMemory(item.id, {
             status: 'preparing',
             status_text: `Máy chủ đang xử lý: ${resData.progress || '...'}`,
           });
         } else if (!triggerExhausted && triggeredCount < 3) {
           try {
-            const tfd = new FormData();
-            tfd.append('name_movies', serverFileKey);
-            const trigRes = await fetch(TRIGGER_DOWNLOAD_API, {
-              method: 'POST',
-              body: tfd as any,
-              signal,
-            });
-            const trigData = await trigRes.json().catch(() => null);
+            const trigData = await triggerGdriveOnServer(serverFileKey, signal);
             const st = trigData?.status || 'failed';
-            if (st !== 'success' && st !== 'locked') {
+            if (st === 'success' || st === 'downloading' || st === 'file đã tồn tại' || st === 'locked') {
+              currentItemPrewarmGateOpen = true;
+              scheduleNextQueuePrewarm();
+            } else {
               triggeredCount++;
               if (triggeredCount >= 3) triggerExhausted = true;
             }
-          } catch {
+          } catch (trigErr: any) {
+            if (signal.aborted || trigErr?.name === 'AbortError') throw createAbortError();
             triggeredCount++;
             if (triggeredCount >= 3) triggerExhausted = true;
           }
@@ -1589,6 +1791,11 @@ async function processSingleItem(id: string): Promise<void> {
   const item = cachedItems.find((i) => i.id === id);
   if (!item) return;
 
+  abortActivePrewarm(id);
+  prewarmedItemIds.delete(id);
+  prewarmCooldownUntil.delete(id);
+  currentItemPrewarmGateOpen = false;
+
   const controller = new AbortController();
   activeControllers.set(id, controller);
   currentDownloadingId = id;
@@ -1656,6 +1863,8 @@ async function processSingleItem(id: string): Promise<void> {
         skip_intro_sec: resolvedData?.skip_intro_sec ?? item.skip_intro_sec ?? 0,
         end_credits_sec: resolvedData?.end_credits_sec ?? item.end_credits_sec ?? 0,
       });
+      currentItemPrewarmGateOpen = true;
+      scheduleNextQueuePrewarm();
 
       try {
         let completedMedia;
@@ -1821,6 +2030,7 @@ async function processSingleItem(id: string): Promise<void> {
     activeResumables.delete(id);
     if (currentDownloadingId === id) {
       currentDownloadingId = null;
+      currentItemPrewarmGateOpen = false;
     }
   }
 }
@@ -1845,6 +2055,8 @@ async function processDownloadQueue(): Promise<void> {
     }
   } finally {
     isProcessingQueue = false;
+    currentItemPrewarmGateOpen = false;
+    abortActivePrewarm();
     syncBackgroundDownloadGuard();
   }
 }
@@ -1930,11 +2142,14 @@ export async function enqueueOfflineDownload(
   };
 
   await persistIndex([newItem, ...cachedItems.filter((i) => i.id !== id)]);
+  prewarmedItemIds.delete(id);
+  prewarmCooldownUntil.delete(id);
   if (!downloadQueue.includes(id)) {
     downloadQueue.push(id);
   }
   syncBackgroundDownloadGuard();
   void processDownloadQueue();
+  scheduleNextQueuePrewarm();
   return newItem;
 }
 
@@ -1958,7 +2173,9 @@ export async function setPendingFollowUpDownloads(
   followUps: OfflineEnqueueParams[]
 ): Promise<void> {
   if (!parentId) return;
-  const validFollowUps = followUps.filter((r) => Boolean(r.stream_code));
+  const validFollowUps = followUps
+    .filter((r) => Boolean(r.stream_code))
+    .slice(0, MAX_AUTO_DOWNLOAD_NEXT_COUNT);
   if (validFollowUps.length === 0) {
     pendingFollowUpByParentId.delete(parentId);
     return;
@@ -1997,6 +2214,9 @@ export async function pauseOfflineDownload(id: string): Promise<void> {
   await loadOfflineDownloads();
   const qIdx = downloadQueue.indexOf(id);
   if (qIdx >= 0) downloadQueue.splice(qIdx, 1);
+  abortActivePrewarm(id);
+  prewarmedItemIds.delete(id);
+  prewarmCooldownUntil.delete(id);
 
   updateItemInMemory(id, { status: 'paused', status_text: 'Đã tạm dừng' }, true);
 
@@ -2007,6 +2227,12 @@ export async function pauseOfflineDownload(id: string): Promise<void> {
     try {
       await res.pauseAsync();
     } catch {}
+  }
+  if (currentDownloadingId === id) {
+    currentItemPrewarmGateOpen = false;
+    abortActivePrewarm();
+  } else {
+    scheduleNextQueuePrewarm();
   }
   syncBackgroundDownloadGuard();
 }
@@ -2024,6 +2250,8 @@ export async function resumeOfflineDownload(id: string): Promise<void> {
     return;
   }
 
+  prewarmedItemIds.delete(id);
+  prewarmCooldownUntil.delete(id);
   updateItemInMemory(
     id,
     { status: 'queued', status_text: 'Đang tiếp tục tải...', error_message: undefined },
@@ -2034,6 +2262,7 @@ export async function resumeOfflineDownload(id: string): Promise<void> {
   }
   syncBackgroundDownloadGuard();
   void processDownloadQueue();
+  scheduleNextQueuePrewarm();
 }
 
 export async function restartOfflineDownload(id: string): Promise<void> {
@@ -2042,10 +2271,14 @@ export async function restartOfflineDownload(id: string): Promise<void> {
   const item = cachedItems.find((i) => i.id === id);
   if (!item || item.status === 'completed') return;
 
+  prewarmedItemIds.delete(id);
+  prewarmCooldownUntil.delete(id);
   const isRunning =
     activeControllers.has(id) || activeResumables.has(id) || currentDownloadingId === id;
   if (isRunning) {
     pendingManualRestartIds.add(id);
+    currentItemPrewarmGateOpen = false;
+    abortActivePrewarm();
     updateItemInMemory(id, {
       status: 'preparing',
       status_text: 'Đang khởi động lại liên kết tải...',
@@ -2077,6 +2310,7 @@ export async function restartOfflineDownload(id: string): Promise<void> {
   }
   syncBackgroundDownloadGuard();
   void processDownloadQueue();
+  scheduleNextQueuePrewarm();
 }
 
 export async function enforceOfflineRetentionPolicy(
@@ -2150,6 +2384,9 @@ export async function removeOfflineDownload(id: string): Promise<void> {
   pendingFollowUpByParentId.delete(id);
   const qIdx = downloadQueue.indexOf(id);
   if (qIdx >= 0) downloadQueue.splice(qIdx, 1);
+  abortActivePrewarm(id);
+  prewarmedItemIds.delete(id);
+  prewarmCooldownUntil.delete(id);
 
   const ctrl = activeControllers.get(id);
   if (ctrl) ctrl.abort();
@@ -2175,6 +2412,12 @@ export async function removeOfflineDownload(id: string): Promise<void> {
     }
   }
   await persistIndex(cachedItems.filter((i) => i.id !== id));
+  if (currentDownloadingId === id) {
+    currentItemPrewarmGateOpen = false;
+    abortActivePrewarm();
+  } else {
+    scheduleNextQueuePrewarm();
+  }
   syncBackgroundDownloadGuard();
 }
 
@@ -2186,6 +2429,10 @@ export async function clearAllOfflineDownloads(): Promise<void> {
   await loadOfflineDownloads();
   pendingFollowUpByParentId.clear();
   downloadQueue.length = 0;
+  currentItemPrewarmGateOpen = false;
+  abortActivePrewarm();
+  prewarmedItemIds.clear();
+  prewarmCooldownUntil.clear();
   for (const [, ctrl] of activeControllers) {
     ctrl.abort();
   }

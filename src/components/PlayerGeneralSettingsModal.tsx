@@ -13,7 +13,7 @@ import {
 import { Feather, Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { showAppAlert } from './AppAlertModal';
+import { AppAlertInlineHost, showAppAlert } from './AppAlertModal';
 import { BouncyButton } from './BouncyButton';
 import { GlassSurface, WaterDropPopupView } from './GlassSurface';
 import { COLORS } from '../constants/config';
@@ -699,6 +699,7 @@ export function PlayerGeneralSettingsModal({
             </View>
           </GlassSurface>
         </WaterDropPopupView>
+        <AppAlertInlineHost active={visible} />
       </View>
     </Modal>
   );

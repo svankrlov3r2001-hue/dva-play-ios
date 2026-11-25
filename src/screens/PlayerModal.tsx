@@ -45,7 +45,7 @@ import {
   WaterDropToastPayload,
 } from '../components/WaterDropToastBanner';
 import { CastModal, CastMoviePayload } from './CastModal';
-import { COLORS, GLASS_SHADOW } from '../constants/config';
+import { COLORS, GLASS_SHADOW, MAX_AUTO_DOWNLOAD_NEXT_COUNT } from '../constants/config';
 import { useAuth } from '../context/AuthContext';
 import { useSettings } from '../context/SettingsContext';
 import {
@@ -1242,7 +1242,9 @@ export function PlayerModal({
     if (
       params?.offlineItem &&
       params.offlineItem.stream_code === activeStreamCode &&
-      (!params.videosId || !params.offlineItem.videos_id || params.offlineItem.videos_id === params.videosId)
+      (!params.videosId || !params.offlineItem.videos_id || params.offlineItem.videos_id === params.videosId) &&
+      (isOfflineOnlyMode ||
+        offlineItems.some((i) => i.id === params.offlineItem!.id && i.status === 'completed'))
     ) {
       return params.offlineItem;
     }
@@ -1251,7 +1253,7 @@ export function PlayerModal({
       videosId: params?.videosId,
       episodeId: params?.episodeId,
     });
-  }, [params?.offlineItem, params?.videosId, params?.episodeId, activeStreamCode, offlineItems]);
+  }, [params?.offlineItem, params?.videosId, params?.episodeId, activeStreamCode, isOfflineOnlyMode, offlineItems]);
 
   const downloadingOfflineItem = useMemo(() => {
     return (
@@ -1601,6 +1603,30 @@ export function PlayerModal({
     playServerOnActiveLayer,
     showToast,
   ]);
+
+  // If the user deletes the currently-playing offline episode while online, remove Phiên 99 & fail over cleanly
+  useEffect(() => {
+    if (!visible || isOfflineOnlyMode || matchedOfflineItem) return;
+    if (!serversRef.current.some((s) => s.id === '99')) return;
+    const without99 = serversRef.current.filter((s) => s.id !== '99');
+    serversRef.current = without99;
+    setServers(without99);
+    if (activeServerIdRef.current === '99') {
+      const nextSrv = selectOptimalServer(without99, {
+        preferOffline: false,
+        watchPosSec: currentTimeRef.current,
+      });
+      if (nextSrv) {
+        void playServerOnActiveLayer(nextSrv, {
+          seekToSec: currentTimeRef.current,
+          serverFileKey: resolvedRef.current?.server_file_key || '',
+          vnUrl: vnSubUrlRef.current,
+          enUrl: enSubUrlRef.current,
+          title: resolvedRef.current?.title || paramsRef.current?.title || '',
+        });
+      }
+    }
+  }, [visible, isOfflineOnlyMode, matchedOfflineItem, playServerOnActiveLayer]);
 
   // Start or restart polling for Phiên 11 / Phiên 36 readiness
   const startCheckFilePolling = useCallback(
@@ -3702,7 +3728,10 @@ export function PlayerModal({
       return;
     }
     const wantCurrent = settings.autoDownloadCurrentOnWatch;
-    const rawNextCount = Math.max(0, settings.autoDownloadNextCount || 0);
+    const rawNextCount = Math.max(
+      0,
+      Math.min(MAX_AUTO_DOWNLOAD_NEXT_COUNT, settings.autoDownloadNextCount || 0)
+    );
     if (!wantCurrent && rawNextCount === 0) {
       if (lastAutoFollowUpParentIdRef.current) {
         clearPendingFollowUpDownloads(lastAutoFollowUpParentIdRef.current);

@@ -1,5 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import * as FileSystem from 'expo-file-system/legacy';
+import { MAX_AUTO_DOWNLOAD_NEXT_COUNT } from '../constants/config';
 import { AppSettings } from '../types/models';
 
 const SETTINGS_FILE = `${FileSystem.documentDirectory ?? ''}dva_ios_settings.json`;
@@ -105,6 +106,13 @@ function syncDerivedContrastFields(
   if ('subShowVi' in patch || 'subShowEn' in patch) {
     next.subtitleEnabled = Boolean(next.subShowVi || next.subShowEn);
   }
+  next.autoDownloadNextCount = Math.max(
+    0,
+    Math.min(
+      MAX_AUTO_DOWNLOAD_NEXT_COUNT,
+      Math.round(Number(next.autoDownloadNextCount) || 0)
+    )
+  );
   return next;
 }
 

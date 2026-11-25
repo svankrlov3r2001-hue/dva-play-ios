@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
+import { AppAlertInlineHost } from './AppAlertModal';
 import { BouncyButton } from './BouncyButton';
 import { GlassSurface, WaterDropPopupView } from './GlassSurface';
 import { APP_VERSION, COLORS } from '../constants/config';
@@ -169,6 +170,7 @@ export function AppUpdateModal({ visible, manifest, onDismiss }: AppUpdateModalP
           </View>
         </GlassSurface>
         </WaterDropPopupView>
+        <AppAlertInlineHost active={visible && Boolean(manifest)} />
       </View>
     </Modal>
   );

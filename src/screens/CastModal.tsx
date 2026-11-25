@@ -19,7 +19,7 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AmbientAppBackground } from '../components/AmbientAppBackground';
-import { showAppAlert } from '../components/AppAlertModal';
+import { AppAlertInlineHost, showAppAlert } from '../components/AppAlertModal';
 import { BouncyButton } from '../components/BouncyButton';
 import { GlassSurface, WaterDropPopupView } from '../components/GlassSurface';
 import { COLORS } from '../constants/config';
@@ -686,6 +686,7 @@ export function CastModal({
               </GlassSurface>
             </WaterDropPopupView>
           </KeyboardAvoidingView>
+          <AppAlertInlineHost active={visible} />
         </View>
       </Modal>
     );

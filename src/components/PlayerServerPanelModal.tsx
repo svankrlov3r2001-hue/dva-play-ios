@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { Feather, Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
+import { AppAlertInlineHost } from './AppAlertModal';
 import { BouncyButton } from './BouncyButton';
 import { GlassSurface, WaterDropPopupView } from './GlassSurface';
 import {
@@ -297,6 +298,7 @@ export function PlayerServerPanelModal({
           </View>
         </GlassSurface>
         </WaterDropPopupView>
+        <AppAlertInlineHost active={visible} />
       </View>
     </Modal>
   );

@@ -14,6 +14,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { AppAlertInlineHost } from './AppAlertModal';
 import { BouncyButton } from './BouncyButton';
 import { GlassSurface, WaterDropPopupView } from './GlassSurface';
 import { COLORS } from '../constants/config';
@@ -706,6 +707,7 @@ export function PlayerEpisodeListModal({
           ) : null}
         </GlassSurface>
         </WaterDropPopupView>
+        <AppAlertInlineHost active={visible} />
       </View>
     </Modal>
   );

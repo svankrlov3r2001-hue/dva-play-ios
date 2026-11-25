@@ -205,11 +205,12 @@ export async function fetchLibraryApi(): Promise<{
 
 export async function resolveStreamApi(
   streamCode: string,
-  videosId?: number
+  videosId?: number,
+  signal?: AbortSignal
 ): Promise<StreamResolvedData> {
   const qs = new URLSearchParams({ stream_code: streamCode });
   if (videosId) qs.append('videos_id', String(videosId));
-  return apiRequest(`stream_resolve.php?${qs.toString()}`);
+  return apiRequest(`stream_resolve.php?${qs.toString()}`, signal ? { signal } : {});
 }
 
 export async function saveWatchProgressApi(payload: {
