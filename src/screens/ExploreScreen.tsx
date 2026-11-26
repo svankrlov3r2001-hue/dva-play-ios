@@ -34,11 +34,13 @@ const TYPE_OPTIONS = [
   { key: 'kids', label: 'Thiếu nhi' },
 ];
 
+const DEFAULT_SORT = 'year';
+
 const SORT_OPTIONS = [
+  { key: 'year', label: 'Năm mới nhất' },
   { key: 'latest', label: 'Mới cập nhật' },
   { key: 'views', label: 'Xem nhiều' },
   { key: 'imdb', label: 'IMDb cao' },
-  { key: 'year', label: 'Năm mới' },
   { key: 'random', label: 'Ngẫu nhiên' },
 ];
 
@@ -56,13 +58,13 @@ export function ExploreScreen({ onOpenPreview }: ExploreScreenProps) {
   const [type, setType] = useState('all');
   const [genre, setGenre] = useState('');
   const [country, setCountry] = useState('');
-  const [sort, setSort] = useState('latest');
+  const [sort, setSort] = useState(DEFAULT_SORT);
 
   const [filterSheetOpen, setFilterSheetOpen] = useState(false);
   const [draftType, setDraftType] = useState('all');
   const [draftGenre, setDraftGenre] = useState('');
   const [draftCountry, setDraftCountry] = useState('');
-  const [draftSort, setDraftSort] = useState('latest');
+  const [draftSort, setDraftSort] = useState(DEFAULT_SORT);
   const sheetAnim = useRef(new Animated.Value(0)).current;
 
   const [genres, setGenres] = useState<FilterOption[]>([]);
@@ -159,7 +161,7 @@ export function ExploreScreen({ onOpenPreview }: ExploreScreenProps) {
     setDraftType('all');
     setDraftGenre('');
     setDraftCountry('');
-    setDraftSort('latest');
+    setDraftSort(DEFAULT_SORT);
   };
 
   const applyDraftFilters = () => {
@@ -181,12 +183,12 @@ export function ExploreScreen({ onOpenPreview }: ExploreScreenProps) {
 
   const clearAllActiveFilters = () => {
     Haptics.selectionAsync();
-    if (type !== 'all' || genre !== '' || country !== '' || sort !== 'latest') {
+    if (type !== 'all' || genre !== '' || country !== '' || sort !== DEFAULT_SORT) {
       setLoading(true);
       setType('all');
       setGenre('');
       setCountry('');
-      setSort('latest');
+      setSort(DEFAULT_SORT);
     }
   };
 
@@ -194,7 +196,7 @@ export function ExploreScreen({ onOpenPreview }: ExploreScreenProps) {
     (type !== 'all' ? 1 : 0) +
     (genre !== '' ? 1 : 0) +
     (country !== '' ? 1 : 0) +
-    (sort !== 'latest' ? 1 : 0);
+    (sort !== DEFAULT_SORT ? 1 : 0);
 
   const activeSummaryTags = useMemo(() => {
     const tags: string[] = [];
@@ -210,7 +212,7 @@ export function ExploreScreen({ onOpenPreview }: ExploreScreenProps) {
       const c = countries.find((o) => String(o.id) === country);
       if (c) tags.push(c.name);
     }
-    if (sort !== 'latest') {
+    if (sort !== DEFAULT_SORT) {
       const s = SORT_OPTIONS.find((o) => o.key === sort);
       if (s) tags.push(s.label);
     }

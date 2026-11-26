@@ -3,9 +3,28 @@ import { StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { COLORS } from '../constants/config';
-import { MovieItem } from '../types/models';
+import { MovieItem, ServerEpisodeStatus } from '../types/models';
 import { BouncyButton } from './BouncyButton';
 import { LazyImage } from './LazyImage';
+
+function getServerEpisodeBadgeStyle(status?: ServerEpisodeStatus) {
+  if (status === 'incomplete') {
+    return {
+      box: styles.epStatusIncomplete,
+      text: styles.epStatusTextLight,
+    };
+  }
+  if (status === 'upcoming') {
+    return {
+      box: styles.epStatusUpcoming,
+      text: styles.epStatusTextDark,
+    };
+  }
+  return {
+    box: styles.epStatusComplete,
+    text: styles.epStatusTextLight,
+  };
+}
 
 interface MovieCardProps {
   item: MovieItem;
@@ -301,7 +320,16 @@ export function MovieCard({
           >
             <Ionicons name="close" size={14} color="#FFF" />
           </BouncyButton>
-        ) : null}
+        ) : item.server_episode_label ? (() => {
+          const epBadge = getServerEpisodeBadgeStyle(item.server_episode_status);
+          return (
+            <View style={[styles.epStatusBadge, epBadge.box]}>
+              <Text style={[styles.epStatusBadgeText, epBadge.text]} numberOfLines={1}>
+                {item.server_episode_label}
+              </Text>
+            </View>
+          );
+        })() : null}
         <View style={[styles.floatingSplitBadgesCenter, watchedPct > 0 && { bottom: 12 }]}>
           <View style={styles.splitSubHalf}>
             <Text style={styles.splitPillText}>P.Đề</Text>
@@ -357,6 +385,39 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 5,
+  },
+  epStatusBadge: {
+    position: 'absolute',
+    top: 7,
+    right: 7,
+    zIndex: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 7,
+    paddingVertical: 2.5,
+    maxWidth: '88%',
+  },
+  epStatusIncomplete: {
+    backgroundColor: 'rgba(220, 38, 38, 0.88)',
+    borderColor: 'rgba(255, 130, 130, 0.45)',
+  },
+  epStatusComplete: {
+    backgroundColor: 'rgba(0, 0, 0, 0.62)',
+    borderColor: 'rgba(255, 255, 255, 0.24)',
+  },
+  epStatusUpcoming: {
+    backgroundColor: 'rgba(250, 204, 21, 0.94)',
+    borderColor: 'rgba(254, 240, 138, 0.78)',
+  },
+  epStatusBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  epStatusTextLight: {
+    color: '#FFFFFF',
+  },
+  epStatusTextDark: {
+    color: '#18181B',
   },
   landscapeCard: {
     marginRight: 14,

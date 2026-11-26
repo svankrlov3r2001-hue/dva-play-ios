@@ -13,6 +13,7 @@ import {
   View,
 } from 'react-native';
 import { Feather, Ionicons } from '@expo/vector-icons';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as Haptics from 'expo-haptics';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -76,6 +77,10 @@ const QUALITY_OPTIONS: ('auto' | '1080p' | '720p' | '360p')[] = [
 
 const STORAGE_LIMIT_GB_OPTIONS = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
 
+function formatGbCompact(gb: number): string {
+  return gb >= 10 ? String(Math.round(gb * 10) / 10).replace(/\.0$/, '') : gb.toFixed(1);
+}
+
 const AUTO_DELETE_DAY_OPTIONS: { days: number; label: string }[] = [
   { days: 3, label: '3 ngày' },
   { days: 7, label: '7 ngày' },
@@ -110,6 +115,7 @@ export function AccountSettingsScreen({
   const { user, logout, verifyBiometricsForEnable } = useAuth();
   const { settings, updateSetting } = useSettings();
   const [offlineItems, setOfflineItems] = useState<OfflineDownloadItem[]>([]);
+  const [freeDiskBytes, setFreeDiskBytes] = useState<number | null>(null);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [manifest, setManifest] = useState<VersionManifest | null>(null);
   const [directUpdateOpen, setDirectUpdateOpen] = useState(false);
@@ -153,6 +159,24 @@ export function AccountSettingsScreen({
       .catch(() => setOfflineItems([]));
     return subscribeOfflineDownloads(setOfflineItems);
   }, []);
+
+  useEffect(() => {
+    if (!visible) return;
+    let active = true;
+    (async () => {
+      try {
+        const freeBytes = await FileSystem.getFreeDiskStorageAsync();
+        if (active && typeof freeBytes === 'number' && Number.isFinite(freeBytes) && freeBytes >= 0) {
+          setFreeDiskBytes(freeBytes);
+        }
+      } catch {
+        // ignore free disk lookup failure
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [visible, offlineItems]);
 
   useEffect(() => {
     return subscribeProxyConfig(setProxyCfg);
@@ -445,6 +469,9 @@ export function AccountSettingsScreen({
   const totalBytes = offlineItems.reduce((acc, i) => acc + (i.size_bytes || 0), 0);
   const storageLimitGb = Math.max(10, Math.min(100, settings.offlineStorageLimitGb || 20));
   const storageLimitBytes = storageLimitGb * 1024 * 1024 * 1024;
+  const freeDiskGb =
+    freeDiskBytes !== null && freeDiskBytes >= 0 ? freeDiskBytes / (1024 * 1024 * 1024) : null;
+  const isLimitExceedingFree = freeDiskGb !== null && storageLimitGb > freeDiskGb;
   const storageUsedPct = Math.min(
     100,
     totalBytes > 0 ? Math.max(2, Math.round((totalBytes / storageLimitBytes) * 100)) : 0
@@ -760,11 +787,30 @@ export function AccountSettingsScreen({
               <View style={{ flex: 1 }}>
                 <Text style={styles.settingLabel}>Giới hạn dung lượng tối đa</Text>
                 <Text style={styles.settingDesc}>
-                  Tự dọn phim xem cũ nhất khi vượt quá {storageLimitGb} GB
+                  {freeDiskGb !== null
+                    ? `${storageLimitGb} GB / ${formatGbCompact(freeDiskGb)} GB (Còn khả dụng) • Tự dọn phim cũ nhất khi vượt giới hạn`
+                    : `Tự dọn phim xem cũ nhất khi vượt quá ${storageLimitGb} GB`}
                 </Text>
               </View>
-              <Text style={styles.rightValuePill}>{storageLimitGb} GB</Text>
+              <Text
+                style={[
+                  styles.rightValuePill,
+                  isLimitExceedingFree && styles.rightValuePillWarning,
+                ]}
+              >
+                {freeDiskGb !== null
+                  ? `${storageLimitGb} GB / ${formatGbCompact(freeDiskGb)} GB`
+                  : `${storageLimitGb} GB`}
+              </Text>
             </View>
+            {isLimitExceedingFree && freeDiskGb !== null ? (
+              <View style={styles.storageWarningBox}>
+                <Ionicons name="warning-outline" size={16} color="#FDE68A" />
+                <Text style={styles.storageWarningTxt}>
+                  {`Cảnh báo: Mức ${storageLimitGb} GB cao hơn dung lượng còn khả dụng trên máy (${formatGbCompact(freeDiskGb)} GB). Hãy giảm giới hạn hoặc giải phóng bộ nhớ.`}
+                </Text>
+              </View>
+            ) : null}
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
@@ -778,6 +824,22 @@ export function AccountSettingsScreen({
                     activeOpacity={0.78}
                     style={[styles.chipPill, active && styles.chipPillActive]}
                     onPress={() => {
+                      if (freeDiskGb !== null && gb > freeDiskGb) {
+                        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+                        showAppAlert(
+                          'Dung lượng khả dụng không đủ',
+                          `Bạn đang chọn giới hạn ${gb} GB nhưng bộ nhớ máy chỉ còn khả dụng ${formatGbCompact(freeDiskGb)} GB. Tải quá mức khả dụng có thể gây lỗi lưu phim.`,
+                          [
+                            { text: 'Hủy', style: 'cancel' },
+                            {
+                              text: `Vẫn đặt ${gb} GB`,
+                              style: 'destructive',
+                              onPress: () => updateOfflinePolicyAndEnforce({ offlineStorageLimitGb: gb }),
+                            },
+                          ]
+                        );
+                        return;
+                      }
                       Haptics.selectionAsync();
                       updateOfflinePolicyAndEnforce({ offlineStorageLimitGb: gb });
                     }}
@@ -1674,6 +1736,29 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
     borderRadius: 99,
     overflow: 'hidden',
+  },
+  rightValuePillWarning: {
+    color: '#FDE68A',
+    backgroundColor: 'rgba(245, 158, 11, 0.24)',
+  },
+  storageWarningBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginLeft: 42,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 12,
+    backgroundColor: 'rgba(245, 158, 11, 0.16)',
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.35)',
+  },
+  storageWarningTxt: {
+    flex: 1,
+    color: '#FDE68A',
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '600',
   },
   cleanPillBtn: {
     paddingHorizontal: 11,

@@ -582,12 +582,12 @@ export function NativeSubtitleOverlay({
   }
 
   const autoLayout = computeAutoSubtitleLayout(winHeight, subHighRaw);
-  const effectiveFontStep = settings.subAutoLayout ? autoLayout.fontStep : settings.subFontSizeStep || 10;
+  const effectiveFontStep = settings.subAutoLayout ? autoLayout.fontStep : settings.subFontSizeStep || 18;
   const effectivePosPct = settings.subAutoLayout ? autoLayout.positionPct : settings.subPositionPct ?? 12;
 
-  // Recalibrated for 1..20 scale (default 10 -> ~23pt on 390pt landscape iPhone)
+  // Recalibrated for 1..20 scale (default 18)
   const autoScaleRatio = Math.min(1.35, Math.max(0.78, (winHeight > 0 ? winHeight : 390) / 390));
-  const clampedFontStep = Math.min(20, Math.max(1, Math.round(effectiveFontStep || 10)));
+  const clampedFontStep = Math.min(20, Math.max(1, Math.round(effectiveFontStep || 18)));
   const primaryFontSize = Math.min(
     46,
     Math.max(12, Math.round((11 + clampedFontStep * 1.2) * autoScaleRatio))

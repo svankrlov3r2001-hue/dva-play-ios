@@ -16,6 +16,8 @@ export interface AuthCookies {
   pass_val: string;
 }
 
+export type ServerEpisodeStatus = 'complete' | 'incomplete' | 'upcoming' | 'available' | '';
+
 export interface MovieItem {
   videos_id: number;
   title: string;
@@ -31,6 +33,10 @@ export interface MovieItem {
   is_tvseries: number;
   episode_badge?: string;
   season_label?: string;
+  server_episodes_count?: number;
+  total_episodes_count?: number;
+  server_episode_status?: ServerEpisodeStatus;
+  server_episode_label?: string;
   genres?: string[];
   countries?: string[];
   poster_url: string;
@@ -146,6 +152,10 @@ export interface MovieDetail {
   video_quality: string;
   imdb_rating: string;
   is_tvseries: number;
+  server_episodes_count?: number;
+  total_episodes_count?: number;
+  server_episode_status?: ServerEpisodeStatus;
+  server_episode_label?: string;
   total_rating: number;
   total_view: number;
   poster_url: string;
@@ -176,6 +186,10 @@ export interface PopupInfo {
   release: string;
   video_quality: string;
   is_tvseries: number;
+  server_episodes_count?: number;
+  total_episodes_count?: number;
+  server_episode_status?: ServerEpisodeStatus;
+  server_episode_label?: string;
   in_wishlist: boolean;
   videos_se: number | string;
   episode_id: number;
@@ -210,6 +224,10 @@ export interface StreamMovieContext {
   video_quality?: string;
   imdb_rating?: string;
   is_tvseries?: number;
+  server_episodes_count?: number;
+  total_episodes_count?: number;
+  server_episode_status?: ServerEpisodeStatus;
+  server_episode_label?: string;
   poster_url?: string;
   thumbnail_url?: string;
   in_wishlist?: boolean;

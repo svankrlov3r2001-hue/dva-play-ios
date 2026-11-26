@@ -82,6 +82,7 @@ import {
   getCachedOfflineMediaServerPort,
   restartOfflineMediaServer,
   setNativePipSubtitleCues,
+  setNativeVideoPlaybackActive,
 } from '../services/localMediaServer';
 import {
   probeConnectivity,
@@ -1015,6 +1016,7 @@ export function PlayerModal({
   const detailEpisodesVideosIdRef = useRef<number>(0);
   const lastLoadedVideosIdRef = useRef<number>(0);
   const userExplicitlyPausedRef = useRef(false);
+  const pendingAutoPlayAfterReplaceRef = useRef(false);
   const fgStallTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeStreamCodeRef = useRef('');
   activeStreamCodeRef.current = activeStreamCode;
@@ -1455,11 +1457,26 @@ export function PlayerModal({
     return () => clearInterval(iv);
   }, [visible, activeStreamCode, isPlaying, persistCurrentProgress]);
 
+  // Notify native background download guard while video modal is active so AVAudioSession isn't deactivated
+  useEffect(() => {
+    setNativeVideoPlaybackActive(Boolean(visible));
+    return () => {
+      setNativeVideoPlaybackActive(false);
+    };
+  }, [visible]);
+
   // Load media URL into active AVPlayer
   const playServerOnActiveLayer = useCallback(
     async (
       srv: ServerRuntimeState,
-      opts: { seekToSec?: number; serverFileKey: string; vnUrl: string; enUrl: string; title: string }
+      opts: {
+        seekToSec?: number;
+        serverFileKey: string;
+        vnUrl: string;
+        enUrl: string;
+        title: string;
+        autoResume?: boolean;
+      }
     ) => {
       cancelEpisodeCrossfade();
       const player = getActivePlayer();
@@ -1504,6 +1521,12 @@ export function PlayerModal({
       lastTimeAdvanceRef.current = null;
       setIsBuffering(true);
 
+      const shouldAutoResume =
+        opts.autoResume !== undefined
+          ? opts.autoResume
+          : !userExplicitlyPausedRef.current && !isLockedRef.current;
+      pendingAutoPlayAfterReplaceRef.current = shouldAutoResume;
+
       if (opts.seekToSec && opts.seekToSec > 0) {
         initialSeekPendingRef.current = { sec: opts.seekToSec, done: false };
       }
@@ -1517,20 +1540,33 @@ export function PlayerModal({
         player.volume = 1;
         player.muted = false;
         player.playbackRate = playbackRateRef.current;
-        if (!isLockedRef.current) {
+        if (shouldAutoResume && !isLockedRef.current && !userExplicitlyPausedRef.current) {
           player.play();
         }
         if (player === getActivePlayer()) {
           if (player.playing) {
+            pendingAutoPlayAfterReplaceRef.current = false;
             setIsPlaying(true);
             setIsBuffering(false);
             setFirstFrameReady(true);
           } else if (player.status === 'readyToPlay') {
+            if (
+              pendingAutoPlayAfterReplaceRef.current &&
+              !userExplicitlyPausedRef.current &&
+              !isLockedRef.current
+            ) {
+              try {
+                player.play();
+              } catch {}
+            }
+            pendingAutoPlayAfterReplaceRef.current = false;
             setIsBuffering(false);
             setFirstFrameReady(true);
           }
         }
-      } catch {}
+      } catch {
+        pendingAutoPlayAfterReplaceRef.current = false;
+      }
     },
     [cancelEpisodeCrossfade, ensureLiveLocalPort, getActivePlayer, getInactivePlayer]
   );
@@ -1590,6 +1626,8 @@ export function PlayerModal({
         activeServerIdRef.current &&
         activeServerIdRef.current !== '99'
       ) {
+        const shouldResumeOnOfflineSwitch =
+          !userExplicitlyPausedRef.current && !isLockedRef.current;
         lastAutoServerSwitchAtRef.current = Date.now();
         await playServerOnActiveLayer(localSrvObj, {
           seekToSec: currentTimeRef.current,
@@ -1597,6 +1635,7 @@ export function PlayerModal({
           vnUrl: vnSubUrlRef.current,
           enUrl: enSubUrlRef.current,
           title: resolvedRef.current?.title || paramsRef.current?.title || matchedOfflineItem.title,
+          autoResume: shouldResumeOnOfflineSwitch,
         });
         showToast('Đã chuyển sang Phát từ máy', 'Tệp ngoại tuyến đã sẵn sàng (1 ms)', 'success', {
           family: 'ionicons',
@@ -3149,9 +3188,6 @@ export function PlayerModal({
         } else if (st === 'readyToPlay') {
           setIsBuffering(false);
           setFirstFrameReady(true);
-          if (player.playing && !isPlayingRef.current) {
-            setIsPlaying(true);
-          }
           const dur = player.duration || 0;
           if (dur > 0) setDuration(dur);
           if (!initialSeekPendingRef.current.done && initialSeekPendingRef.current.sec > 0) {
@@ -3170,6 +3206,22 @@ export function PlayerModal({
                 { family: 'ionicons', name: 'play-back-circle-outline', color: '#38BDF8' }
               );
             }
+          }
+          if (
+            pendingAutoPlayAfterReplaceRef.current &&
+            !userExplicitlyPausedRef.current &&
+            !isLockedRef.current &&
+            !player.playing
+          ) {
+            pendingAutoPlayAfterReplaceRef.current = false;
+            try {
+              player.play();
+            } catch {}
+          } else if (pendingAutoPlayAfterReplaceRef.current) {
+            pendingAutoPlayAfterReplaceRef.current = false;
+          }
+          if (player.playing && !isPlayingRef.current) {
+            setIsPlaying(true);
           }
         } else if (st === 'idle') {
           setIsBuffering(false);

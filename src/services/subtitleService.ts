@@ -399,29 +399,19 @@ export async function loadDualSubtitles(opts: {
 }
 
 /**
- * Computes auto subtitle font step (1..20, default 10) & bottom position (-10..40%, default 12%).
+ * Computes auto subtitle font step (1..20, default 18) & bottom position (-10..40%, default 12%).
  */
 export function computeAutoSubtitleLayout(
   viewportHeight: number,
   subHighRaw?: string
 ): { fontStep: number; positionPct: number } {
-  const h = viewportHeight > 0 ? viewportHeight : 390;
+  void viewportHeight;
   const rawStr = String(subHighRaw ?? '').trim();
   const vitriNum = rawStr !== '' ? parseInt(rawStr, 10) : NaN;
   const offset = !isNaN(vitriNum) ? Math.floor((90 - vitriNum) / 2) : null;
 
-  let fontStep = 10;
-  let posPct = offset !== null ? 12 + offset : 12;
-  if (h >= 1080) {
-    fontStep = 8;
-    posPct = offset !== null ? 14 + offset : 14;
-  } else if (h >= 520) {
-    fontStep = 9;
-    posPct = offset !== null ? 11 + offset : 11;
-  }
-
-  fontStep = Math.max(1, Math.min(20, fontStep));
-  posPct = Math.max(-10, Math.min(40, posPct));
+  const fontStep = Math.max(1, Math.min(20, 18));
+  const posPct = Math.max(-10, Math.min(40, offset !== null ? 12 + offset : 12));
 
   return { fontStep, positionPct: posPct };
 }

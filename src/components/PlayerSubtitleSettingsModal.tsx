@@ -368,7 +368,7 @@ export function PlayerSubtitleSettingsModal({
     if (subView === 'layout') {
       const displayStep = settings.subAutoLayout
         ? autoDefaults.fontStep
-        : settings.subFontSizeStep || 10;
+        : settings.subFontSizeStep || 18;
       const displayPos = settings.subAutoLayout
         ? autoDefaults.positionPct
         : settings.subPositionPct ?? 12;
@@ -404,10 +404,10 @@ export function PlayerSubtitleSettingsModal({
             max={20}
             step={1}
             majorStep={1}
-            defaultValue={10}
+            defaultValue={18}
             valueText={`Cỡ ${displayStep}`}
             tickSpacing={28}
-            resetLabel="Cỡ 10"
+            resetLabel="Cỡ 18"
             onChange={(v) =>
               void updateSettingsBatch({
                 subAutoLayout: false,
@@ -417,7 +417,7 @@ export function PlayerSubtitleSettingsModal({
             onReset={() =>
               void updateSettingsBatch({
                 subAutoLayout: false,
-                subFontSizeStep: 10,
+                subFontSizeStep: 18,
               })
             }
           />

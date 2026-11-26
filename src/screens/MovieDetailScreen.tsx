@@ -37,8 +37,28 @@ import {
   MovieDetail,
   MovieItem,
   OfflineDownloadItem,
+  ServerEpisodeStatus,
   SourceItem,
 } from '../types/models';
+
+function getServerEpisodeBadgeStyle(status?: ServerEpisodeStatus) {
+  if (status === 'incomplete') {
+    return {
+      box: styles.epStatusIncomplete,
+      text: styles.epStatusTextLight,
+    };
+  }
+  if (status === 'upcoming') {
+    return {
+      box: styles.epStatusUpcoming,
+      text: styles.epStatusTextDark,
+    };
+  }
+  return {
+    box: styles.epStatusComplete,
+    text: styles.epStatusTextLight,
+  };
+}
 
 function parseEpisodeNumberForFirst(name?: string): number | null {
   const str = String(name || '').trim();
@@ -328,6 +348,16 @@ export function MovieDetailScreen({
                     <View style={styles.qualPill}>
                       <Text style={styles.qualText}>{movie.video_quality || 'HD'}</Text>
                     </View>
+                    {movie.server_episode_label ? (() => {
+                      const epBadge = getServerEpisodeBadgeStyle(movie.server_episode_status);
+                      return (
+                        <View style={[styles.epStatusPill, epBadge.box]}>
+                          <Text style={[styles.epStatusText, epBadge.text]}>
+                            {movie.server_episode_label}
+                          </Text>
+                        </View>
+                      );
+                    })() : null}
                   </View>
                   {movie.genres.length > 0 ? (
                     <Text style={styles.genreLine} numberOfLines={2}>
@@ -510,9 +540,21 @@ export function MovieDetailScreen({
                       </ScrollView>
                     ) : null}
 
-                    <Text style={styles.subHeading}>
-                      Danh sách tập ({seasonEpisodes.length})
-                    </Text>
+                    <View style={styles.epHeadingRow}>
+                      <Text style={[styles.subHeading, { marginBottom: 0 }]}>
+                        Danh sách tập ({seasonEpisodes.length})
+                      </Text>
+                      {movie.server_episode_label ? (() => {
+                        const epBadge = getServerEpisodeBadgeStyle(movie.server_episode_status);
+                        return (
+                          <View style={[styles.epStatusPill, epBadge.box]}>
+                            <Text style={[styles.epStatusText, epBadge.text]}>
+                              {movie.server_episode_label}
+                            </Text>
+                          </View>
+                        );
+                      })() : null}
+                    </View>
                     <View style={styles.epGrid}>
                       {seasonEpisodes.map((ep, idx) => {
                         const isActive = movie.watch_history?.last_stream_code === ep.stream_code;
@@ -925,6 +967,41 @@ const styles = StyleSheet.create({
     fontSize: 15.5,
     fontWeight: '700',
     marginBottom: 10,
+  },
+  epHeadingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 10,
+  },
+  epStatusPill: {
+    paddingHorizontal: 8,
+    paddingVertical: 2.5,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  epStatusIncomplete: {
+    backgroundColor: 'rgba(220, 38, 38, 0.88)',
+    borderColor: 'rgba(255, 130, 130, 0.45)',
+  },
+  epStatusComplete: {
+    backgroundColor: 'rgba(0, 0, 0, 0.62)',
+    borderColor: 'rgba(255, 255, 255, 0.24)',
+  },
+  epStatusUpcoming: {
+    backgroundColor: 'rgba(250, 204, 21, 0.94)',
+    borderColor: 'rgba(254, 240, 138, 0.78)',
+  },
+  epStatusText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  epStatusTextLight: {
+    color: '#FFFFFF',
+  },
+  epStatusTextDark: {
+    color: '#18181B',
   },
   epGrid: {
     flexDirection: 'row',

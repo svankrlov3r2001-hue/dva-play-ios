@@ -2178,6 +2178,7 @@ private final class DvaBackgroundDownloadGuard: @unchecked Sendable {
 
   private let lock = NSLock()
   private var active = false
+  private var videoPlaybackActive = false
 #if os(iOS) && canImport(UIKit) && canImport(AVFoundation)
   nonisolated(unsafe) private var bgTaskId: UIBackgroundTaskIdentifier = .invalid
   nonisolated(unsafe) private var silentPlayer: AVAudioPlayer? = nil
@@ -2188,6 +2189,12 @@ private final class DvaBackgroundDownloadGuard: @unchecked Sendable {
     lock.lock()
     defer { lock.unlock() }
     return active
+  }
+
+  var isVideoPlaybackActive: Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    return videoPlaybackActive
   }
 
   private init() {
@@ -2273,6 +2280,27 @@ private final class DvaBackgroundDownloadGuard: @unchecked Sendable {
 #endif
   }
 
+  func setVideoPlaybackActive(_ nextPlaying: Bool) {
+    lock.lock()
+    videoPlaybackActive = nextPlaying
+    lock.unlock()
+#if os(iOS) && canImport(UIKit) && canImport(AVFoundation)
+    DispatchQueue.main.async {
+      MainActor.assumeIsolated {
+        if nextPlaying {
+          if UIApplication.shared.applicationState == .active {
+            // Video player owns playback session in foreground; stop silent player without deactivating AVAudioSession
+            self.stopKeepAliveOnMain(deactivateAudio: false)
+          }
+        } else if self.isActive {
+          let inBg = UIApplication.shared.applicationState != .active
+          self.ensureKeepAliveOnMain(needBgTask: inBg)
+        }
+      }
+    }
+#endif
+  }
+
 #if os(iOS) && canImport(UIKit) && canImport(AVFoundation)
   @MainActor
   private func ensureKeepAliveOnMain(needBgTask: Bool) {
@@ -2292,9 +2320,15 @@ private final class DvaBackgroundDownloadGuard: @unchecked Sendable {
         }
       }
     }
+    if UIApplication.shared.applicationState == .active && self.isVideoPlaybackActive {
+      // Do not reconfigure AVAudioSession or start silentPlayer in foreground while video player owns playback
+      return
+    }
     do {
       let session = AVAudioSession.sharedInstance()
-      try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+      if session.category != .playback || !session.categoryOptions.contains(.mixWithOthers) {
+        try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+      }
       try session.setActive(true)
       didActivateAudio = true
     } catch {}
@@ -2334,10 +2368,10 @@ private final class DvaBackgroundDownloadGuard: @unchecked Sendable {
     }
     silentPlayer = nil
     endBgTaskOnly()
-    if deactivateAudio && didActivateAudio {
+    if deactivateAudio && didActivateAudio && UIApplication.shared.applicationState != .active && !self.isVideoPlaybackActive {
       didActivateAudio = false
       try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
-    } else if !deactivateAudio {
+    } else {
       didActivateAudio = false
     }
   }
@@ -2355,6 +2389,7 @@ public final class ExpoFetchModule: Module {
   updated = updated.replace(
     onDestroyTarget,
     `    OnDestroy {
+      DvaBackgroundDownloadGuard.shared.setVideoPlaybackActive(false)
       DvaBackgroundDownloadGuard.shared.setActive(false)
       dvaActiveRelay?.stop()
       dvaActiveRelay = nil
@@ -2441,6 +2476,11 @@ public final class ExpoFetchModule: Module {
 
     Function("dvaSetBackgroundDownloadActive") { (active: Bool) -> Bool in
       DvaBackgroundDownloadGuard.shared.setActive(active)
+      return true
+    }
+
+    Function("dvaSetVideoPlaybackActive") { (active: Bool) -> Bool in
+      DvaBackgroundDownloadGuard.shared.setVideoPlaybackActive(active)
       return true
     }
 

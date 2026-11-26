@@ -9,6 +9,7 @@ interface DvaNativeMediaServerBridge {
   dvaSetPipSubtitleCues?: (cuesJson: string) => boolean;
   dvaGetSigningInfo?: () => string;
   dvaSetBackgroundDownloadActive?: (active: boolean) => boolean;
+  dvaSetVideoPlaybackActive?: (active: boolean) => boolean;
   dvaIsBackgroundDownloadActive?: () => boolean;
 }
 
@@ -113,6 +114,18 @@ export function setNativeBackgroundDownloadActive(active: boolean): boolean {
   }
   try {
     return Boolean(bridge.dvaSetBackgroundDownloadActive(Boolean(active)));
+  } catch {
+    return false;
+  }
+}
+
+export function setNativeVideoPlaybackActive(active: boolean): boolean {
+  const bridge = getNativeMediaBridge();
+  if (!bridge || typeof bridge.dvaSetVideoPlaybackActive !== 'function') {
+    return false;
+  }
+  try {
+    return Boolean(bridge.dvaSetVideoPlaybackActive(Boolean(active)));
   } catch {
     return false;
   }

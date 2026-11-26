@@ -31,7 +31,7 @@ export const DEFAULT_SUBTITLE_SETTINGS: Pick<
   subFont: 'Arial,Helvetica,sans-serif',
   subColor: 'white',
   subAutoLayout: true,
-  subFontSizeStep: 10,
+  subFontSizeStep: 18,
   subPositionPct: 12,
   subOutline: 'uniform2',
   subDelaySec: 0,
@@ -134,7 +134,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
               const merged = syncDerivedContrastFields(DEFAULT_SETTINGS, parsed);
               merged.subFontSizeStep = Math.max(
                 1,
-                Math.min(20, Math.round(Number(merged.subFontSizeStep) || 10))
+                Math.min(20, Math.round(Number(merged.subFontSizeStep) || 18))
               );
               merged.subPositionPct = Math.max(
                 -10,

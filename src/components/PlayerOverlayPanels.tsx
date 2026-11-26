@@ -18,11 +18,31 @@ import {
   EpisodeItem,
   OfflineDownloadItem,
   SeasonItem,
+  ServerEpisodeStatus,
   SourceItem,
   StreamQuality,
   StreamResolvedData,
   User,
 } from '../types/models';
+
+function getServerEpisodeBadgeStyle(status?: ServerEpisodeStatus) {
+  if (status === 'incomplete') {
+    return {
+      box: styles.epStatusIncomplete,
+      text: styles.epStatusTextLight,
+    };
+  }
+  if (status === 'upcoming') {
+    return {
+      box: styles.epStatusUpcoming,
+      text: styles.epStatusTextDark,
+    };
+  }
+  return {
+    box: styles.epStatusComplete,
+    text: styles.epStatusTextLight,
+  };
+}
 
 export type PlayerPanelType =
   | 'servers'
@@ -540,6 +560,16 @@ export function PlayerOverlayPanels({
                         {movieCtx?.year ? <Text style={styles.metaChip}>{movieCtx.year}</Text> : null}
                         {movieCtx?.video_quality ? <Text style={styles.metaChip}>{movieCtx.video_quality}</Text> : null}
                         {movieCtx?.imdb_rating ? <Text style={styles.metaChip}>IMDb {movieCtx.imdb_rating}</Text> : null}
+                        {movieCtx?.server_episode_label ? (() => {
+                          const epBadge = getServerEpisodeBadgeStyle(movieCtx.server_episode_status);
+                          return (
+                            <View style={[styles.epStatusPill, epBadge.box]}>
+                              <Text style={[styles.epStatusText, epBadge.text]}>
+                                {movieCtx.server_episode_label}
+                              </Text>
+                            </View>
+                          );
+                        })() : null}
                       </View>
                     </View>
                   </View>
@@ -862,6 +892,7 @@ const styles = StyleSheet.create({
   metaBadges: {
     flexDirection: 'row',
     flexWrap: 'wrap',
+    alignItems: 'center',
     gap: 6,
     marginTop: 2,
   },
@@ -874,6 +905,34 @@ const styles = StyleSheet.create({
     borderRadius: RADII.pill,
     backgroundColor: 'rgba(255,255,255,0.14)',
     overflow: 'hidden',
+  },
+  epStatusPill: {
+    paddingHorizontal: 9,
+    paddingVertical: 2.5,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  epStatusIncomplete: {
+    backgroundColor: 'rgba(220, 38, 38, 0.88)',
+    borderColor: 'rgba(255, 130, 130, 0.45)',
+  },
+  epStatusComplete: {
+    backgroundColor: 'rgba(0, 0, 0, 0.62)',
+    borderColor: 'rgba(255, 255, 255, 0.24)',
+  },
+  epStatusUpcoming: {
+    backgroundColor: 'rgba(250, 204, 21, 0.94)',
+    borderColor: 'rgba(254, 240, 138, 0.78)',
+  },
+  epStatusText: {
+    fontSize: 11.5,
+    fontWeight: '700',
+  },
+  epStatusTextLight: {
+    color: '#FFFFFF',
+  },
+  epStatusTextDark: {
+    color: '#18181B',
   },
   infoDesc: {
     color: COLORS.textSecondary,

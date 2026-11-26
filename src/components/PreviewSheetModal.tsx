@@ -18,7 +18,26 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS } from '../constants/config';
 import { fetchPopupInfoApi, toggleWishlistApi } from '../services/api';
 import { isNetworkError, reportNetworkFailure } from '../services/networkService';
-import { MovieItem, PopupInfo } from '../types/models';
+import { MovieItem, PopupInfo, ServerEpisodeStatus } from '../types/models';
+
+function getServerEpisodeBadgeStyle(status?: ServerEpisodeStatus) {
+  if (status === 'incomplete') {
+    return {
+      box: styles.epStatusIncomplete,
+      text: styles.epStatusTextLight,
+    };
+  }
+  if (status === 'upcoming') {
+    return {
+      box: styles.epStatusUpcoming,
+      text: styles.epStatusTextDark,
+    };
+  }
+  return {
+    box: styles.epStatusComplete,
+    text: styles.epStatusTextLight,
+  };
+}
 import { AmbientAppBackground } from './AmbientAppBackground';
 import { BouncyButton } from './BouncyButton';
 import { GlassSurface } from './GlassSurface';
@@ -498,6 +517,16 @@ export function PreviewSheetModal({
                     <View style={styles.qualityPill}>
                       <Text style={styles.qualityText}>{info.video_quality || 'HD'}</Text>
                     </View>
+                    {info.server_episode_label ? (() => {
+                      const epBadge = getServerEpisodeBadgeStyle(info.server_episode_status);
+                      return (
+                        <View style={[styles.epStatusPill, epBadge.box]}>
+                          <Text style={[styles.epStatusText, epBadge.text]}>
+                            {info.server_episode_label}
+                          </Text>
+                        </View>
+                      );
+                    })() : null}
                   </View>
 
                   {progressPct > 0 || info.time_remaining ? (
@@ -718,6 +747,34 @@ const styles = StyleSheet.create({
     color: '#FFF',
     fontSize: 11,
     fontWeight: '700',
+  },
+  epStatusPill: {
+    paddingHorizontal: 8,
+    paddingVertical: 2.5,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  epStatusIncomplete: {
+    backgroundColor: 'rgba(220, 38, 38, 0.88)',
+    borderColor: 'rgba(255, 130, 130, 0.45)',
+  },
+  epStatusComplete: {
+    backgroundColor: 'rgba(0, 0, 0, 0.62)',
+    borderColor: 'rgba(255, 255, 255, 0.24)',
+  },
+  epStatusUpcoming: {
+    backgroundColor: 'rgba(250, 204, 21, 0.94)',
+    borderColor: 'rgba(254, 240, 138, 0.78)',
+  },
+  epStatusText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  epStatusTextLight: {
+    color: '#FFFFFF',
+  },
+  epStatusTextDark: {
+    color: '#18181B',
   },
   progressSection: {
     marginBottom: 12,
