@@ -450,29 +450,102 @@ export function getAdaptiveVoiceForTime(
   return 'google';
 }
 
+export function estimateNaturalTtsDurationSec(cleanText: string): number {
+  const normalized = String(cleanText || '').replace(/\s+/g, ' ').trim();
+  if (!normalized) return 0.75;
+  const words = normalized.split(' ').filter(Boolean).length;
+  const chars = normalized.length;
+  const punctuationPauses = (normalized.match(/[,;:.!?…]/g) || []).length;
+  const byWords = words * 0.285;
+  const byChars = chars / 14.5;
+  return Math.max(
+    0.75,
+    Math.max(byWords, byChars) * 0.92 + Math.min(punctuationPauses, 4) * 0.14 + 0.25
+  );
+}
+
+export function findNextSpeakableCue(
+  cues: ParsedVttCue[],
+  currentIndex: number
+): ParsedVttCue | null {
+  if (!Array.isArray(cues) || currentIndex < 0) return null;
+  for (let i = currentIndex + 1; i < cues.length; i++) {
+    const c = cues[i];
+    if (c && !c.isTop && c.text.trim() && !c.text.includes('♪')) {
+      return c;
+    }
+  }
+  return null;
+}
+
+export function computeCueSpeechWindowSec(opts: {
+  cueStart: number;
+  cueEnd: number;
+  extendSec?: number;
+  nextCueStart?: number | null;
+  videoPlaybackRate?: number;
+}): number {
+  const cueDur = Math.max(0.4, opts.cueEnd + (opts.extendSec || 0) - opts.cueStart);
+  const maxBorrowSec = 1.8;
+  const breathMarginSec = 0.12;
+  let usableVideoSec: number;
+  if (typeof opts.nextCueStart === 'number' && opts.nextCueStart > opts.cueStart) {
+    const roomToNext = Math.max(0.4, opts.nextCueStart - opts.cueStart - breathMarginSec);
+    usableVideoSec = Math.min(cueDur + maxBorrowSec, Math.max(cueDur * 0.85, roomToNext));
+  } else {
+    usableVideoSec = cueDur + maxBorrowSec;
+  }
+  const videoRate = Math.max(0.5, Math.min(2.0, opts.videoPlaybackRate || 1.0));
+  return usableVideoSec / videoRate;
+}
+
 export function calculateTtsSpeed(
   cleanText: string,
-  subDurationSec: number,
+  speechWindowSec: number,
   effectiveVoice: 'hoaimy' | 'namminh' | 'google'
 ): number {
-  const expectedDuration = cleanText.length / 15;
-  if (expectedDuration <= 0 || subDurationSec <= 0) return 1;
-  const safeSubDuration = Math.max(0.1, subDurationSec - 0.1);
-  const requiredSpeed = expectedDuration / safeSubDuration;
+  if (!cleanText || speechWindowSec <= 0) return 1;
 
+  // Google voice returns clean native high-bitrate MP3 only at speed=1;
+  // gentle speed matching is performed locally via AVPlayer preservesPitch=true.
   if (effectiveVoice === 'google') {
-    if (requiredSpeed <= 0.75) return 1;
-    if (requiredSpeed <= 1.25) return 1.1;
-    if (requiredSpeed <= 1.75) return 1.15;
-    if (requiredSpeed <= 2.25) return 2.1;
-    if (requiredSpeed <= 2.75) return 2.15;
-    return 3.1;
+    return 1;
   }
-  if (requiredSpeed <= 1.05) return 1;
-  if (requiredSpeed <= 1.25) return 1.15;
-  if (requiredSpeed <= 1.5) return 1.35;
-  if (requiredSpeed <= 1.8) return 1.6;
-  return 1.85;
+
+  const safeWindow = Math.max(1.4, speechWindowSec);
+  const estDur = estimateNaturalTtsDurationSec(cleanText);
+  const requiredSpeed = estDur / safeWindow;
+
+  if (cleanText.trim().length <= 18) {
+    return requiredSpeed > 1.22 ? 1.1 : 1;
+  }
+
+  if (requiredSpeed <= 1.06) return 1;
+  if (requiredSpeed <= 1.18) return 1.1;
+  if (requiredSpeed <= 1.32) return 1.2;
+  return 1.25;
+}
+
+export function computeLocalTtsPlaybackRate(opts: {
+  actualAudioDurSec: number;
+  availableWallSec: number;
+  effectiveVoice: 'hoaimy' | 'namminh' | 'google';
+  serverSpeed: number;
+  videoPlaybackRate?: number;
+}): number {
+  void opts.serverSpeed;
+  const speechDur = Math.max(0.45, opts.actualAudioDurSec - 0.16);
+  const safeWindow = Math.max(1.3, opts.availableWallSec);
+  if (speechDur <= safeWindow) return 1;
+
+  const rawRatio = speechDur / safeWindow;
+  const videoRate = Math.max(0.5, Math.min(2.0, opts.videoPlaybackRate || 1.0));
+  const videoScale = videoRate > 1.05 ? Math.min(1.18, 1 + (videoRate - 1) * 0.45) : 1;
+  const baseMax = opts.effectiveVoice === 'google' ? 1.35 : 1.2;
+  const hardCeiling = opts.effectiveVoice === 'google' ? 1.5 : 1.35;
+  const maxLocal = Math.min(hardCeiling, baseMax * videoScale);
+
+  return Math.round(Math.max(1, Math.min(maxLocal, rawRatio)) * 100) / 100;
 }
 
 export function buildTtsProxyUrl(

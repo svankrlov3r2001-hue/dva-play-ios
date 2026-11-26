@@ -12,7 +12,6 @@ import {
   View,
 } from 'react-native';
 import { Feather, Ionicons } from '@expo/vector-icons';
-import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import {
   isPictureInPictureSupported,
@@ -36,6 +35,7 @@ import {
   SleepTimerSettingValue,
 } from '../components/PlayerGeneralSettingsModal';
 import { PlayerOverlayPanels, PlayerPanelType } from '../components/PlayerOverlayPanels';
+import { PlayerProxyModal } from '../components/PlayerProxyModal';
 import { PlayerServerPanelModal } from '../components/PlayerServerPanelModal';
 import { PlayerSubtitleSettingsModal } from '../components/PlayerSubtitleSettingsModal';
 import { PlayerLandscapeSkeleton, useShimmerProgress } from '../components/SkeletonLoaders';
@@ -45,9 +45,14 @@ import {
   WaterDropToastPayload,
 } from '../components/WaterDropToastBanner';
 import { CastModal, CastMoviePayload } from './CastModal';
-import { COLORS, GLASS_SHADOW, MAX_AUTO_DOWNLOAD_NEXT_COUNT } from '../constants/config';
+import { COLORS, MAX_AUTO_DOWNLOAD_NEXT_COUNT } from '../constants/config';
 import { useAuth } from '../context/AuthContext';
 import { useSettings } from '../context/SettingsContext';
+import {
+  getProxyConfig,
+  ProxyRuntimeConfig,
+  subscribeProxyConfig,
+} from '../services/proxyService';
 import {
   clearActivePlaybackSession,
   saveActivePlaybackSession,
@@ -796,7 +801,7 @@ export function PlayerModal({
 }: PlayerModalProps) {
   const insets = useSafeAreaInsets();
   const { width: winWidth, height: winHeight } = useWindowDimensions();
-  const { user, isLocked } = useAuth();
+  const { user, isLocked, verifyBiometricsForAction } = useAuth();
   const { settings, updateSetting } = useSettings();
 
   // Mount two AVPlayers unconditionally for zero-glitch 2-layer ping-pong transitions
@@ -985,12 +990,24 @@ export function PlayerModal({
   const [speedMenuOpen, setSpeedMenuOpen] = useState(false);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [serverModalOpen, setServerModalOpen] = useState(false);
+  const [proxyModalOpen, setProxyModalOpen] = useState(false);
+  const [proxyConfig, setProxyConfig] = useState<ProxyRuntimeConfig>(() => getProxyConfig());
   const [episodeModalOpen, setEpisodeModalOpen] = useState(false);
   const [subSettingsOpen, setSubSettingsOpen] = useState(false);
   const [generalSettingsOpen, setGeneralSettingsOpen] = useState(false);
   const [offlineSheetOpen, setOfflineSheetOpen] = useState(false);
   const [castPopupOpen, setCastPopupOpen] = useState(false);
   const [infoPanel, setInfoPanel] = useState<PlayerPanelType>(null);
+
+  // Screen lock (anti-accidental touch) with Face ID / Touch ID unlock
+  const [screenLocked, setScreenLocked] = useState(false);
+  const screenLockedRef = useRef(false);
+  screenLockedRef.current = screenLocked;
+  const [lockHintVisible, setLockHintVisible] = useState(false);
+  const [unlockingScreen, setUnlockingScreen] = useState(false);
+  const unlockingScreenRef = useRef(false);
+  unlockingScreenRef.current = unlockingScreen;
+  const lockHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Sleep timer
   const [sleepTimerValue, setSleepTimerValue] = useState<SleepTimerSettingValue>(null);
@@ -1137,8 +1154,28 @@ export function PlayerModal({
     [clearHudTimer]
   );
 
+  const clearLockHintTimer = useCallback(() => {
+    if (lockHintTimerRef.current) {
+      clearTimeout(lockHintTimerRef.current);
+      lockHintTimerRef.current = null;
+    }
+  }, []);
+
+  const showLockHintWithTimer = useCallback(
+    (delayMs = 3500) => {
+      setLockHintVisible(true);
+      clearLockHintTimer();
+      lockHintTimerRef.current = setTimeout(() => {
+        lockHintTimerRef.current = null;
+        setLockHintVisible(false);
+      }, delayMs);
+    },
+    [clearLockHintTimer]
+  );
+
   const showHudWithTimer = useCallback(
     (delayMs = 3600) => {
+      if (screenLockedRef.current) return;
       setHudVisible(true);
       scheduleHudAutoHide(delayMs);
     },
@@ -1167,11 +1204,17 @@ export function PlayerModal({
     }, 650);
   }, [visible, clearPipRestoreTimer]);
 
-  // Subscriptions: offline store + loopback server
+  // Subscriptions: offline store + proxy config + loopback server
   useEffect(() => {
     loadOfflineDownloads().then(setOfflineItems).catch(() => {});
-    return subscribeOfflineDownloads(setOfflineItems);
-  }, []);
+    const unsubDl = subscribeOfflineDownloads(setOfflineItems);
+    const unsubProxy = subscribeProxyConfig(setProxyConfig);
+    return () => {
+      unsubDl();
+      unsubProxy();
+      clearLockHintTimer();
+    };
+  }, [clearLockHintTimer]);
 
   useEffect(() => {
     if (!visible) return;
@@ -3481,7 +3524,7 @@ export function PlayerModal({
       } else if (nextState === 'active') {
         const prevPlay = preBackgroundPlayingRef.current;
         preBackgroundPlayingRef.current = null;
-        if (isLockedRef.current || isInPipRef.current) return;
+        if (isLockedRef.current || isInPipRef.current || unlockingScreenRef.current) return;
 
         void recoverForegroundPlaybackIfNeeded(false);
         if (prevPlay || !userExplicitlyPausedRef.current) {
@@ -3493,7 +3536,8 @@ export function PlayerModal({
               !visible ||
               isLockedRef.current ||
               userExplicitlyPausedRef.current ||
-              isInPipRef.current
+              isInPipRef.current ||
+              unlockingScreenRef.current
             ) {
               return;
             }
@@ -3671,6 +3715,7 @@ export function PlayerModal({
       lastLoadedVideosIdRef.current = 0;
       resetPlayerStateCleanly(null);
       setServerModalOpen(false);
+      setProxyModalOpen(false);
       setEpisodeModalOpen(false);
       setSubSettingsOpen(false);
       setGeneralSettingsOpen(false);
@@ -3679,6 +3724,9 @@ export function PlayerModal({
       setInfoPanel(null);
       setSpeedMenuOpen(false);
       setMoreMenuOpen(false);
+      setScreenLocked(false);
+      setLockHintVisible(false);
+      clearLockHintTimer();
       isInPipRef.current = false;
       clearPipRestoreTimer();
       return;
@@ -4002,12 +4050,16 @@ export function PlayerModal({
         playerB.pause();
       } catch {}
       setServerModalOpen(false);
+      setProxyModalOpen(false);
       setEpisodeModalOpen(false);
       setSubSettingsOpen(false);
       setGeneralSettingsOpen(false);
       setOfflineSheetOpen(false);
       setCastPopupOpen(false);
       setInfoPanel(null);
+      setScreenLocked(false);
+      setLockHintVisible(false);
+      clearLockHintTimer();
       try {
         await Promise.race([
           persistCurrentProgress(true),
@@ -4165,6 +4217,7 @@ export function PlayerModal({
   );
 
   const toggleHudImmediate = useCallback(() => {
+    if (screenLockedRef.current) return;
     if (hudVisibleRef.current) {
       clearHudTimer();
       setHudVisible(false);
@@ -4172,6 +4225,108 @@ export function PlayerModal({
       showHudWithTimer(3600);
     }
   }, [clearHudTimer, showHudWithTimer]);
+
+  const handleLockPlayerScreen = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    if (holdTimerRef.current) {
+      clearTimeout(holdTimerRef.current);
+      holdTimerRef.current = null;
+    }
+    if (holdActivatedRef.current) {
+      holdActivatedRef.current = false;
+      setHoldBoostActive(false);
+      try {
+        getActivePlayer().playbackRate = savedRateBeforeHoldRef.current || playbackRateRef.current;
+      } catch {}
+    }
+    if (singleTapTimerRef.current) {
+      clearTimeout(singleTapTimerRef.current);
+      singleTapTimerRef.current = null;
+    }
+    clearHudTimer();
+    setSpeedMenuOpen(false);
+    setMoreMenuOpen(false);
+    setHudVisible(false);
+    setScreenLocked(true);
+    showLockHintWithTimer(2800);
+    showToast(
+      'Đã khóa màn hình',
+      'Chạm màn hình và xác thực Face ID / Touch ID để mở khóa',
+      'info',
+      { family: 'ionicons', name: 'lock-closed-outline', color: '#FBBF24' }
+    );
+  }, [clearHudTimer, getActivePlayer, showLockHintWithTimer, showToast]);
+
+  const handleUnlockPlayerScreen = useCallback(async () => {
+    if (unlockingScreenRef.current) return;
+    Haptics.selectionAsync();
+    clearLockHintTimer();
+    const wasPlaying =
+      Boolean(getActivePlayer().playing || isPlayingRef.current) && !userExplicitlyPausedRef.current;
+    setUnlockingScreen(true);
+    unlockingScreenRef.current = true;
+    try {
+      const res = await verifyBiometricsForAction(
+        'Xác thực Face ID / Touch ID để mở khóa màn hình'
+      );
+      if (res.ok) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        setScreenLocked(false);
+        screenLockedRef.current = false;
+        setLockHintVisible(false);
+        showHudWithTimer(3600);
+        showToast(
+          'Đã mở khóa màn hình',
+          `Xác thực ${res.biometricLabel} thành công`,
+          'success',
+          { family: 'ionicons', name: 'lock-open-outline', color: '#30D158' }
+        );
+        if (wasPlaying && !userExplicitlyPausedRef.current && !isLockedRef.current) {
+          try {
+            const p = getActivePlayer();
+            if (!p.playing) p.play();
+          } catch {}
+        }
+      } else if (res.notConfigured) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+        setScreenLocked(false);
+        screenLockedRef.current = false;
+        setLockHintVisible(false);
+        showHudWithTimer(3600);
+        showToast(
+          'Đã mở khóa màn hình',
+          res.reason || 'Thiết bị chưa thiết lập Face ID / Touch ID hoặc mật mã',
+          'warning',
+          { family: 'ionicons', name: 'lock-open-outline', color: '#FBBF24' }
+        );
+      } else {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        showLockHintWithTimer(3500);
+        showToast(
+          'Chưa mở khóa màn hình',
+          res.reason || 'Vui lòng xác thực lại để mở khóa',
+          'warning',
+          { family: 'ionicons', name: 'lock-closed-outline', color: '#F59E0B' }
+        );
+        if (wasPlaying && !userExplicitlyPausedRef.current && !isLockedRef.current) {
+          try {
+            const p = getActivePlayer();
+            if (!p.playing) p.play();
+          } catch {}
+        }
+      }
+    } finally {
+      setUnlockingScreen(false);
+      unlockingScreenRef.current = false;
+    }
+  }, [
+    clearLockHintTimer,
+    getActivePlayer,
+    showHudWithTimer,
+    showLockHintWithTimer,
+    showToast,
+    verifyBiometricsForAction,
+  ]);
 
   const triggerSeekCombo = useCallback(
     (side: 'left' | 'right') => {
@@ -4667,9 +4822,11 @@ export function PlayerModal({
         <Pressable
           style={[StyleSheet.absoluteFill, { zIndex: 5 }]}
           onPressIn={() => {
+            if (screenLockedRef.current) return;
             holdActivatedRef.current = false;
             if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
             holdTimerRef.current = setTimeout(() => {
+              if (screenLockedRef.current) return;
               holdActivatedRef.current = true;
               const p = getActivePlayer();
               savedRateBeforeHoldRef.current = p.playbackRate || playbackRate;
@@ -4693,7 +4850,7 @@ export function PlayerModal({
             }
           }}
           onPress={(e) => {
-            if (holdActivatedRef.current) return;
+            if (screenLockedRef.current || holdActivatedRef.current) return;
             userInteractedHudRef.current = true;
             if (speedMenuOpen || moreMenuOpen) {
               setSpeedMenuOpen(false);
@@ -4802,6 +4959,7 @@ export function PlayerModal({
           currentTime={currentTime}
           isPlaying={isPlaying}
           isInPip={isInPip}
+          playbackRate={playbackRate}
           subHighRaw={resolved?.sub_high}
           settings={settings}
           episodeSignature={`${params.videosId}|${activeStreamCode}`}
@@ -4816,7 +4974,7 @@ export function PlayerModal({
         />
 
         {/* Floating Next-Episode Countdown Pill */}
-        {nextCountdownSec !== null && currentNextEpisode ? (
+        {nextCountdownSec !== null && currentNextEpisode && !screenLocked ? (
           <View style={styles.countdownOverlay}>
             <WaterDropPopupView from="bottom">
               <GlassSurface variant="liquid" radius={40} intensity={34} style={styles.countdownCard}>
@@ -4843,7 +5001,7 @@ export function PlayerModal({
         ) : null}
 
         {/* Image 1 Liquid Glass HUD Layer */}
-        {hudVisible ? (
+        {hudVisible && !screenLocked ? (
           <View
             pointerEvents="box-none"
             style={[
@@ -5405,6 +5563,16 @@ export function PlayerModal({
                       />
                     </GlassSurface>
                   </BouncyButton>
+
+                  <BouncyButton
+                    activeOpacity={0.82}
+                    pressScale={0.86}
+                    onPress={handleLockPlayerScreen}
+                  >
+                    <GlassSurface variant="liquid" radius={22} intensity={28} style={styles.circleActionBtn}>
+                      <Ionicons name="lock-closed-outline" size={19} color="#FFF" />
+                    </GlassSurface>
+                  </BouncyButton>
                 </View>
 
                 <View style={styles.bottomRightCluster}>
@@ -5473,15 +5641,10 @@ export function PlayerModal({
                   </WaterDropPopupView>
                 ) : null}
 
-                {/* More Options Popover — iOS Contextual Glass Sheet matching Image 2 */}
+                {/* More Options Popover — Borderless Liquid Glass */}
                 {moreMenuOpen ? (
                   <WaterDropPopupView from="bottom" style={styles.morePopoverWrap}>
-                    <View style={styles.morePopover}>
-                      <View pointerEvents="none" style={styles.morePopoverBgClip}>
-                        <BlurView intensity={34} tint="systemUltraThinMaterialDark" style={StyleSheet.absoluteFill} />
-                        <View style={styles.morePopoverFill} />
-                      </View>
-
+                    <GlassSurface variant="liquid" radius={40} intensity={24} style={styles.morePopover}>
                       {!isOfflineOnlyMode ? (
                         <BouncyButton
                           bounciness="gentle"
@@ -5534,20 +5697,77 @@ export function PlayerModal({
                         activeOpacity={0.75}
                         style={styles.morePopoverRow}
                         onPress={() => {
+                          Haptics.selectionAsync();
                           setMoreMenuOpen(false);
-                          setServerModalOpen(true);
+                          clearHudTimer();
+                          setProxyModalOpen(true);
                         }}
                       >
                         <View style={styles.morePopoverIconBadge}>
-                          <Feather name="server" size={18} color="#FFFFFF" />
+                          <Ionicons
+                            name="globe-outline"
+                            size={18}
+                            color={proxyConfig.enabled ? '#30D158' : '#FFFFFF'}
+                          />
                         </View>
-                        <Text style={styles.morePopoverText}>Máy chủ phát phim</Text>
+                        <Text style={styles.morePopoverText}>Kết nối proxy</Text>
+                        {proxyConfig.enabled ? <View style={styles.morePopoverActiveDot} /> : null}
                       </BouncyButton>
-                    </View>
+                    </GlassSurface>
                   </WaterDropPopupView>
                 ) : null}
               </View>
             </View>
+          </View>
+        ) : null}
+
+        {/* Screen Lock Anti-Accidental Touch Overlay (Unlock via Face ID / Touch ID) */}
+        {screenLocked ? (
+          <View style={styles.screenLockOverlay}>
+            <Pressable
+              style={StyleSheet.absoluteFill}
+              onPress={() => {
+                Haptics.selectionAsync();
+                showLockHintWithTimer(3500);
+              }}
+            />
+            {lockHintVisible ? (
+              <View
+                pointerEvents="box-none"
+                style={[
+                  styles.screenLockPillWrap,
+                  {
+                    top: holdToastPayload
+                      ? Math.max(insets.top, 8) + 72
+                      : Math.max(insets.top, 12) + 4,
+                  },
+                ]}
+              >
+                <WaterDropPopupView from="top">
+                  <BouncyButton
+                    activeOpacity={0.85}
+                    pressScale={0.94}
+                    disabled={unlockingScreen}
+                    onPress={() => void handleUnlockPlayerScreen()}
+                  >
+                    <GlassSurface variant="liquid" radius={40} intensity={24} style={styles.screenLockPill}>
+                      <View style={styles.screenLockBadge}>
+                        <Ionicons name="lock-closed" size={16} color="#FBBF24" />
+                      </View>
+                      <View style={styles.screenLockTxtCol}>
+                        <Text style={styles.screenLockTitle}>Màn hình đang khóa</Text>
+                        <Text style={styles.screenLockSub}>
+                          {unlockingScreen
+                            ? 'Đang xác thực Face ID / Touch ID...'
+                            : 'Chạm để mở khóa bằng Face ID / Touch ID'}
+                        </Text>
+                      </View>
+                      <Ionicons name="scan-outline" size={20} color="#FFFFFF" />
+                    </GlassSurface>
+                  </BouncyButton>
+                </WaterDropPopupView>
+              </View>
+            ) : null}
           </View>
         ) : null}
 
@@ -5731,6 +5951,46 @@ export function PlayerModal({
           }}
           pingRefreshing={pingRefreshing}
           posterUrl={moviePosterMeta.poster || params.posterUrl}
+        />
+
+        <PlayerProxyModal
+          visible={proxyModalOpen}
+          onClose={() => {
+            setProxyModalOpen(false);
+            showHudWithTimer();
+          }}
+          onProxyApplied={(cfg) => {
+            const label =
+              cfg.mode === 'preset'
+                ? cfg.presetName || 'Máy chủ sẵn có'
+                : cfg.customHost && cfg.customPort
+                  ? `${cfg.customHost}:${cfg.customPort}`
+                  : 'Proxy tự cấu hình';
+            showToast(
+              cfg.enabled ? 'Đã bật kết nối Proxy' : 'Đã tắt kết nối Proxy',
+              cfg.enabled ? `Đang dùng: ${label}` : 'Đã trở về kết nối trực tiếp',
+              cfg.enabled ? 'success' : 'info',
+              {
+                family: 'ionicons',
+                name: 'globe-outline',
+                color: cfg.enabled ? '#30D158' : '#60A5FA',
+              }
+            );
+            if (!isOfflineOnlyMode && activeServerIdRef.current && activeServerIdRef.current !== '99') {
+              const curSrv = serversRef.current.find((s) => s.id === activeServerIdRef.current);
+              if (curSrv?.streamUrl) {
+                void playServerOnActiveLayer(curSrv, {
+                  seekToSec: currentTimeRef.current,
+                  serverFileKey: resolvedRef.current?.server_file_key || '',
+                  vnUrl: vnSubUrlRef.current,
+                  enUrl: enSubUrlRef.current,
+                  title: displayTitle,
+                  autoResume: !userExplicitlyPausedRef.current && !isLockedRef.current,
+                });
+              }
+              void refreshServerListState().catch(() => {});
+            }
+          }}
         />
 
         <PlayerEpisodeListModal
@@ -6331,34 +6591,12 @@ const styles = StyleSheet.create({
     zIndex: 35,
   },
   morePopover: {
-    paddingVertical: 8,
-    paddingHorizontal: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
     gap: 2,
     minWidth: 256,
-    borderRadius: 28,
-    overflow: 'visible',
-    position: 'relative',
-    boxShadow: GLASS_SHADOW,
+    borderRadius: 40,
     elevation: 18,
-  },
-  morePopoverBgClip: {
-    position: 'absolute',
-    top: 0,
-    right: 0,
-    bottom: 0,
-    left: 0,
-    borderRadius: 28,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.18)',
-  },
-  morePopoverFill: {
-    position: 'absolute',
-    top: 0,
-    right: 0,
-    bottom: 0,
-    left: 0,
-    backgroundColor: 'rgba(18, 21, 28, 0.54)',
   },
   morePopoverRow: {
     flexDirection: 'row',
@@ -6374,8 +6612,6 @@ const styles = StyleSheet.create({
     height: 38,
     borderRadius: 19,
     backgroundColor: 'rgba(255, 255, 255, 0.12)',
-    borderWidth: 0.75,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
     alignItems: 'center',
     justifyContent: 'center',
     flexShrink: 0,
@@ -6386,6 +6622,58 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     textAlign: 'left',
     flexShrink: 1,
+  },
+  morePopoverActiveDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#30D158',
+    marginLeft: 'auto',
+  },
+  screenLockOverlay: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    zIndex: 45,
+    backgroundColor: 'transparent',
+  },
+  screenLockPillWrap: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    alignItems: 'center',
+  },
+  screenLockPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 40,
+    maxWidth: 370,
+  },
+  screenLockBadge: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(251, 191, 36, 0.18)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  screenLockTxtCol: {
+    flexShrink: 1,
+  },
+  screenLockTitle: {
+    color: '#FFFFFF',
+    fontSize: 13.5,
+    fontWeight: '700',
+  },
+  screenLockSub: {
+    color: 'rgba(255, 255, 255, 0.72)',
+    fontSize: 11.5,
+    fontWeight: '500',
   },
   popoverItem: {
     flexDirection: 'row',

@@ -20,6 +20,10 @@ import {
   buildTtsProxyUrl,
   calculateTtsSpeed,
   computeAutoSubtitleLayout,
+  computeCueSpeechWindowSec,
+  computeLocalTtsPlaybackRate,
+  estimateNaturalTtsDurationSec,
+  findNextSpeakableCue,
   getAdaptiveVoiceForTime,
   ParsedVttCue,
   PRE_TRANSLATE_COUNT,
@@ -35,6 +39,7 @@ interface NativeSubtitleOverlayProps {
   isPlaying: boolean;
   isMuted?: boolean;
   isInPip: boolean;
+  playbackRate?: number;
   subHighRaw?: string;
   settings: AppSettings;
   episodeSignature: string;
@@ -177,6 +182,19 @@ function OutlinedText({
   );
 }
 
+interface QueuedTtsTask {
+  cueSig: string;
+  spokenText: string;
+  spokenLang: string;
+  effVoice: 'hoaimy' | 'namminh' | 'google';
+  serverSpeed: number;
+  remoteUrl: string;
+  cueStart: number;
+  cueEnd: number;
+  nextCueStart: number | null;
+  speechWindowSec: number;
+}
+
 interface AiVoicePlayerEngineProps {
   enabled: boolean;
   isPlaying: boolean;
@@ -185,13 +203,17 @@ interface AiVoicePlayerEngineProps {
   appState: string;
   voiceMode: SubtitleAiVoiceMode;
   volume: number;
-  translateLang: string;
+  currentTime: number;
+  extendSec: number;
+  playbackRate: number;
   activeCue: ParsedVttCue | null;
+  spokenText: string;
+  spokenLang: string;
   mainVnIndex: number;
   vnCues: ParsedVttCue[];
+  translateLang: string;
   episodeSignature: string;
   reloadNonce: number;
-  translationVersion: number;
   translationCacheRef: React.MutableRefObject<Map<string, string>>;
   ttsLocalCacheRef: React.MutableRefObject<Map<string, string>>;
   ttsInFlightRef: React.MutableRefObject<Map<string, Promise<string | null>>>;
@@ -206,13 +228,17 @@ function AiVoicePlayerEngine({
   appState,
   voiceMode,
   volume,
-  translateLang,
+  currentTime,
+  extendSec,
+  playbackRate,
   activeCue,
+  spokenText,
+  spokenLang,
   mainVnIndex,
   vnCues,
+  translateLang,
   episodeSignature,
   reloadNonce,
-  translationVersion,
   translationCacheRef,
   ttsLocalCacheRef,
   ttsInFlightRef,
@@ -223,79 +249,43 @@ function AiVoicePlayerEngine({
     p.staysActiveInBackground = true;
     p.loop = false;
     p.muted = false;
+    p.preservesPitch = true;
   });
+
+  const canPlayAudio = enabled && isPlaying && !isMuted && (isInPip || appState === 'active');
+
+  const canPlayAudioRef = useRef(canPlayAudio);
+  canPlayAudioRef.current = canPlayAudio;
+  const volumeRef = useRef(volume);
+  volumeRef.current = volume;
+  const currentTimeRef = useRef(currentTime);
+  currentTimeRef.current = currentTime;
+  const extendSecRef = useRef(extendSec);
+  extendSecRef.current = extendSec;
+  const playbackRateRef = useRef(playbackRate);
+  playbackRateRef.current = playbackRate;
+
   const lastSpokenSigRef = useRef('');
+  const isSpeakingRef = useRef(false);
+  const pausedMidUtteranceRef = useRef(false);
+  const currentTaskRef = useRef<QueuedTtsTask | null>(null);
+  const pendingCueRef = useRef<QueuedTtsTask | null>(null);
+  const currentFinishEstMsRef = useRef(0);
+  const finishTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const playGenRef = useRef(0);
+  const prevVideoTimeRef = useRef(currentTime);
   const onEngineErrorRef = useRef(onEngineError);
   onEngineErrorRef.current = onEngineError;
 
-  useEffect(() => {
-    const sub = ttsPlayer.addListener('statusChange', (ev) => {
-      if (ev.status === 'error') {
-        lastSpokenSigRef.current = '';
-        onEngineErrorRef.current();
-      }
-    });
-    return () => sub.remove();
-  }, [ttsPlayer]);
-
-  useEffect(() => {
-    try {
-      ttsPlayer.audioMixingMode = 'mixWithOthers';
-      ttsPlayer.staysActiveInBackground = true;
-      ttsPlayer.muted = false;
-      ttsPlayer.volume = Math.max(0, Math.min(1, (volume ?? 80) / 100));
-    } catch {}
-  }, [ttsPlayer, volume]);
-
-  useEffect(() => {
-    lastSpokenSigRef.current = '';
-    try {
-      ttsPlayer.pause();
-    } catch {}
-    return () => {
-      try {
-        ttsPlayer.pause();
-      } catch {}
-    };
-  }, [episodeSignature, reloadNonce, ttsPlayer]);
-
-  useEffect(() => {
-    const canSpeakNow =
-      enabled && isPlaying && !isMuted && Boolean(activeCue) && (isInPip || appState === 'active');
-    if (!canSpeakNow || !activeCue) {
-      try {
-        ttsPlayer.pause();
-      } catch {}
-      if (!activeCue || !enabled || !isPlaying || isMuted) {
-        lastSpokenSigRef.current = '';
-      }
-      return;
+  const clearFinishTimer = useCallback(() => {
+    if (finishTimerRef.current) {
+      clearTimeout(finishTimerRef.current);
+      finishTimerRef.current = null;
     }
+  }, []);
 
-    const toLang = translateLang || '';
-    const cachedTrans = toLang
-      ? translationCacheRef.current.get(`${toLang}::${activeCue.text}`)
-      : '';
-    const spokenText = (cachedTrans || activeCue.text || '').trim();
-    const spokenLang = cachedTrans && toLang ? toLang : 'vi';
-
-    if (!spokenText || spokenText.includes('♪')) {
-      try {
-        ttsPlayer.pause();
-      } catch {}
-      return;
-    }
-
-    const cueSig = `${episodeSignature}|${reloadNonce}|${activeCue.start}|${spokenText}`;
-    if (lastSpokenSigRef.current === cueSig) return;
-    lastSpokenSigRef.current = cueSig;
-
-    const effVoice = getAdaptiveVoiceForTime(voiceMode || 'adaptive', activeCue.start);
-    const durSec = Math.max(0.4, activeCue.end - activeCue.start);
-    const speed = calculateTtsSpeed(spokenText, durSec, effVoice);
-    const remoteTtsUrl = buildTtsProxyUrl(spokenText, spokenLang, speed, effVoice);
-
-    const ensureCachedTtsFile = async (url: string): Promise<string | null> => {
+  const ensureCachedTtsFile = useCallback(
+    async (url: string): Promise<string | null> => {
       const hit = ttsLocalCacheRef.current.get(url);
       if (hit) {
         try {
@@ -308,6 +298,7 @@ function AiVoicePlayerEngine({
       }
       const inflight = ttsInFlightRef.current.get(url);
       if (inflight) return inflight;
+
       const promise = (async () => {
         try {
           const baseDir = `${FileSystem.cacheDirectory ?? ''}dva_tts/`;
@@ -322,6 +313,15 @@ function AiVoicePlayerEngine({
               return null;
             }
             ttsLocalCacheRef.current.set(url, dl.uri);
+            while (ttsLocalCacheRef.current.size > 120) {
+              const oldestKey = ttsLocalCacheRef.current.keys().next().value;
+              if (!oldestKey) break;
+              const oldestUri = ttsLocalCacheRef.current.get(oldestKey);
+              ttsLocalCacheRef.current.delete(oldestKey);
+              if (oldestUri) {
+                FileSystem.deleteAsync(oldestUri, { idempotent: true }).catch(() => {});
+              }
+            }
             return dl.uri;
           }
           return null;
@@ -333,59 +333,409 @@ function AiVoicePlayerEngine({
       })();
       ttsInFlightRef.current.set(url, promise);
       return promise;
-    };
+    },
+    [ttsLocalCacheRef, ttsInFlightRef]
+  );
 
-    let aborted = false;
-    (async () => {
-      const localUri = await ensureCachedTtsFile(remoteTtsUrl);
-      if (aborted || lastSpokenSigRef.current !== cueSig) return;
+  const computeAvailableWallSecForTask = useCallback((task: QueuedTtsTask): number => {
+    const nowPos = currentTimeRef.current;
+    const effectiveStart = Math.max(task.cueStart, nowPos);
+    const effectiveEnd = Math.max(task.cueEnd, effectiveStart + 0.5);
+    return computeCueSpeechWindowSec({
+      cueStart: effectiveStart,
+      cueEnd: effectiveEnd,
+      extendSec: extendSecRef.current,
+      nextCueStart: task.nextCueStart,
+      videoPlaybackRate: playbackRateRef.current,
+    });
+  }, []);
+
+  const calibrateRateAndTimer = useCallback(
+    (actualAudioDurSec: number, task: QueuedTtsTask, onSafetyFinish: () => void) => {
+      if (actualAudioDurSec <= 0.2) return;
+      const availableWallSec = computeAvailableWallSecForTask(task);
+      const refinedRate = computeLocalTtsPlaybackRate({
+        actualAudioDurSec,
+        availableWallSec,
+        effectiveVoice: task.effVoice,
+        serverSpeed: task.serverSpeed,
+        videoPlaybackRate: playbackRateRef.current,
+      });
       try {
-        await ttsPlayer.replaceAsync({ uri: localUri || remoteTtsUrl });
-        if (aborted || lastSpokenSigRef.current !== cueSig) return;
+        ttsPlayer.preservesPitch = true;
+        ttsPlayer.playbackRate = refinedRate;
+      } catch {}
+
+      let playerPos = 0;
+      try {
+        playerPos = Math.max(0, ttsPlayer.currentTime || 0);
+      } catch {}
+      const remainingAudioWallMs = Math.max(
+        250,
+        ((Math.max(0.2, actualAudioDurSec - playerPos)) / Math.max(0.5, refinedRate)) * 1000
+      );
+      currentFinishEstMsRef.current = Date.now() + remainingAudioWallMs;
+      clearFinishTimer();
+      finishTimerRef.current = setTimeout(onSafetyFinish, remainingAudioWallMs + 250);
+    },
+    [clearFinishTimer, computeAvailableWallSecForTask, ttsPlayer]
+  );
+
+  const startTaskNowRef = useRef<(task: QueuedTtsTask) => Promise<void>>(async () => {});
+
+  const completeAndFlushPending = useCallback(() => {
+    clearFinishTimer();
+    isSpeakingRef.current = false;
+    pausedMidUtteranceRef.current = false;
+    currentTaskRef.current = null;
+    const queued = pendingCueRef.current;
+    pendingCueRef.current = null;
+    if (queued && canPlayAudioRef.current) {
+      void startTaskNowRef.current(queued);
+    }
+  }, [clearFinishTimer]);
+
+  const startTaskNow = useCallback(
+    async (task: QueuedTtsTask) => {
+      const myGen = ++playGenRef.current;
+      clearFinishTimer();
+      isSpeakingRef.current = true;
+      pausedMidUtteranceRef.current = false;
+      currentTaskRef.current = task;
+
+      const estAudioDurSec = Math.max(
+        0.55,
+        estimateNaturalTtsDurationSec(task.spokenText) / Math.max(0.5, task.serverSpeed)
+      );
+      const initialWallSec = computeAvailableWallSecForTask(task);
+      const initialLocalRate = computeLocalTtsPlaybackRate({
+        actualAudioDurSec: estAudioDurSec,
+        availableWallSec: initialWallSec,
+        effectiveVoice: task.effVoice,
+        serverSpeed: task.serverSpeed,
+        videoPlaybackRate: playbackRateRef.current,
+      });
+      const estWallMs = (estAudioDurSec / Math.max(0.5, initialLocalRate)) * 1000;
+      currentFinishEstMsRef.current = Date.now() + estWallMs;
+
+      const localUri = await ensureCachedTtsFile(task.remoteUrl);
+      if (playGenRef.current !== myGen || !canPlayAudioRef.current) {
+        if (playGenRef.current === myGen) {
+          isSpeakingRef.current = false;
+          currentTaskRef.current = null;
+        }
+        return;
+      }
+
+      try {
+        await ttsPlayer.replaceAsync({ uri: localUri || task.remoteUrl });
+        if (playGenRef.current !== myGen || !canPlayAudioRef.current) {
+          if (playGenRef.current === myGen) {
+            isSpeakingRef.current = false;
+            currentTaskRef.current = null;
+          }
+          return;
+        }
         ttsPlayer.audioMixingMode = 'mixWithOthers';
         ttsPlayer.staysActiveInBackground = true;
         ttsPlayer.muted = false;
-        ttsPlayer.volume = Math.max(0, Math.min(1, (volume ?? 80) / 100));
+        ttsPlayer.preservesPitch = true;
+        ttsPlayer.volume = Math.max(0, Math.min(1, (volumeRef.current ?? 80) / 100));
+        ttsPlayer.playbackRate = initialLocalRate;
         ttsPlayer.play();
-      } catch {}
-    })();
 
-    // Preload next 6 cues in background
+        const syncDur = Number(ttsPlayer.duration) || 0;
+        if (syncDur > 0.2) {
+          calibrateRateAndTimer(syncDur, task, () => {
+            if (playGenRef.current === myGen) {
+              completeAndFlushPending();
+            }
+          });
+        } else {
+          const fallbackMs = estWallMs + 350;
+          currentFinishEstMsRef.current = Date.now() + estWallMs;
+          clearFinishTimer();
+          finishTimerRef.current = setTimeout(() => {
+            if (playGenRef.current === myGen) {
+              completeAndFlushPending();
+            }
+          }, fallbackMs);
+        }
+      } catch {
+        if (playGenRef.current === myGen) {
+          completeAndFlushPending();
+        }
+      }
+    },
+    [
+      calibrateRateAndTimer,
+      clearFinishTimer,
+      completeAndFlushPending,
+      computeAvailableWallSecForTask,
+      ensureCachedTtsFile,
+      ttsPlayer,
+    ]
+  );
+
+  startTaskNowRef.current = startTaskNow;
+
+  // Player listeners (attached once per ttsPlayer instance)
+  useEffect(() => {
+    const endSub = ttsPlayer.addListener('playToEnd', () => {
+      completeAndFlushPending();
+    });
+
+    const loadSub = ttsPlayer.addListener('sourceLoad', (ev) => {
+      const task = currentTaskRef.current;
+      const dur = ev.duration > 0 ? ev.duration : Number(ttsPlayer.duration) || 0;
+      if (isSpeakingRef.current && task && dur > 0.2) {
+        const activeGen = playGenRef.current;
+        calibrateRateAndTimer(dur, task, () => {
+          if (playGenRef.current === activeGen) {
+            completeAndFlushPending();
+          }
+        });
+      }
+    });
+
+    const statusSub = ttsPlayer.addListener('statusChange', (ev) => {
+      if (ev.status === 'readyToPlay') {
+        const task = currentTaskRef.current;
+        const dur = Number(ttsPlayer.duration) || 0;
+        if (isSpeakingRef.current && task && dur > 0.2) {
+          const activeGen = playGenRef.current;
+          calibrateRateAndTimer(dur, task, () => {
+            if (playGenRef.current === activeGen) {
+              completeAndFlushPending();
+            }
+          });
+        }
+      } else if (ev.status === 'error') {
+        clearFinishTimer();
+        isSpeakingRef.current = false;
+        pausedMidUtteranceRef.current = false;
+        currentTaskRef.current = null;
+        pendingCueRef.current = null;
+        lastSpokenSigRef.current = '';
+        onEngineErrorRef.current();
+      }
+    });
+
+    return () => {
+      endSub.remove();
+      loadSub.remove();
+      statusSub.remove();
+    };
+  }, [calibrateRateAndTimer, clearFinishTimer, completeAndFlushPending, ttsPlayer]);
+
+  // Dedicated volume sync (never restarts or aborts speech)
+  useEffect(() => {
+    try {
+      ttsPlayer.audioMixingMode = 'mixWithOthers';
+      ttsPlayer.staysActiveInBackground = true;
+      ttsPlayer.muted = false;
+      ttsPlayer.preservesPitch = true;
+      ttsPlayer.volume = Math.max(0, Math.min(1, (volume ?? 80) / 100));
+    } catch {}
+  }, [ttsPlayer, volume]);
+
+  // Hard reset only on episode change, manual reload, or voice mode switch
+  useEffect(() => {
+    playGenRef.current += 1;
+    clearFinishTimer();
+    lastSpokenSigRef.current = '';
+    isSpeakingRef.current = false;
+    pausedMidUtteranceRef.current = false;
+    currentTaskRef.current = null;
+    pendingCueRef.current = null;
+    try {
+      ttsPlayer.pause();
+    } catch {}
+    return () => {
+      playGenRef.current += 1;
+      clearFinishTimer();
+      try {
+        ttsPlayer.pause();
+      } catch {}
+    };
+  }, [episodeSignature, reloadNonce, voiceMode, ttsPlayer, clearFinishTimer]);
+
+  // Playback gate: pause cleanly when video pauses/mutes/backgrounds; resume seamlessly without cutoff
+  useEffect(() => {
+    if (!canPlayAudio) {
+      clearFinishTimer();
+      const userStillEnabled = enabled && !isMuted;
+      if (userStillEnabled && isSpeakingRef.current) {
+        pausedMidUtteranceRef.current = true;
+      } else {
+        playGenRef.current += 1;
+        isSpeakingRef.current = false;
+        pausedMidUtteranceRef.current = false;
+        currentTaskRef.current = null;
+        pendingCueRef.current = null;
+        if (!enabled || isMuted) {
+          lastSpokenSigRef.current = '';
+        }
+      }
+      try {
+        ttsPlayer.pause();
+      } catch {}
+      return;
+    }
+
+    if (pausedMidUtteranceRef.current && isSpeakingRef.current) {
+      pausedMidUtteranceRef.current = false;
+      try {
+        ttsPlayer.volume = Math.max(0, Math.min(1, (volumeRef.current ?? 80) / 100));
+        ttsPlayer.preservesPitch = true;
+        ttsPlayer.play();
+        const dur = Number(ttsPlayer.duration) || 0;
+        const pos = Math.max(0, Number(ttsPlayer.currentTime) || 0);
+        const rate = Math.max(0.5, Number(ttsPlayer.playbackRate) || 1);
+        const remainingMs =
+          dur > 0.2
+            ? Math.max(250, ((dur - pos) / rate) * 1000)
+            : Math.max(350, currentFinishEstMsRef.current - Date.now());
+        currentFinishEstMsRef.current = Date.now() + remainingMs;
+        const activeGen = playGenRef.current;
+        clearFinishTimer();
+        finishTimerRef.current = setTimeout(() => {
+          if (playGenRef.current === activeGen) {
+            completeAndFlushPending();
+          }
+        }, remainingMs + 250);
+      } catch {
+        completeAndFlushPending();
+      }
+    }
+  }, [
+    canPlayAudio,
+    enabled,
+    isMuted,
+    ttsPlayer,
+    clearFinishTimer,
+    completeAndFlushPending,
+  ]);
+
+  // Seek / jump detector: immediately cancel stale speech on scrub > 1.8s
+  useEffect(() => {
+    const prevT = prevVideoTimeRef.current;
+    prevVideoTimeRef.current = currentTime;
+    if (Math.abs(currentTime - prevT) > 1.8) {
+      playGenRef.current += 1;
+      clearFinishTimer();
+      isSpeakingRef.current = false;
+      pausedMidUtteranceRef.current = false;
+      currentTaskRef.current = null;
+      pendingCueRef.current = null;
+      lastSpokenSigRef.current = '';
+      try {
+        ttsPlayer.pause();
+      } catch {}
+    }
+  }, [currentTime, ttsPlayer, clearFinishTimer]);
+
+  // Cue trigger effect: NEVER aborts in-flight speech when activeCue turns null during silent gaps
+  useEffect(() => {
+    if (!canPlayAudio || !activeCue || !spokenText || spokenText.includes('♪')) {
+      return;
+    }
+
+    const cueSig = `${episodeSignature}|${reloadNonce}|${activeCue.start}|${spokenText}`;
+    if (lastSpokenSigRef.current === cueSig) return;
+    lastSpokenSigRef.current = cueSig;
+
+    const effVoice = getAdaptiveVoiceForTime(voiceMode || 'adaptive', activeCue.start);
+    const nextCue = mainVnIndex >= 0 ? findNextSpeakableCue(vnCues, mainVnIndex) : null;
+    const speechWindowSec = computeCueSpeechWindowSec({
+      cueStart: activeCue.start,
+      cueEnd: activeCue.end,
+      extendSec: extendSecRef.current,
+      nextCueStart: nextCue?.start ?? null,
+      videoPlaybackRate: playbackRateRef.current,
+    });
+    const serverSpeed = calculateTtsSpeed(spokenText, speechWindowSec, effVoice);
+    const remoteUrl = buildTtsProxyUrl(spokenText, spokenLang, serverSpeed, effVoice);
+
+    const task: QueuedTtsTask = {
+      cueSig,
+      spokenText,
+      spokenLang,
+      effVoice,
+      serverSpeed,
+      remoteUrl,
+      cueStart: activeCue.start,
+      cueEnd: activeCue.end,
+      nextCueStart: nextCue?.start ?? null,
+      speechWindowSec,
+    };
+
+    // Start downloading active cue immediately and preload next 6 speakable cues
+    void ensureCachedTtsFile(remoteUrl);
     if (mainVnIndex >= 0) {
-      for (let i = 1; i <= 6; i++) {
-        const nxt = vnCues[mainVnIndex + i];
-        if (!nxt || !nxt.text || nxt.text.includes('♪')) continue;
-        const nxtTrans = toLang ? translationCacheRef.current.get(`${toLang}::${nxt.text}`) : '';
+      let preloaded = 0;
+      for (let i = mainVnIndex + 1; i < vnCues.length && preloaded < 6; i++) {
+        const nxt = vnCues[i];
+        if (!nxt || nxt.isTop || !nxt.text || nxt.text.includes('♪')) continue;
+        const nxtTrans = translateLang
+          ? translationCacheRef.current.get(`${translateLang}::${nxt.text}`)
+          : '';
         const nxtText = (nxtTrans || nxt.text).trim();
-        const nxtLang = nxtTrans && toLang ? toLang : 'vi';
+        if (!nxtText) continue;
+        const nxtLang = nxtTrans && translateLang ? translateLang : 'vi';
         const nxtVoice = getAdaptiveVoiceForTime(voiceMode || 'adaptive', nxt.start);
-        const nxtSpeed = calculateTtsSpeed(nxtText, Math.max(0.4, nxt.end - nxt.start), nxtVoice);
+        const afterNxt = findNextSpeakableCue(vnCues, i);
+        const nxtWindow = computeCueSpeechWindowSec({
+          cueStart: nxt.start,
+          cueEnd: nxt.end,
+          extendSec: extendSecRef.current,
+          nextCueStart: afterNxt?.start ?? null,
+          videoPlaybackRate: playbackRateRef.current,
+        });
+        const nxtSpeed = calculateTtsSpeed(nxtText, nxtWindow, nxtVoice);
         const nxtUrl = buildTtsProxyUrl(nxtText, nxtLang, nxtSpeed, nxtVoice);
         void ensureCachedTtsFile(nxtUrl);
+        preloaded++;
       }
     }
 
-    return () => {
-      aborted = true;
-    };
+    if (!isSpeakingRef.current) {
+      void startTaskNow(task);
+    } else {
+      let remainingMs = Math.max(0, currentFinishEstMsRef.current - Date.now());
+      try {
+        const dur = Number(ttsPlayer.duration) || 0;
+        const pos = Math.max(0, Number(ttsPlayer.currentTime) || 0);
+        const rate = Math.max(0.5, Number(ttsPlayer.playbackRate) || 1);
+        if (dur > 0.2) {
+          remainingMs = Math.max(0, ((dur - pos) / rate) * 1000);
+        }
+      } catch {}
+
+      if (remainingMs <= 1800) {
+        // Let current sentence finish cleanly without cutoff, then speak this cue immediately
+        pendingCueRef.current = task;
+      } else {
+        // Extreme lag guard: jump directly to keep narration synchronized
+        pendingCueRef.current = null;
+        void startTaskNow(task);
+      }
+    }
   }, [
-    enabled,
-    isPlaying,
-    isMuted,
-    isInPip,
-    appState,
+    canPlayAudio,
+    activeCue?.start,
+    activeCue?.end,
+    spokenText,
+    spokenLang,
     voiceMode,
-    volume,
-    translateLang,
-    activeCue,
-    mainVnIndex,
-    vnCues,
     episodeSignature,
     reloadNonce,
-    translationVersion,
+    mainVnIndex,
+    vnCues,
+    translateLang,
     translationCacheRef,
-    ttsLocalCacheRef,
-    ttsInFlightRef,
+    ensureCachedTtsFile,
+    startTaskNow,
     ttsPlayer,
   ]);
 
@@ -399,6 +749,7 @@ export function NativeSubtitleOverlay({
   isPlaying,
   isMuted = false,
   isInPip,
+  playbackRate = 1.0,
   subHighRaw,
   settings,
   episodeSignature,
@@ -553,6 +904,17 @@ export function NativeSubtitleOverlay({
   }, [settings.subShowEn, settings.subTranslateLang, mainVnCue?.text, mainVnIndex, vnCues]);
 
   const activeVoiceCue = mainVnCue || activeVnTopCue;
+  const activeVoiceToLang = settings.subTranslateLang || '';
+  const activeVoiceCachedTrans =
+    activeVoiceCue && activeVoiceToLang
+      ? translationCacheRef.current.get(`${activeVoiceToLang}::${activeVoiceCue.text}`)
+      : '';
+  const activeSpokenText = activeVoiceCue
+    ? (activeVoiceCachedTrans || activeVoiceCue.text || '').trim()
+    : '';
+  const activeSpokenLang = activeVoiceCachedTrans && activeVoiceToLang ? activeVoiceToLang : 'vi';
+  void translationVersion;
+
   const voiceEngineNode = settings.subAiVoiceEnabled ? (
     <AiVoicePlayerEngine
       key={ttsEngineKey}
@@ -563,13 +925,17 @@ export function NativeSubtitleOverlay({
       appState={appState}
       voiceMode={settings.subAiVoiceMode || 'adaptive'}
       volume={settings.subAiVoiceVolume ?? 80}
-      translateLang={settings.subTranslateLang || ''}
+      currentTime={currentTime}
+      extendSec={extendSec}
+      playbackRate={playbackRate}
       activeCue={activeVoiceCue}
+      spokenText={activeSpokenText}
+      spokenLang={activeSpokenLang}
       mainVnIndex={mainVnIndex}
       vnCues={vnCues}
+      translateLang={activeVoiceToLang}
       episodeSignature={episodeSignature}
       reloadNonce={reloadNonce}
-      translationVersion={translationVersion}
       translationCacheRef={translationCacheRef}
       ttsLocalCacheRef={ttsLocalCacheRef}
       ttsInFlightRef={ttsInFlightRef}

@@ -33,7 +33,7 @@ interface AuthContextValue {
   verifyBiometricsForEnable: () => Promise<{ ok: boolean; reason?: string }>;
   verifyBiometricsForAction: (
     promptMessage: string
-  ) => Promise<{ ok: boolean; reason?: string; biometricLabel: string }>;
+  ) => Promise<{ ok: boolean; reason?: string; biometricLabel: string; notConfigured?: boolean }>;
   lockAppNow: () => void;
   refreshUser: () => Promise<void>;
 }
@@ -151,7 +151,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const verifyBiometricsForAction = useCallback(
     async (
       promptMessage: string
-    ): Promise<{ ok: boolean; reason?: string; biometricLabel: string }> => {
+    ): Promise<{ ok: boolean; reason?: string; biometricLabel: string; notConfigured?: boolean }> => {
       const types = await LocalAuthentication.supportedAuthenticationTypesAsync().catch(
         () => [] as LocalAuthentication.AuthenticationType[]
       );
@@ -163,7 +163,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       const support = await checkBiometricSupportAsync();
       if (!support.supported) {
-        return { ok: false, reason: support.reason, biometricLabel };
+        return { ok: false, reason: support.reason, biometricLabel, notConfigured: true };
       }
 
       isAuthenticatingRef.current = true;
