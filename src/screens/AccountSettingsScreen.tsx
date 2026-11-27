@@ -1471,6 +1471,16 @@ export function AccountSettingsScreen({
                       versionCode: APP_VERSION_CODE,
                       versionName: APP_VERSION,
                       date: APP_RELEASE_DATE,
+                      title: 'Hiệu Ứng Nảy Mượt Khi Chỉnh Thước Phụ Đề',
+                      changes: [
+                        'Khắc phục triệt để lỗi mất thanh chỉnh Kích cỡ chữ hoặc thanh Vị trí sau khi thả tay khỏi thanh kéo còn lại',
+                        'Bổ sung hiệu ứng nảy đàn hồi mượt mà khi các thanh công cụ và nền kính hiện trở lại lúc kết thúc thao tác chỉnh phụ đề',
+                      ],
+                    },
+                    {
+                      versionCode: 49,
+                      versionName: '1.0.48',
+                      date: '27/11/2026',
                       title: 'Phụ Đề Thu Nhỏ Khung Hình Chuẩn Xác & Hiệu Ứng Kéo Thước Trong Suốt',
                       changes: [
                         'Khắc phục triệt để lỗi mất phụ đề khi chuyển sang chế độ Thu nhỏ khung hình cho cả nguồn trực tuyến lẫn phim đã tải về máy ở mọi định dạng, kể cả lúc đang tạm dừng',

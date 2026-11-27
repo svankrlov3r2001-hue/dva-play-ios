@@ -70,9 +70,71 @@ export function PlayerSubtitleSettingsModal({
   const [activeScrubSlider, setActiveScrubSlider] = useState<
     'fontSize' | 'position' | 'delay' | 'extend' | null
   >(null);
-  const chromeOpacity = useRef(new Animated.Value(1)).current;
+  const chromeAnim = useRef(new Animated.Value(1)).current;
+  const fontSizeAnim = useRef(new Animated.Value(1)).current;
+  const positionAnim = useRef(new Animated.Value(1)).current;
   const onLivePreviewModeChangeRef = useRef(onLivePreviewModeChange);
   onLivePreviewModeChangeRef.current = onLivePreviewModeChange;
+
+  const {
+    chromeOpacity,
+    chromeScale,
+    chromeTranslateY,
+    headerTranslateY,
+    fontSizeOpacity,
+    fontSizeScale,
+    fontSizeTranslateY,
+    positionOpacity,
+    positionScale,
+    positionTranslateY,
+  } = useMemo(
+    () => ({
+      chromeOpacity: chromeAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: [0, 1],
+        extrapolate: 'clamp',
+      }),
+      chromeScale: chromeAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: [0.91, 1],
+      }),
+      chromeTranslateY: chromeAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: [10, 0],
+      }),
+      headerTranslateY: chromeAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: [-8, 0],
+      }),
+      fontSizeOpacity: fontSizeAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: [0, 1],
+        extrapolate: 'clamp',
+      }),
+      fontSizeScale: fontSizeAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: [0.91, 1],
+      }),
+      fontSizeTranslateY: fontSizeAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: [10, 0],
+      }),
+      positionOpacity: positionAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: [0, 1],
+        extrapolate: 'clamp',
+      }),
+      positionScale: positionAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: [0.91, 1],
+      }),
+      positionTranslateY: positionAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: [10, 0],
+      }),
+    }),
+    [chromeAnim, fontSizeAnim, positionAnim]
+  );
 
   useEffect(() => {
     const mode: 'layout' | 'timing' | null =
@@ -83,17 +145,44 @@ export function PlayerSubtitleSettingsModal({
           : null;
     onLivePreviewModeChangeRef.current?.(visible ? mode : null);
 
-    chromeOpacity.stopAnimation();
-    Animated.timing(chromeOpacity, {
-      toValue: activeScrubSlider ? 0 : 1,
-      duration: activeScrubSlider ? 180 : 220,
-      useNativeDriver: true,
-    }).start();
-  }, [activeScrubSlider, visible, chromeOpacity]);
+    const animateValue = (anim: Animated.Value, target: 0 | 1) =>
+      target === 0
+        ? Animated.timing(anim, {
+            toValue: 0,
+            duration: 170,
+            useNativeDriver: true,
+          })
+        : Animated.spring(anim, {
+            toValue: 1,
+            stiffness: 210,
+            damping: 11,
+            mass: 0.9,
+            useNativeDriver: true,
+          });
+
+    const chromeTarget: 0 | 1 = activeScrubSlider ? 0 : 1;
+    const fontSizeTarget: 0 | 1 = activeScrubSlider === 'position' ? 0 : 1;
+    const positionTarget: 0 | 1 = activeScrubSlider === 'fontSize' ? 0 : 1;
+
+    chromeAnim.stopAnimation();
+    fontSizeAnim.stopAnimation();
+    positionAnim.stopAnimation();
+
+    Animated.parallel([
+      animateValue(chromeAnim, chromeTarget),
+      animateValue(fontSizeAnim, fontSizeTarget),
+      animateValue(positionAnim, positionTarget),
+    ]).start();
+  }, [activeScrubSlider, visible, chromeAnim, fontSizeAnim, positionAnim]);
 
   useEffect(() => {
     setActiveScrubSlider(null);
-  }, [subView, visible]);
+    if (!visible) {
+      chromeAnim.setValue(1);
+      fontSizeAnim.setValue(1);
+      positionAnim.setValue(1);
+    }
+  }, [subView, visible, chromeAnim, fontSizeAnim, positionAnim]);
 
   const filteredLanguages = useMemo(() => {
     const q = langQuery
@@ -414,7 +503,13 @@ export function PlayerSubtitleSettingsModal({
           contentContainerStyle={{ gap: 10, paddingHorizontal: 16, paddingTop: 6, paddingBottom: 6 }}
         >
           <Animated.View
-            style={[styles.switchRow, { opacity: chromeOpacity }]}
+            style={[
+              styles.switchRow,
+              {
+                opacity: chromeOpacity,
+                transform: [{ scale: chromeScale }, { translateY: chromeTranslateY }],
+              },
+            ]}
             pointerEvents={activeScrubSlider ? 'none' : 'auto'}
           >
             <View style={{ flex: 1, paddingRight: 10 }}>
@@ -434,7 +529,10 @@ export function PlayerSubtitleSettingsModal({
           </Animated.View>
 
           <Animated.View
-            style={{ opacity: activeScrubSlider === 'position' ? chromeOpacity : 1 }}
+            style={{
+              opacity: fontSizeOpacity,
+              transform: [{ scale: fontSizeScale }, { translateY: fontSizeTranslateY }],
+            }}
             pointerEvents={activeScrubSlider === 'position' ? 'none' : 'auto'}
           >
             <IosRulerSlider
@@ -468,7 +566,10 @@ export function PlayerSubtitleSettingsModal({
           </Animated.View>
 
           <Animated.View
-            style={{ opacity: activeScrubSlider === 'fontSize' ? chromeOpacity : 1 }}
+            style={{
+              opacity: positionOpacity,
+              transform: [{ scale: positionScale }, { translateY: positionTranslateY }],
+            }}
             pointerEvents={activeScrubSlider === 'fontSize' ? 'none' : 'auto'}
           >
             <IosRulerSlider
@@ -564,7 +665,11 @@ export function PlayerSubtitleSettingsModal({
             onReset={() => void updateSetting(isDelay ? 'subDelaySec' : 'subExtendSec', 0)}
           />
           <Animated.View
-            style={{ opacity: chromeOpacity, gap: 12 }}
+            style={{
+              opacity: chromeOpacity,
+              gap: 12,
+              transform: [{ scale: chromeScale }, { translateY: chromeTranslateY }],
+            }}
             pointerEvents={activeScrubSlider ? 'none' : 'auto'}
           >
             <Text style={styles.switchSub}>
@@ -746,7 +851,13 @@ export function PlayerSubtitleSettingsModal({
           >
             <View style={styles.inner}>
               <Animated.View
-                style={[styles.header, { opacity: chromeOpacity }]}
+                style={[
+                  styles.header,
+                  {
+                    opacity: chromeOpacity,
+                    transform: [{ scale: chromeScale }, { translateY: headerTranslateY }],
+                  },
+                ]}
                 pointerEvents={activeScrubSlider ? 'none' : 'auto'}
               >
                 {subView !== 'grid' ? (
