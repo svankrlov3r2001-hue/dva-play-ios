@@ -1440,7 +1440,7 @@ export function AccountSettingsScreen({
               Haptics.selectionAsync();
               const next = !changelogOpen;
               setChangelogOpen(next);
-              if (next && !manifest) {
+              if (next) {
                 try {
                   const m = await checkOtaUpdateApi();
                   setManifest(m);
@@ -1471,10 +1471,23 @@ export function AccountSettingsScreen({
                       versionCode: APP_VERSION_CODE,
                       versionName: APP_VERSION,
                       date: APP_RELEASE_DATE,
-                      title: 'Nâng cấp giao diện & trải nghiệm xem phim mượt mà',
+                      title: 'Phụ Đề Thu Nhỏ Khung Hình, Gọn Nhãn Lưu Ý Tải Ngầm & Chi Tiết Bản Cập Nhật',
                       changes: [
-                        'Thiết kế lại toàn bộ giao diện Cài đặt và điều khiển trình phát theo chuẩn iPhone hiện đại',
-                        'Bổ sung thanh kéo thước đo trực quan, nạp lại phụ đề tức thì và xem ngoại tuyến thông minh',
+                        'Khắc phục triệt để lỗi không hiện phụ đề khi xem ở chế độ Thu nhỏ khung hình cho cả luồng phát trực tuyến lẫn phim Phát từ máy',
+                        'Thu gọn cảnh báo lưu ý tải ngầm và bố trí gọn lên góc phải tiêu đề bảng Tải & Xem Ngoại Tuyến giúp danh sách tập rộng thoáng hơn',
+                        'Bổ sung đầy đủ nội dung chi tiết tính năng cho từng phiên bản trong mục Cài đặt → Có gì mới',
+                      ],
+                    },
+                    {
+                      versionCode: 46,
+                      versionName: '1.0.45',
+                      date: '27/11/2026',
+                      title: 'Đồng Bộ Chuyển Tập, Tự Động Tải Lại Ngoại Tuyến & Khung Hình Dọc Ổn Định',
+                      changes: [
+                        'Khắc phục lỗi chọn lại tập trước sau khi tự động chuyển tập bị phát nhầm hình ảnh của tập sau và sửa trạng thái danh sách máy chủ phát phim',
+                        'Giữ nguyên biểu tượng và tính năng Tải xuống khi mở lại ứng dụng và khôi phục phiên xem dở',
+                        'Tự động kích hoạt tiếp tục tải các tập Xem ngoại tuyến bị gián đoạn ngay khi có kết nối mạng trở lại hoặc khi quay lại ứng dụng',
+                        'Cố định khung hình dọc ổn định ngay từ lúc khởi động ứng dụng kể cả khi mở khóa xoay ngang điện thoại',
                       ],
                     },
                   ]
@@ -1483,7 +1496,9 @@ export function AccountSettingsScreen({
                   ? h.changes.filter((c: unknown) => typeof c === 'string' && c.trim().length > 0)
                   : typeof h?.changelog === 'string' && h.changelog.trim()
                     ? [h.changelog.trim()]
-                    : [];
+                    : typeof h?.notes === 'string' && h.notes.trim()
+                      ? [h.notes.trim()]
+                      : [];
                 const verTitle = h?.title || h?.date || h?.releaseDate || 'Bản cập nhật';
                 return (
                   <View key={`${h?.versionCode ?? hIdx}_${hIdx}`} style={styles.historyBox}>

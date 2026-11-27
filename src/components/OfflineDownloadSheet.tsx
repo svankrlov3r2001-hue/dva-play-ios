@@ -605,7 +605,16 @@ export function OfflineDownloadSheet({
   const cardWidth = isLandscape
     ? Math.min(740, winWidth - Math.max(40, insets.left + insets.right + 20))
     : Math.min(460, winWidth - 24);
-  const cardHeight = isLandscape ? Math.min(364, winHeight - 16) : Math.min(winHeight * 0.84, 660);
+  const cardHeight = isLandscape ? Math.min(356, winHeight - 20) : Math.min(winHeight * 0.84, 660);
+
+  const warningPill = (
+    <View style={[styles.bgWarningPill, !isLandscape && styles.bgWarningPillPortrait]}>
+      <Ionicons name="warning-outline" size={12} color="#FF6B6B" />
+      <Text style={styles.bgWarningText} numberOfLines={1}>
+        Hỗ trợ tải ngầm • Không vuốt đóng đa nhiệm
+      </Text>
+    </View>
+  );
 
   return (
     <Modal
@@ -633,7 +642,7 @@ export function OfflineDownloadSheet({
           >
             <View style={styles.cardInner}>
               <View style={styles.header}>
-                <View style={{ flex: 1, paddingRight: 10 }}>
+                <View style={{ flex: 1, minWidth: 0 }}>
                   <Text style={styles.headerTitle} numberOfLines={1}>
                     Tải &amp; Xem Ngoại Tuyến
                   </Text>
@@ -643,15 +652,14 @@ export function OfflineDownloadSheet({
                       ? ` • ${formatEpisodeDisplayTitle(currentEpisodeTitle)}`
                       : ''}
                   </Text>
-                  <View style={styles.bgWarningBox}>
-                    <Text style={styles.bgWarningText} numberOfLines={2}>
-                      Lưu ý: Hỗ trợ tải ngầm khi về màn hình chính hoặc khóa máy — vui lòng không vuốt đóng hoàn toàn ứng dụng trong trình đa nhiệm để tránh gián đoạn.
-                    </Text>
-                  </View>
+                  {!isLandscape ? warningPill : null}
                 </View>
-                <BouncyButton style={styles.closeBtn} onPress={onClose}>
-                  <Ionicons name="close" size={22} color="#FFF" />
-                </BouncyButton>
+                <View style={styles.headerRight}>
+                  {isLandscape ? warningPill : null}
+                  <BouncyButton style={styles.closeBtn} onPress={onClose}>
+                    <Ionicons name="close" size={22} color="#FFF" />
+                  </BouncyButton>
+                </View>
               </View>
 
               {isLandscape ? (
@@ -702,7 +710,14 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 14,
+    gap: 10,
+    marginBottom: 12,
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexShrink: 0,
   },
   headerTitle: {
     color: '#FFF',
@@ -714,20 +729,25 @@ const styles = StyleSheet.create({
     fontSize: 12.5,
     marginTop: 2,
   },
-  bgWarningBox: {
-    marginTop: 5,
+  bgWarningPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
     paddingHorizontal: 9,
     paddingVertical: 5,
-    borderRadius: 8,
-    backgroundColor: 'rgba(229, 9, 20, 0.14)',
+    borderRadius: 999,
+    backgroundColor: 'rgba(229, 9, 20, 0.15)',
     borderWidth: 1,
     borderColor: 'rgba(239, 68, 68, 0.42)',
   },
+  bgWarningPillPortrait: {
+    marginTop: 5,
+    alignSelf: 'flex-start',
+  },
   bgWarningText: {
-    color: '#FF6B6B',
+    color: '#FF7373',
     fontSize: 10.5,
     fontWeight: '600',
-    lineHeight: 14,
   },
   closeBtn: {
     width: 36,

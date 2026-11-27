@@ -15,7 +15,6 @@ import { Feather, Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import {
   isPictureInPictureSupported,
-  SubtitleTrack,
   useVideoPlayer,
   VideoPlayer,
   VideoView,
@@ -353,6 +352,58 @@ function computeSafeResumeSec(
     return { sec: rewoundSec, rewound: rewoundSec < rawSec - 10 };
   }
   return { sec: rawSec, rewound: false };
+}
+
+function buildPipCuesJsonFromData(
+  viCues: ParsedVttCue[],
+  enCues: ParsedVttCue[],
+  cfg: {
+    subShowVi: boolean;
+    subShowEn: boolean;
+    subReverse: boolean;
+    subDelaySec: number;
+    subExtendSec: number;
+  }
+): string {
+  if (!cfg.subShowVi && !cfg.subShowEn) return '';
+  const delay = cfg.subDelaySec || 0;
+  const extend = cfg.subExtendSec || 0;
+  const vi = cfg.subShowVi ? viCues : [];
+  const en = cfg.subShowEn ? enCues : [];
+  if (vi.length === 0 && en.length === 0) return '';
+  const primary = cfg.subReverse && en.length > 0 ? en : vi.length > 0 ? vi : en;
+  const secondary = primary === vi ? en : vi;
+  const rows: { s: number; e: number; t: string }[] = [];
+  let secIdx = 0;
+  for (let i = 0; i < primary.length; i++) {
+    const c = primary[i];
+    if (c.isTop || /^\s*\[.*đặng\s*việt\s*anh.*\]\s*$/i.test(c.text)) continue;
+    const s = Math.max(0, Number((c.start + delay).toFixed(2)));
+    const e = Math.max(s + 0.25, Number((c.end + delay + extend).toFixed(2)));
+    let text = c.text.trim();
+    if (secondary.length > 0) {
+      while (secIdx < secondary.length && secondary[secIdx].end < c.start - 0.6) {
+        secIdx++;
+      }
+      if (secIdx < secondary.length) {
+        const m = secondary[secIdx];
+        if (m.start <= c.end + 0.6 && m.end >= c.start - 0.6) {
+          const secTxt = m.text.trim();
+          if (secTxt && secTxt !== text) {
+            text = `${text}\n${secTxt}`;
+          }
+        }
+      }
+    }
+    if (text) rows.push({ s, e, t: text });
+  }
+  if (rows.length === 0) return '';
+  rows.sort((a, b) => a.s - b.s);
+  try {
+    return JSON.stringify(rows);
+  } catch {
+    return '';
+  }
 }
 
 /**
@@ -1327,40 +1378,6 @@ export function PlayerModal({
     );
   }, [offlineItems, activeStreamCode, params?.videosId, params?.episodeId]);
 
-  const syncNativePipSubtitleTrack = useCallback(
-    (player: VideoPlayer, enable: boolean) => {
-      try {
-        if (!enable || (!settingsRef.current.subShowVi && !settingsRef.current.subShowEn)) {
-          player.subtitleTrack = null;
-          return;
-        }
-        const pool: SubtitleTrack[] = player.availableSubtitleTracks || [];
-        if (pool.length === 0) return;
-        const preferEn = !settingsRef.current.subShowVi && settingsRef.current.subShowEn;
-        let chosen: SubtitleTrack | null = null;
-        if (preferEn) {
-          chosen =
-            pool.find(
-              (t) =>
-                (t.language || '').toLowerCase().startsWith('en') ||
-                (t.label || '').toLowerCase().includes('eng') ||
-                (t.label || '').toLowerCase().includes('anh')
-            ) || pool[0];
-        } else {
-          chosen =
-            pool.find(
-              (t) =>
-                (t.language || '').toLowerCase().startsWith('vi') ||
-                (t.label || '').toLowerCase().includes('việt') ||
-                (t.label || '').toLowerCase().includes('viet')
-            ) || pool[0];
-        }
-        player.subtitleTrack = chosen || null;
-      } catch {}
-    },
-    []
-  );
-
   // Persist current watch progress to backend + bidirectional offline sync (returns Promise)
   const persistCurrentProgress = useCallback(
     async (forceFlush = false): Promise<void> => {
@@ -2111,6 +2128,15 @@ export function PlayerModal({
         setEnCues(dual.enCues);
         setVnSubUrl(dual.vnUrl);
         setEnSubUrl(dual.enUrl);
+        setNativePipSubtitleCues(
+          buildPipCuesJsonFromData(dual.vnCues, dual.enCues, {
+            subShowVi: settingsRef.current.subShowVi,
+            subShowEn: settingsRef.current.subShowEn,
+            subReverse: settingsRef.current.subReverse,
+            subDelaySec: settingsRef.current.subDelaySec || 0,
+            subExtendSec: settingsRef.current.subExtendSec || 0,
+          })
+        );
 
         const canUseInitialResume = Boolean(
           params.initialResumeSec &&
@@ -2314,6 +2340,15 @@ export function PlayerModal({
         setEnCues(dualSubs.enCues);
         setVnSubUrl(effectiveVnUrl);
         setEnSubUrl(effectiveEnUrl);
+        setNativePipSubtitleCues(
+          buildPipCuesJsonFromData(dualSubs.vnCues, dualSubs.enCues, {
+            subShowVi: settingsRef.current.subShowVi,
+            subShowEn: settingsRef.current.subShowEn,
+            subReverse: settingsRef.current.subReverse,
+            subDelaySec: settingsRef.current.subDelaySec || 0,
+            subExtendSec: settingsRef.current.subExtendSec || 0,
+          })
+        );
 
         let initialServers = buildInitialServerStates({
           serverFileKey: sfk,
@@ -2875,6 +2910,15 @@ export function PlayerModal({
       setEnCues(pkg.enCues);
       setVnSubUrl(pkg.vnUrl);
       setEnSubUrl(pkg.enUrl);
+      setNativePipSubtitleCues(
+        buildPipCuesJsonFromData(pkg.vnCues, pkg.enCues, {
+          subShowVi: settingsRef.current.subShowVi,
+          subShowEn: settingsRef.current.subShowEn,
+          subReverse: settingsRef.current.subReverse,
+          subDelaySec: settingsRef.current.subDelaySec || 0,
+          subExtendSec: settingsRef.current.subExtendSec || 0,
+        })
+      );
       setServers(pkg.servers);
       setActiveServerId(pkg.serverId);
       activeServerIdRef.current = pkg.serverId;
@@ -3151,9 +3195,15 @@ export function PlayerModal({
       setEnCues(dual.enCues);
       setVnSubUrl(dual.vnUrl);
       setEnSubUrl(dual.enUrl);
-      if (isInPipRef.current) {
-        syncNativePipSubtitleTrack(getActivePlayer(), true);
-      }
+      setNativePipSubtitleCues(
+        buildPipCuesJsonFromData(dual.vnCues, dual.enCues, {
+          subShowVi: settingsRef.current.subShowVi,
+          subShowEn: settingsRef.current.subShowEn,
+          subReverse: settingsRef.current.subReverse,
+          subDelaySec: settingsRef.current.subDelaySec || 0,
+          subExtendSec: settingsRef.current.subExtendSec || 0,
+        })
+      );
       showToast(
         'Đã nạp lại phụ đề & thuyết minh',
         'Phụ đề và giọng đọc đã được đồng bộ lại',
@@ -3178,8 +3228,6 @@ export function PlayerModal({
   }, [
     isReloadingSubtitles,
     matchedOfflineItem,
-    getActivePlayer,
-    syncNativePipSubtitleTrack,
     showToast,
   ]);
 
@@ -4642,45 +4690,13 @@ export function PlayerModal({
   );
 
   const pipSubCuesJson = useMemo(() => {
-    if (!settings.subShowVi && !settings.subShowEn) return '';
-    const delay = settings.subDelaySec || 0;
-    const extend = settings.subExtendSec || 0;
-    const vi = settings.subShowVi ? vnCues : [];
-    const en = settings.subShowEn ? enCues : [];
-    if (vi.length === 0 && en.length === 0) return '';
-    const primary = settings.subReverse && en.length > 0 ? en : vi.length > 0 ? vi : en;
-    const secondary = primary === vi ? en : vi;
-    const rows: { s: number; e: number; t: string }[] = [];
-    let secIdx = 0;
-    for (let i = 0; i < primary.length; i++) {
-      const c = primary[i];
-      if (c.isTop || /^\s*\[.*đặng\s*việt\s*anh.*\]\s*$/i.test(c.text)) continue;
-      const s = Math.max(0, Number((c.start + delay).toFixed(2)));
-      const e = Math.max(s + 0.25, Number((c.end + delay + extend).toFixed(2)));
-      let text = c.text.trim();
-      if (secondary.length > 0) {
-        while (secIdx < secondary.length && secondary[secIdx].end < c.start - 0.6) {
-          secIdx++;
-        }
-        if (secIdx < secondary.length) {
-          const m = secondary[secIdx];
-          if (m.start <= c.end + 0.6 && m.end >= c.start - 0.6) {
-            const secTxt = m.text.trim();
-            if (secTxt && secTxt !== text) {
-              text = `${text}\n${secTxt}`;
-            }
-          }
-        }
-      }
-      if (text) rows.push({ s, e, t: text });
-    }
-    if (rows.length === 0) return '';
-    rows.sort((a, b) => a.s - b.s);
-    try {
-      return JSON.stringify(rows);
-    } catch {
-      return '';
-    }
+    return buildPipCuesJsonFromData(vnCues, enCues, {
+      subShowVi: settings.subShowVi,
+      subShowEn: settings.subShowEn,
+      subReverse: settings.subReverse,
+      subDelaySec: settings.subDelaySec || 0,
+      subExtendSec: settings.subExtendSec || 0,
+    });
   }, [
     settings.subShowVi,
     settings.subShowEn,
@@ -5221,7 +5237,6 @@ export function PlayerModal({
                           await viewRef?.startPictureInPicture();
                         } catch {
                           setIsInPip(false);
-                          syncNativePipSubtitleTrack(getActivePlayer(), false);
                           showToast('Không thể mở thu nhỏ khung hình lúc này', undefined, 'warning', {
                             family: 'ionicons',
                             name: 'albums-outline',
