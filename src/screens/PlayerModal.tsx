@@ -135,6 +135,7 @@ export interface PlayerLaunchParams {
   posterUrl?: string;
   thumbnailUrl?: string;
   initialResumeSec?: number;
+  offlineOnlyMode?: boolean;
   offlineUri?: string;
   offlineItem?: OfflineDownloadItem;
   offlineEpisodes?: OfflineDownloadItem[];
@@ -1024,6 +1025,7 @@ export function PlayerModal({
   const pipRestoreTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const initialSeekPendingRef = useRef<{ sec: number; done: boolean }>({ sec: 0, done: true });
+  const initialResumeUsedForCodeRef = useRef<string>('');
   const skipNextReloadCodeRef = useRef<string | null>(null);
   const loadSeqRef = useRef(0);
   const checkFilePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -1091,7 +1093,7 @@ export function PlayerModal({
   const onWatchProgressSavedRef = useRef(onWatchProgressSaved);
   onWatchProgressSavedRef.current = onWatchProgressSaved;
 
-  const isOfflineOnlyMode = Boolean(params?.offlineUri || params?.offlineItem);
+  const isOfflineOnlyMode = Boolean(params?.offlineOnlyMode);
 
   const ensureLiveLocalPort = useCallback(async (forceRestart = false): Promise<number> => {
     const rootDir = getOfflineRootDir();
@@ -1960,6 +1962,7 @@ export function PlayerModal({
       }
       streamCodeToLoad = resolvedCode;
       const mySeq = ++loadSeqRef.current;
+      cancelEpisodeCrossfade();
       offlineRetryAttemptedRef.current = false;
       rewoundToastPendingRef.current = false;
       userExplicitlyPausedRef.current = false;
@@ -2007,12 +2010,20 @@ export function PlayerModal({
         playerB.pause();
       } catch {}
 
+      const validOverride =
+        opts?.offlineOverride &&
+        opts.offlineOverride.stream_code === streamCodeToLoad &&
+        (!params.videosId ||
+          !opts.offlineOverride.videos_id ||
+          opts.offlineOverride.videos_id === params.videosId)
+          ? opts.offlineOverride
+          : null;
       const localOffline =
-        opts?.offlineOverride ||
+        validOverride ||
         findCompletedOfflineItem({
           streamCode: streamCodeToLoad,
           videosId: params.videosId,
-          episodeId: params.episodeId,
+          episodeId: streamCodeToLoad === params.streamCode ? params.episodeId : undefined,
         });
 
       // Offline-first branch when opened from Offline Library (resolves non-99 statuses accurately without hanging on "Đang kiểm tra")
@@ -2101,7 +2112,19 @@ export function PlayerModal({
         setVnSubUrl(dual.vnUrl);
         setEnSubUrl(dual.enUrl);
 
-        let initialPos = Math.max(localOffline.resume_sec || 0, params.initialResumeSec || 0);
+        const canUseInitialResume = Boolean(
+          params.initialResumeSec &&
+            params.initialResumeSec > 0 &&
+            params.streamCode === streamCodeToLoad &&
+            initialResumeUsedForCodeRef.current !== streamCodeToLoad
+        );
+        if (canUseInitialResume) {
+          initialResumeUsedForCodeRef.current = streamCodeToLoad;
+        }
+        let initialPos = Math.max(
+          localOffline.resume_sec || 0,
+          canUseInitialResume ? params.initialResumeSec || 0 : 0
+        );
         if (localOffline.duration_sec && localOffline.duration_sec > 60) {
           const safe = computeSafeResumeSec(
             initialPos,
@@ -2308,7 +2331,20 @@ export function PlayerModal({
             ? serverProgRes.resume_seconds
             : resData.resume_seconds || 0;
         const offlineResumeSec = localOffline?.resume_sec || 0;
-        let targetStartSec = Math.max(serverResumeSec, offlineResumeSec, params.initialResumeSec || 0);
+        const canUseInitialResume = Boolean(
+          params.initialResumeSec &&
+            params.initialResumeSec > 0 &&
+            params.streamCode === streamCodeToLoad &&
+            initialResumeUsedForCodeRef.current !== streamCodeToLoad
+        );
+        if (canUseInitialResume) {
+          initialResumeUsedForCodeRef.current = streamCodeToLoad;
+        }
+        let targetStartSec = Math.max(
+          serverResumeSec,
+          offlineResumeSec,
+          canUseInitialResume ? params.initialResumeSec || 0 : 0
+        );
         if (
           targetStartSec <= 3 &&
           settingsRef.current.autoSkipIntro &&
@@ -2389,6 +2425,7 @@ export function PlayerModal({
       params,
       isOfflineOnlyMode,
       ensureLiveLocalPort,
+      cancelEpisodeCrossfade,
       playerA,
       playerB,
       playServerOnActiveLayer,
@@ -2422,12 +2459,70 @@ export function PlayerModal({
 
       const livePort = await ensureLiveLocalPort(false);
 
-      if (localNextOff && localNextOff.local_uri) {
+      if (
+        localNextOff &&
+        localNextOff.local_uri &&
+        (isOfflineOnlyMode || settingsRef.current.preferOfflineWhenOnline)
+      ) {
         const offUrl = buildOfflineServerUrl(localNextOff, livePort);
-        const dual = await loadDualSubtitles({
-          serverFileKey: sfkHint || nextResolved?.server_file_key,
+        const nextSfk = sfkHint || nextResolved?.server_file_key || localNextOff.server_file_key || '';
+        const [dual, pings, cfRes, ggdRes] = await Promise.all([
+          loadDualSubtitles({
+            serverFileKey: nextSfk,
+            resolvedSubtitles: nextResolved?.subtitles,
+            offlineItem: localNextOff,
+          }),
+          isOfflineOnlyMode
+            ? Promise.resolve({ ping99: 1, ping11: null, ping36: null, ping40: null, ping3: null })
+            : measureAllServerPings(true),
+          !isOfflineOnlyMode && nextSfk ? checkServerFileStatus(nextSfk) : Promise.resolve(null),
+          !isOfflineOnlyMode &&
+          nextSfk &&
+          !nextResolved?.ggdriver_1 &&
+          !nextResolved?.ggdriver_2 &&
+          !nextResolved?.ggdriver_3
+            ? checkGgdriverApi(nextSfk, nextResolved?.server_movie_title || localNextOff.server_movie_title)
+            : Promise.resolve({
+                ggdriver_1: Boolean(nextResolved?.ggdriver_1),
+                ggdriver_2: Boolean(nextResolved?.ggdriver_2),
+                ggdriver_3: Boolean(nextResolved?.ggdriver_3),
+              }),
+        ]);
+        if (
+          !isOfflineOnlyMode &&
+          nextSfk &&
+          cfRes &&
+          (cfRes.status === 'error_file' || cfRes.status === 'error_file_log')
+        ) {
+          void triggerServerPrepare(nextSfk);
+        }
+        let nextServers = buildInitialServerStates({
+          serverFileKey: nextSfk,
           offlineItem: localNextOff,
+          localServerPort: livePort,
+          resolved: nextResolved || undefined,
+          ggd: ggdRes,
+          pings,
         });
+        if (isOfflineOnlyMode) {
+          nextServers = nextServers.map((s) =>
+            s.id === '99'
+              ? s
+              : {
+                  ...s,
+                  status: 'error',
+                  pingFailed: true,
+                  progressLabel: 'Chế độ ngoại tuyến',
+                }
+          );
+        } else if (cfRes && nextSfk) {
+          nextServers = applyCheckFileToServers(
+            nextServers,
+            nextSfk,
+            cfRes,
+            nextResolved?.skip_intro_sec || localNextOff.skip_intro_sec || 0
+          );
+        }
         const nextSkip =
           nextResolved?.skip_intro_sec ??
           resolvedRef.current?.next_episode_meta?.skip_intro_sec ??
@@ -2469,21 +2564,7 @@ export function PlayerModal({
           endCreditsSec: nextEndCredits,
           subHighRaw: nextResolved?.sub_high || '',
           offlineItem: localNextOff,
-          servers: buildInitialServerStates({
-            serverFileKey: sfkHint || nextResolved?.server_file_key || '',
-            offlineItem: localNextOff,
-            localServerPort: livePort,
-            resolved: nextResolved || undefined,
-          }).map((s) =>
-            s.id === '99'
-              ? s
-              : {
-                  ...s,
-                  status: 'error',
-                  pingFailed: true,
-                  progressLabel: 'Chưa kiểm tra',
-                }
-          ),
+          servers: nextServers,
         };
         preloadedNextRef.current = pkg;
         const inactive = getInactivePlayer();
@@ -2585,7 +2666,7 @@ export function PlayerModal({
     } catch {
       setPreloadState('failed');
     }
-  }, [currentNextEpisode, params?.videosId, params?.title, ensureLiveLocalPort, qualityBadge, getInactivePlayer]);
+  }, [currentNextEpisode, isOfflineOnlyMode, params?.videosId, params?.title, ensureLiveLocalPort, qualityBadge, getInactivePlayer]);
 
   // Execute seamless 2-layer crossfade switch when preloaded next episode is ready
   const triggerSwitchToNextEpisode = useCallback(() => {
@@ -2780,6 +2861,13 @@ export function PlayerModal({
       manualLockedServerRef.current = null;
       setIsManualServerLocked(false);
       erroredServersRef.current = new Set();
+      resolvedRef.current = pkg.resolved;
+      serversRef.current = pkg.servers;
+      activeStreamCodeRef.current = pkg.streamCode;
+      vnSubUrlRef.current = pkg.vnUrl;
+      enSubUrlRef.current = pkg.enUrl;
+      activeRawStreamUrlRef.current = pkg.streamUrl;
+      activeLoadedPreviewTagRef.current = '';
       setResolved(pkg.resolved);
       setActiveStreamCode(pkg.streamCode);
       setActiveEpTitle(formatEpisodeDisplayTitle(pkg.episode.episodes_name));
@@ -2803,8 +2891,26 @@ export function PlayerModal({
       setIsBuffering(false);
       setIsPlaying(Boolean(promotedPlayer.playing));
 
+      const nextSfk = pkg.resolved?.server_file_key || '';
+      const needsPoll = pkg.servers.some(
+        (s) => (s.id === '11' || s.id === '36') && s.status !== 'ready'
+      );
+      if (!isOfflineOnlyMode && nextSfk && needsPoll) {
+        startCheckFilePolling({
+          mySeq: loadSeqRef.current,
+          sfk: nextSfk,
+          targetStartSec: pkg.skipIntroSec || 0,
+          hasGgdDirect: Boolean(
+            pkg.resolved?.ggdriver_1 || pkg.resolved?.ggdriver_2 || pkg.resolved?.ggdriver_3
+          ),
+          vnUrl: pkg.vnUrl,
+          enUrl: pkg.enUrl,
+          movieTitle: pkg.resolved?.title || paramsRef.current?.title || '',
+        });
+      }
+
       skipNextReloadCodeRef.current = pkg.streamCode;
-      if (pkg.offlineItem && onSwitchOfflineItem) {
+      if (isOfflineOnlyMode && pkg.offlineItem && onSwitchOfflineItem) {
         onSwitchOfflineItem(pkg.offlineItem);
       } else if (onSwitchEpisode) {
         onSwitchEpisode(pkg.episode, pkg.episodeIndex);
@@ -2820,7 +2926,7 @@ export function PlayerModal({
     }
 
     // Standard switch if not yet preloaded into Layer 2
-    if (pkg?.offlineItem && onSwitchOfflineItem) {
+    if (isOfflineOnlyMode && pkg?.offlineItem && onSwitchOfflineItem) {
       onSwitchOfflineItem(pkg.offlineItem);
     } else if (onSwitchEpisode) {
       onSwitchEpisode(currentNextEpisode.ep, currentNextEpisode.index);
@@ -2831,8 +2937,10 @@ export function PlayerModal({
     }
   }, [
     currentNextEpisode,
+    isOfflineOnlyMode,
     persistCurrentProgress,
     cancelEpisodeCrossfade,
+    startCheckFilePolling,
     updateSetting,
     playerA,
     playerB,
@@ -3712,6 +3820,7 @@ export function PlayerModal({
   useEffect(() => {
     if (!visible || !params) {
       loadedEpisodeKeyRef.current = '';
+      initialResumeUsedForCodeRef.current = '';
       lastLoadedVideosIdRef.current = 0;
       resetPlayerStateCleanly(null);
       setServerModalOpen(false);
@@ -4545,6 +4654,7 @@ export function PlayerModal({
     let secIdx = 0;
     for (let i = 0; i < primary.length; i++) {
       const c = primary[i];
+      if (c.isTop || /^\s*\[.*đặng\s*việt\s*anh.*\]\s*$/i.test(c.text)) continue;
       const s = Math.max(0, Number((c.start + delay).toFixed(2)));
       const e = Math.max(s + 0.25, Number((c.end + delay + extend).toFixed(2)));
       let text = c.text.trim();
@@ -4755,7 +4865,6 @@ export function PlayerModal({
             onPictureInPictureStop={() => {
               if (activeLayerRef.current !== 'A') return;
               setIsInPip(false);
-              syncNativePipSubtitleTrack(playerA, false);
               scheduleLandscapeRestoreAfterPip();
             }}
           />
@@ -4794,7 +4903,6 @@ export function PlayerModal({
             onPictureInPictureStop={() => {
               if (activeLayerRef.current !== 'B') return;
               setIsInPip(false);
-              syncNativePipSubtitleTrack(playerB, false);
               scheduleLandscapeRestoreAfterPip();
             }}
           />
@@ -6010,6 +6118,9 @@ export function PlayerModal({
           offlineItems={offlineItems}
           onSelectEpisode={(sc, epName, epIndex, seasonId) => {
             persistCurrentProgress(true);
+            cancelEpisodeCrossfade();
+            skipNextReloadCodeRef.current = null;
+            loadedEpisodeKeyRef.current = '';
             const matchedEp = effectiveEpisodes.find((e) => e.stream_code === sc) || {
               episodes_id: 0,
               seasons_id: Number(seasonId || 0) || 0,
@@ -6020,14 +6131,19 @@ export function PlayerModal({
               order: epIndex + 1,
             };
             const offMatch = offlineItems.find(
-              (o) => o.status === 'completed' && o.stream_code === sc
+              (o) =>
+                o.status === 'completed' &&
+                o.stream_code === sc &&
+                (!params.videosId || !o.videos_id || o.videos_id === params.videosId)
             );
             if (isOfflineOnlyMode && offMatch && onSwitchOfflineItem) {
               onSwitchOfflineItem(offMatch);
+            } else if (sc === params.streamCode) {
+              void loadEpisodeByCode(sc, { episodeTitleHint: epName, offlineOverride: offMatch || null });
             } else if (onSwitchEpisode) {
               onSwitchEpisode(matchedEp, epIndex);
             } else {
-              void loadEpisodeByCode(sc, { episodeTitleHint: epName });
+              void loadEpisodeByCode(sc, { episodeTitleHint: epName, offlineOverride: offMatch || null });
             }
           }}
         />

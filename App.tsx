@@ -238,8 +238,10 @@ function RootAppContent() {
       }
     });
     const unsubNet = subscribeNetworkStatus((online) => {
-      if (
-        !online &&
+      if (online) {
+        ensureOfflineMediaServer(getOfflineRootDir()).catch(() => {});
+        resumeBackgroundQueueIfNeeded(true).catch(() => {});
+      } else if (
         !offlineModeActiveRef.current &&
         playerPhaseRef.current === 'idle' &&
         !splashVisibleRef.current
@@ -275,6 +277,7 @@ function RootAppContent() {
   useEffect(() => {
     if (!serverReady || !user || offlineModeActive) return;
     const runBidirectionalSync = () => {
+      resumeBackgroundQueueIfNeeded(true).catch(() => {});
       flushPendingOfflineProgressToServer()
         .then(() => pullOnlineProgressForOfflineItems())
         .catch(() => {});
@@ -728,6 +731,7 @@ function RootAppContent() {
       posterUrl: session.posterUrl || matchedOffline?.local_poster_uri || matchedOffline?.poster_url || '',
       thumbnailUrl: session.thumbnailUrl || matchedOffline?.local_poster_uri || matchedOffline?.poster_url || '',
       initialResumeSec: session.positionSec,
+      offlineOnlyMode: offlineModeActive,
       ...(matchedOffline
         ? { offlineUri: matchedOffline.local_uri, offlineItem: matchedOffline }
         : {}),
@@ -770,6 +774,7 @@ function RootAppContent() {
       episodeTitle: offline.episode_title,
       posterUrl: offline.local_poster_uri || offline.poster_url || '',
       thumbnailUrl: offline.local_poster_uri || offline.poster_url || '',
+      offlineOnlyMode: offlineModeActive,
       offlineUri: offline.local_uri,
       offlineItem: offline,
       offlineEpisodes: resolvedSeries,
@@ -795,18 +800,25 @@ function RootAppContent() {
   }, []);
 
   const handleSwitchEpisode = useCallback((ep: EpisodeItem, epIndex: number) => {
-    setPlayerParams((prev) =>
-      prev
-        ? {
-            ...prev,
-            streamCode: ep.stream_code,
-            episodeId: ep.episodes_id,
-            episodeNumber: epIndex + 1,
-            seasonId: String(ep.seasons_id),
-            episodeTitle: ep.episodes_name,
-          }
-        : null
-    );
+    setPlayerParams((prev) => {
+      if (!prev) return null;
+      const matchedOffline = findCompletedOfflineItem({
+        streamCode: ep.stream_code,
+        videosId: prev.videosId,
+        episodeId: ep.episodes_id,
+      });
+      return {
+        ...prev,
+        streamCode: ep.stream_code,
+        episodeId: ep.episodes_id,
+        episodeNumber: epIndex + 1,
+        seasonId: String(ep.seasons_id),
+        episodeTitle: ep.episodes_name,
+        initialResumeSec: undefined,
+        offlineUri: matchedOffline?.local_uri,
+        offlineItem: matchedOffline || undefined,
+      };
+    });
   }, []);
 
   const handleClosePlayer = useCallback(() => {
@@ -909,6 +921,7 @@ function RootAppContent() {
                     setSplashDismissing(false);
                     setSplashVisible(true);
                     probeServerConnection();
+                    resumeBackgroundQueueIfNeeded(true).catch(() => {});
                     refreshUser().catch(() => {});
                   }}
                 />

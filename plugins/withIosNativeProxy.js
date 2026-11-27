@@ -544,6 +544,8 @@ private func dvaExtractFirstTsPts(_ data: Data) -> UInt64? {
   let bytes = [UInt8](data)
   let count = bytes.count
   guard count >= 24 else { return nil }
+  var minPts: UInt64? = nil
+  var packetsChecked = 0
   var i = 0
   while i <= count - 188 {
     if bytes[i] == 0x47 {
@@ -572,7 +574,16 @@ private func dvaExtractFirstTsPts(_ data: Data) -> UInt64? {
                   let p2 = UInt64((bytes[off + 11] >> 1) & 0x7F) << 15
                   let p3 = UInt64(bytes[off + 12]) << 7
                   let p4 = UInt64((bytes[off + 13] >> 1) & 0x7F)
-                  return p0 | p1 | p2 | p3 | p4
+                  let pts = p0 | p1 | p2 | p3 | p4
+                  if let curMin = minPts {
+                    if pts < curMin { minPts = pts }
+                  } else {
+                    minPts = pts
+                  }
+                  packetsChecked += 1
+                  if packetsChecked >= 40 {
+                    return minPts
+                  }
                 }
               }
             }
@@ -584,7 +595,7 @@ private func dvaExtractFirstTsPts(_ data: Data) -> UInt64? {
     }
     i += 1
   }
-  return nil
+  return minPts
 }
 
 private func dvaSanitizeVttTimestamp(_ token: String) -> String {
@@ -781,11 +792,13 @@ private func dvaParseVttTimestampSec(_ raw: String) -> Double? {
   let clean = raw.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: ",", with: ".")
   let parts = clean.split(separator: ":")
   if parts.count == 3 {
-    guard let h = Double(parts[0]), let m = Double(parts[1]), let s = Double(parts[2]) else { return nil }
+    guard let h = Double(parts[0]), let m = Double(parts[1]), let s = Double(parts[2]),
+          h >= 0, m >= 0, m < 60.0, s >= 0, s < 60.0 else { return nil }
     return h * 3600.0 + m * 60.0 + s
   }
   if parts.count == 2 {
-    guard let m = Double(parts[0]), let s = Double(parts[1]) else { return nil }
+    guard let m = Double(parts[0]), let s = Double(parts[1]),
+          m >= 0, m < 60.0, s >= 0, s < 60.0 else { return nil }
     return m * 60.0 + s
   }
   return nil
@@ -797,6 +810,7 @@ private func dvaParseVttTextToCues(_ rawText: String) -> [DvaServerPipCue] {
     s.removeFirst()
   }
   s = s.replacingOccurrences(of: "\\r\\n", with: "\\n").replacingOccurrences(of: "\\r", with: "\\n")
+  s = s.replacingOccurrences(of: "WEBVTT", with: "\\n\\nWEBVTT\\n\\n", options: .caseInsensitive)
   let rawLines = s.components(separatedBy: "\\n")
   var blocks: [[String]] = []
   var curBlock: [String] = []
@@ -822,6 +836,9 @@ private func dvaParseVttTextToCues(_ rawText: String) -> [DvaServerPipCue] {
     }
     guard let tIdx = blk.firstIndex(where: { $0.contains("-->") }) else { continue }
     let line = blk[tIdx]
+    if line.lowercased().contains("line:2%") {
+      continue
+    }
     guard let arrowRange = line.range(of: "-->") else { continue }
     let startRaw = String(line[..<arrowRange.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
     let afterRaw = String(line[arrowRange.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -833,7 +850,12 @@ private func dvaParseVttTextToCues(_ rawText: String) -> [DvaServerPipCue] {
       $0.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression).trimmingCharacters(in: .whitespaces)
     }.filter { !$0.isEmpty }
     guard !textLines.isEmpty else { continue }
-    cues.append(DvaServerPipCue(s: startSec, e: endSec, t: textLines.joined(separator: "\\n")))
+    let joined = textLines.joined(separator: "\\n")
+    let lowerJoined = joined.lowercased()
+    if lowerJoined.contains("đặng việt anh") && (lowerJoined.contains("[") || textLines.count == 1) {
+      continue
+    }
+    cues.append(DvaServerPipCue(s: startSec, e: endSec, t: joined))
   }
   return cues.sorted { $0.s < $1.s }
 }
@@ -857,9 +879,8 @@ private func dvaBuildVttSegmentBody(
   mpegtsPts: UInt64,
   isFmp4: Bool
 ) -> String {
-  var out = isFmp4
-    ? "WEBVTT\\n\\n"
-    : "WEBVTT\\nX-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:\\(mpegtsPts)\\n\\n"
+  let mapPts: UInt64 = isFmp4 ? 0 : mpegtsPts
+  var out = "WEBVTT\\nX-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:\\(mapPts)\\n\\n"
   var entries: [String] = []
   for c in cues {
     if c.e >= segStart - 0.5 && c.s <= segEnd + 0.5 {
@@ -991,16 +1012,21 @@ private func dvaServeOfflinePipMaster(clientFd: Int32, itemDirURL: URL, method: 
   var outLines = ["#EXTM3U", "#EXT-X-VERSION:3"]
   if vttFiles.isEmpty {
     let subPlaylistUri = "pip_sub.m3u8?file=live_vi.vtt&lang=vi&dur=\\(durInt)&pts=\\(pts)&fmp4=\\(isFmp4)"
-    outLines.append("#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\\"dvasubs\\",NAME=\\"Tiếng Việt\\",LANGUAGE=\\"vi\\",DEFAULT=NO,AUTOSELECT=YES,URI=\\"\\(subPlaylistUri)\\"")
+    outLines.append("#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\\"dvasubs\\",NAME=\\"Tiếng Việt\\",LANGUAGE=\\"vi\\",DEFAULT=YES,AUTOSELECT=YES,URI=\\"\\(subPlaylistUri)\\"")
   } else {
+    var defaultAssigned = false
+    let hasVi = vttFiles.contains { dvaSubtitleLabelAndLang(forFileName: $0).lang == "vi" }
     for vttName in vttFiles {
       let meta = dvaSubtitleLabelAndLang(forFileName: vttName)
+      let isDefault = !defaultAssigned && (hasVi ? meta.lang == "vi" : true)
+      if isDefault { defaultAssigned = true }
+      let defStr = isDefault ? "YES" : "NO"
       let subPlaylistUri = "pip_sub.m3u8?file=\\(dvaPercentEncodeQueryVal(vttName))&lang=\\(dvaPercentEncodeQueryVal(meta.lang))&dur=\\(durInt)&pts=\\(pts)&fmp4=\\(isFmp4)"
-      outLines.append("#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\\"dvasubs\\",NAME=\\"\\(meta.label)\\",LANGUAGE=\\"\\(meta.lang)\\",DEFAULT=NO,AUTOSELECT=YES,URI=\\"\\(subPlaylistUri)\\"")
+      outLines.append("#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\\"dvasubs\\",NAME=\\"\\(meta.label)\\",LANGUAGE=\\"\\(meta.lang)\\",DEFAULT=\\(defStr),AUTOSELECT=YES,URI=\\"\\(subPlaylistUri)\\"")
     }
   }
   outLines.append("#EXT-X-STREAM-INF:BANDWIDTH=5000000,SUBTITLES=\\"dvasubs\\"")
-  outLines.append("index.m3u8")
+  outLines.append("pip_video.m3u8")
   outLines.append("")
   dvaSendHttpText(
     clientFd: clientFd,
@@ -1010,6 +1036,38 @@ private func dvaServeOfflinePipMaster(clientFd: Int32, itemDirURL: URL, method: 
     headOnly: method == "HEAD"
   )
   return true
+}
+
+private func dvaNormalizeVodMediaPlaylist(_ rawM3u8: String, baseURL: URL?) -> String {
+  let norm = rawM3u8.replacingOccurrences(of: "\\r\\n", with: "\\n").replacingOccurrences(of: "\\r", with: "\\n")
+  let lines = norm.components(separatedBy: "\\n")
+  let hasEndList = lines.contains { $0.trimmingCharacters(in: .whitespaces).uppercased().hasPrefix("#EXT-X-ENDLIST") }
+  var out: [String] = []
+  for line in lines {
+    let trimmed = line.trimmingCharacters(in: .whitespaces)
+    if trimmed.isEmpty {
+      out.append("")
+      continue
+    }
+    if hasEndList && trimmed.uppercased().hasPrefix("#EXT-X-PLAYLIST-TYPE:EVENT") {
+      out.append("#EXT-X-PLAYLIST-TYPE:VOD")
+      continue
+    }
+    if trimmed.hasPrefix("#") {
+      if let baseURL, (trimmed.hasPrefix("#EXT-X-MAP") || trimmed.hasPrefix("#EXT-X-KEY")) {
+        out.append(dvaRewriteHlsAttributeUri(trimmed, baseURL: baseURL))
+      } else {
+        out.append(trimmed)
+      }
+      continue
+    }
+    if let baseURL {
+      out.append(dvaResolveRelativeUrl(trimmed, base: baseURL))
+    } else {
+      out.append(trimmed)
+    }
+  }
+  return out.joined(separator: "\\n")
 }
 
 private func dvaRewriteHlsAttributeUri(_ line: String, baseURL: URL) -> String {
@@ -1153,13 +1211,15 @@ private func dvaHandleOnlineHlsPip(clientFd: Int32, subPath: String, rawTarget: 
       let makeSubHeaderLines = { (probeUrl: String?) -> [String] in
         var arr: [String] = []
         let probeParam = probeUrl.map { "&probe=" + dvaPercentEncodeQueryVal($0) } ?? ""
-        if !vnUrl.isEmpty || !dvaGetServerPipCuesSnapshot().isEmpty {
+        let hasVi = !vnUrl.isEmpty || !dvaGetServerPipCuesSnapshot().isEmpty
+        if hasVi {
           let subM3u8 = "/hls-pip/sub.m3u8?vtt=" + dvaPercentEncodeQueryVal(vnUrl) + "&lang=vi&dur=10800" + probeParam
-          arr.append("#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\\"dvasubs\\",NAME=\\"Tiếng Việt\\",LANGUAGE=\\"vi\\",DEFAULT=NO,AUTOSELECT=YES,URI=\\"\\(subM3u8)\\"")
+          arr.append("#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\\"dvasubs\\",NAME=\\"Tiếng Việt\\",LANGUAGE=\\"vi\\",DEFAULT=YES,AUTOSELECT=YES,URI=\\"\\(subM3u8)\\"")
         }
         if !enUrl.isEmpty {
+          let defStr = hasVi ? "NO" : "YES"
           let subM3u8 = "/hls-pip/sub.m3u8?vtt=" + dvaPercentEncodeQueryVal(enUrl) + "&lang=en&dur=10800" + probeParam
-          arr.append("#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\\"dvasubs\\",NAME=\\"English\\",LANGUAGE=\\"en\\",DEFAULT=NO,AUTOSELECT=YES,URI=\\"\\(subM3u8)\\"")
+          arr.append("#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\\"dvasubs\\",NAME=\\"English\\",LANGUAGE=\\"en\\",DEFAULT=\\(defStr),AUTOSELECT=YES,URI=\\"\\(subM3u8)\\"")
         }
         return arr
       }
@@ -1240,14 +1300,16 @@ private func dvaHandleOnlineHlsPip(clientFd: Int32, subPath: String, rawTarget: 
 
     var outLines = ["#EXTM3U", "#EXT-X-VERSION:3"]
     var hasSub = false
-    if !vnUrl.isEmpty || !dvaGetServerPipCuesSnapshot().isEmpty {
+    let hasVi = !vnUrl.isEmpty || !dvaGetServerPipCuesSnapshot().isEmpty
+    if hasVi {
       let subM3u8 = "/hls-pip/sub.m3u8?vtt=" + dvaPercentEncodeQueryVal(vnUrl) + "&lang=vi&dur=\\(durInt)" + probeParam + fmp4Param
-      outLines.append("#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\\"dvasubs\\",NAME=\\"Tiếng Việt\\",LANGUAGE=\\"vi\\",DEFAULT=NO,AUTOSELECT=YES,URI=\\"\\(subM3u8)\\"")
+      outLines.append("#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\\"dvasubs\\",NAME=\\"Tiếng Việt\\",LANGUAGE=\\"vi\\",DEFAULT=YES,AUTOSELECT=YES,URI=\\"\\(subM3u8)\\"")
       hasSub = true
     }
     if !enUrl.isEmpty {
+      let defStr = hasVi ? "NO" : "YES"
       let subM3u8 = "/hls-pip/sub.m3u8?vtt=" + dvaPercentEncodeQueryVal(enUrl) + "&lang=en&dur=\\(durInt)" + probeParam + fmp4Param
-      outLines.append("#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\\"dvasubs\\",NAME=\\"English\\",LANGUAGE=\\"en\\",DEFAULT=NO,AUTOSELECT=YES,URI=\\"\\(subM3u8)\\"")
+      outLines.append("#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\\"dvasubs\\",NAME=\\"English\\",LANGUAGE=\\"en\\",DEFAULT=\\(defStr),AUTOSELECT=YES,URI=\\"\\(subM3u8)\\"")
       hasSub = true
     }
     if !hasSub {
@@ -1260,8 +1322,9 @@ private func dvaHandleOnlineHlsPip(clientFd: Int32, subPath: String, rawTarget: 
       )
       return
     }
+    let proxiedVideoUri = "/hls-pip/video.m3u8?src=" + dvaPercentEncodeQueryVal(mediaPlaylistTarget)
     outLines.append("#EXT-X-STREAM-INF:BANDWIDTH=5000000,SUBTITLES=\\"dvasubs\\"")
-    outLines.append(mediaPlaylistTarget)
+    outLines.append(proxiedVideoUri)
     outLines.append("")
 
     if method != "HEAD" {
@@ -1272,6 +1335,36 @@ private func dvaHandleOnlineHlsPip(clientFd: Int32, subPath: String, rawTarget: 
       clientFd: clientFd,
       statusLine: "200 OK",
       body: outLines.joined(separator: "\\n"),
+      contentType: "application/vnd.apple.mpegurl",
+      headOnly: method == "HEAD"
+    )
+    return
+  }
+
+  if subPath == "/hls-pip/video.m3u8" {
+    guard let srcStr = query["src"], let srcURL = dvaMakeSafeURL(srcStr) else {
+      dvaSendHttpText(clientFd: clientFd, statusLine: "400 Bad Request", body: "Missing src")
+      return
+    }
+    let fetched = dvaFetchRemoteSync(urlStr: srcStr, timeoutSec: 6.0)
+    guard let data = fetched.data,
+          let m3u8Text = String(data: data, encoding: .utf8),
+          m3u8Text.contains("#EXTM3U") else {
+      dvaSendHttpText(
+        clientFd: clientFd,
+        statusLine: "302 Found",
+        body: "",
+        extraHeaders: ["Location: \\(srcStr)"],
+        headOnly: method == "HEAD"
+      )
+      return
+    }
+    let baseURL = fetched.finalUrl.flatMap { dvaMakeSafeURL($0) } ?? srcURL
+    let vodBody = dvaNormalizeVodMediaPlaylist(m3u8Text, baseURL: baseURL)
+    dvaSendHttpText(
+      clientFd: clientFd,
+      statusLine: "200 OK",
+      body: vodBody,
       contentType: "application/vnd.apple.mpegurl",
       headOnly: method == "HEAD"
     )
@@ -1307,9 +1400,10 @@ private func dvaHandleOnlineHlsPip(clientFd: Int32, subPath: String, rawTarget: 
     let se = Double(query["se"] ?? "") ?? 21600.0
     let fmp4Flag = (query["fmp4"] ?? "0") == "1"
 
-    let pkg = dvaResolveOnlineVttPackage(vttStr: vttStr, probeUrl: probeUrl)
     let liveCues = dvaGetServerPipCuesSnapshot()
-    let activeCues: [DvaServerPipCue] = (lang != "en" && !liveCues.isEmpty) ? liveCues : (!pkg.cues.isEmpty ? pkg.cues : liveCues)
+    let useLiveOnly = (lang != "en" && !liveCues.isEmpty)
+    let pkg = dvaResolveOnlineVttPackage(vttStr: useLiveOnly ? "" : vttStr, probeUrl: probeUrl)
+    let activeCues: [DvaServerPipCue] = useLiveOnly ? liveCues : (!pkg.cues.isEmpty ? pkg.cues : liveCues)
     let segBody = dvaBuildVttSegmentBody(
       cues: activeCues,
       segStart: ss,
@@ -1469,6 +1563,20 @@ private func dvaHandleMediaClient(clientFd: Int32, rootDirURL: URL) {
   let itemDirURL = candidateURL.deletingLastPathComponent().standardizedFileURL
   if fileNameLower == "pip_master.m3u8" {
     if dvaServeOfflinePipMaster(clientFd: clientFd, itemDirURL: itemDirURL, method: method) {
+      return
+    }
+  } else if fileNameLower == "pip_video.m3u8" {
+    let idxURL = itemDirURL.appendingPathComponent("index.m3u8").standardizedFileURL
+    if idxURL.path.hasPrefix(basePrefix),
+       let rawM3u8 = try? String(contentsOf: idxURL, encoding: .utf8) {
+      let vodBody = dvaNormalizeVodMediaPlaylist(rawM3u8, baseURL: nil)
+      dvaSendHttpText(
+        clientFd: clientFd,
+        statusLine: "200 OK",
+        body: vodBody,
+        contentType: "application/vnd.apple.mpegurl",
+        headOnly: method == "HEAD"
+      )
       return
     }
   } else if fileNameLower == "pip_sub.m3u8" {
@@ -2763,6 +2871,13 @@ function applyExpoVideoViewPatch(sourceText) {
     throw new Error('Could not find PiP delegate anchor in VideoView.swift');
   }
 
+  const startPipTarget = `  func startPictureInPicture() throws {
+    try playerViewController.startPictureInPicture()
+  }`;
+  if (!normalized.includes(startPipTarget)) {
+    throw new Error('Could not find startPictureInPicture anchor in VideoView.swift');
+  }
+
   let updated = normalized.replace(
     importTarget,
     `// ${VIDEO_VIEW_PATCH_MARKER}
@@ -3302,11 +3417,17 @@ public final class VideoView: ExpoView, AVPlayerViewControllerDelegate {`
   private var dvaPrebuiltComposition: AVVideoComposition?
   private var dvaPrebuiltItemId: ObjectIdentifier?
   private var dvaPrebuildingItemId: ObjectIdentifier?
+  private var dvaLifecycleObservers: [NSObjectProtocol] = []
+  private var dvaBgTaskId: UIBackgroundTaskIdentifier = .invalid
 
   var pipSubLang: String = "vi" {
     didSet {
-      if oldValue != pipSubLang && dvaIsInPip {
-        dvaApplyPipSubtitleSelection(enable: true)
+      if oldValue != pipSubLang {
+        if dvaIsInPip {
+          dvaApplyPipSubtitleSelection(enable: true)
+        } else if let item = self.player?.ref.currentItem, item.status == .readyToPlay {
+          dvaPrepareSubtitleAssetsOnReady(for: item)
+        }
       }
     }
   }
@@ -3315,6 +3436,63 @@ public final class VideoView: ExpoView, AVPlayerViewControllerDelegate {`
       dvaPipSubRenderer.load(json: pipSubCuesJson)
       dvaSchedulePrebuildCompositionForCurrentItem()
     }
+  }
+
+  private func dvaBeginPipBackgroundGrace() {
+    guard dvaBgTaskId == .invalid else { return }
+    let bgId = UIApplication.shared.beginBackgroundTask(withName: "DvaPipSubtitles") { [weak self] in
+      self?.dvaEndPipBackgroundGrace()
+    }
+    dvaBgTaskId = bgId
+    if bgId != .invalid {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
+        if self?.dvaBgTaskId == bgId {
+          self?.dvaEndPipBackgroundGrace()
+        }
+      }
+    }
+  }
+
+  private func dvaEndPipBackgroundGrace() {
+    guard dvaBgTaskId != .invalid else { return }
+    let taskId = dvaBgTaskId
+    dvaBgTaskId = .invalid
+    UIApplication.shared.endBackgroundTask(taskId)
+  }
+
+  private func dvaInstallPipLifecycleObserversIfNeeded() {
+    guard dvaLifecycleObservers.isEmpty else { return }
+    let nc = NotificationCenter.default
+    let obsResign = nc.addObserver(
+      forName: UIApplication.willResignActiveNotification,
+      object: nil,
+      queue: .main
+    ) { [weak self] _ in
+      guard let self else { return }
+      if self.allowPictureInPicture || self.startPictureInPictureAutomatically {
+        self.dvaPreparePipForEntry()
+      }
+    }
+    let obsBecome = nc.addObserver(
+      forName: UIApplication.didBecomeActiveNotification,
+      object: nil,
+      queue: .main
+    ) { [weak self] _ in
+      guard let self else { return }
+      self.dvaEndPipBackgroundGrace()
+      if !self.dvaIsInPip {
+        self.dvaApplyPipSubtitleSelection(enable: false)
+      }
+    }
+    dvaLifecycleObservers = [obsResign, obsBecome]
+  }
+
+  private func dvaRemovePipLifecycleObservers() {
+    for obs in dvaLifecycleObservers {
+      NotificationCenter.default.removeObserver(obs)
+    }
+    dvaLifecycleObservers.removeAll()
+    dvaEndPipBackgroundGrace()
   }
 
   private func dvaDetachPipObservers() {
@@ -3352,13 +3530,73 @@ public final class VideoView: ExpoView, AVPlayerViewControllerDelegate {`
     dvaPrebuildingItemId = nil
     guard let item else { return }
     if item.status == .readyToPlay {
-      dvaSchedulePrebuildCompositionIfNeeded(for: item)
+      dvaPrepareSubtitleAssetsOnReady(for: item)
     }
     dvaItemStatusObs = item.observe(\\.status, options: [.new]) { [weak self] it, _ in
       if it.status == .readyToPlay {
         DispatchQueue.main.async {
-          self?.dvaSchedulePrebuildCompositionIfNeeded(for: it)
+          self?.dvaPrepareSubtitleAssetsOnReady(for: it)
         }
+      }
+    }
+  }
+
+  private func dvaPrepareSubtitleAssetsOnReady(for item: AVPlayerItem) {
+    if dvaIsHlsAsset(item.asset) {
+      dvaPrepareHlsLegibleTrackIfNeeded(for: item)
+    } else {
+      dvaSchedulePrebuildCompositionIfNeeded(for: item)
+    }
+  }
+
+  private func dvaPrepareHlsLegibleTrackIfNeeded(for item: AVPlayerItem) {
+    guard let avPlayer = self.player?.ref, dvaIsHlsAsset(item.asset) else { return }
+    let pref = self.pipSubLang.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let applyGroup: (AVMediaSelectionGroup) -> Void = { [weak self, weak item, weak avPlayer] group in
+      guard let self, let item, let avPlayer, avPlayer.currentItem === item else { return }
+      if pref == "off" {
+        item.select(nil, in: group)
+        item.textStyleRules = nil
+        avPlayer.appliesMediaSelectionCriteriaAutomatically = true
+        return
+      }
+      avPlayer.appliesMediaSelectionCriteriaAutomatically = false
+      item.textStyleRules = (self.dvaIsInPip || self.dvaPipSubRenderer.isPipActive)
+        ? self.dvaBuildPipTextStyleRules()
+        : self.dvaBuildHiddenTextStyleRules()
+      if let chosen = self.dvaPickBestLegibleOption(from: group.options, preferredLang: pref) {
+        item.select(chosen, in: group)
+      }
+    }
+    if let syncGroup = item.asset.mediaSelectionGroup(forMediaCharacteristic: .legible), !syncGroup.options.isEmpty {
+      applyGroup(syncGroup)
+      return
+    }
+    if #available(iOS 15.0, *) {
+      Task { @MainActor [weak self, weak item] in
+        guard let self, let item, self.player?.ref.currentItem === item else { return }
+        if let group = try? await item.asset.loadMediaSelectionGroup(for: .legible), !group.options.isEmpty {
+          applyGroup(group)
+        }
+      }
+    }
+  }
+
+  private func dvaPreparePipForEntry() {
+    guard let avPlayer = self.player?.ref, let item = avPlayer.currentItem else { return }
+    let pref = self.pipSubLang.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    guard pref != "off" else { return }
+    dvaBeginPipBackgroundGrace()
+    dvaPipSubRenderer.isPipActive = true
+    let isHls = dvaIsHlsAsset(item.asset)
+    if !isHls && dvaPipSubRenderer.hasCues {
+      dvaAttachProgressivePipSubtitles(to: item, avPlayer: avPlayer)
+    } else if isHls {
+      if let syncGroup = item.asset.mediaSelectionGroup(forMediaCharacteristic: .legible), !syncGroup.options.isEmpty {
+        dvaApplySelectionGroup(syncGroup, to: item, avPlayer: avPlayer, enable: true)
+      } else {
+        item.textStyleRules = dvaBuildPipTextStyleRules()
+        dvaPrepareHlsLegibleTrackIfNeeded(for: item)
       }
     }
   }
@@ -3403,7 +3641,7 @@ public final class VideoView: ExpoView, AVPlayerViewControllerDelegate {`
             guard let composition, let item else { return }
             self.dvaPrebuiltComposition = composition
             self.dvaPrebuiltItemId = ObjectIdentifier(item)
-            if self.dvaIsInPip,
+            if (self.dvaIsInPip || self.dvaPipSubRenderer.isPipActive),
                self.player?.ref.currentItem === item,
                self.pipSubLang.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "off" {
               item.videoComposition = composition
@@ -3444,13 +3682,27 @@ public final class VideoView: ExpoView, AVPlayerViewControllerDelegate {`
   }
 
   private func dvaBuildPipTextStyleRules() -> [AVTextStyleRule]? {
-    let fg: [CGFloat] = [1.0, 1.0, 1.0, 1.0]
-    let bg: [CGFloat] = [0.62, 0.0, 0.0, 0.0]
+    let fg: [Double] = [1.0, 1.0, 1.0, 1.0]
+    let bg: [Double] = [0.65, 0.0, 0.0, 0.0]
     let attrs: [String: Any] = [
       kCMTextMarkupAttribute_ForegroundColorARGB as String: fg,
       kCMTextMarkupAttribute_BackgroundColorARGB as String: bg,
       kCMTextMarkupAttribute_CharacterEdgeStyle as String: kCMTextMarkupCharacterEdgeStyle_DropShadow as String,
-      kCMTextMarkupAttribute_RelativeFontSize as String: 120
+      kCMTextMarkupAttribute_RelativeFontSize as String: 115
+    ]
+    if let rule = AVTextStyleRule(textMarkupAttributes: attrs) {
+      return [rule]
+    }
+    return nil
+  }
+
+  private func dvaBuildHiddenTextStyleRules() -> [AVTextStyleRule]? {
+    let fg: [Double] = [0.0, 1.0, 1.0, 1.0]
+    let bg: [Double] = [0.0, 0.0, 0.0, 0.0]
+    let attrs: [String: Any] = [
+      kCMTextMarkupAttribute_ForegroundColorARGB as String: fg,
+      kCMTextMarkupAttribute_BackgroundColorARGB as String: bg,
+      kCMTextMarkupAttribute_CharacterEdgeStyle as String: kCMTextMarkupCharacterEdgeStyle_None as String
     ]
     if let rule = AVTextStyleRule(textMarkupAttributes: attrs) {
       return [rule]
@@ -3465,14 +3717,14 @@ public final class VideoView: ExpoView, AVPlayerViewControllerDelegate {`
     enable: Bool
   ) {
     let pref = self.pipSubLang.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    if !enable || pref == "off" {
+    if pref == "off" {
       item.select(nil, in: group)
       item.textStyleRules = nil
       avPlayer.appliesMediaSelectionCriteriaAutomatically = true
       return
     }
     avPlayer.appliesMediaSelectionCriteriaAutomatically = false
-    item.textStyleRules = dvaBuildPipTextStyleRules()
+    item.textStyleRules = enable ? dvaBuildPipTextStyleRules() : dvaBuildHiddenTextStyleRules()
     if let chosen = dvaPickBestLegibleOption(from: group.options, preferredLang: pref) {
       item.select(chosen, in: group)
     }
@@ -3522,7 +3774,7 @@ public final class VideoView: ExpoView, AVPlayerViewControllerDelegate {`
             guard let composition, let avPlayer, let item else { return }
             self.dvaPrebuiltComposition = composition
             self.dvaPrebuiltItemId = ObjectIdentifier(item)
-            guard self.dvaIsInPip,
+            guard (self.dvaIsInPip || self.dvaPipSubRenderer.isPipActive),
                   self.pipSubLang.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "off",
                   avPlayer.currentItem === item else {
               return
@@ -3542,10 +3794,15 @@ public final class VideoView: ExpoView, AVPlayerViewControllerDelegate {`
       return
     }
     if !enable {
-      if let syncGroup = item.asset.mediaSelectionGroup(forMediaCharacteristic: .legible) {
-        dvaApplySelectionGroup(syncGroup, to: item, avPlayer: avPlayer, enable: false)
+      if dvaIsHlsAsset(item.asset) {
+        if let syncGroup = item.asset.mediaSelectionGroup(forMediaCharacteristic: .legible), !syncGroup.options.isEmpty {
+          dvaApplySelectionGroup(syncGroup, to: item, avPlayer: avPlayer, enable: false)
+        } else {
+          item.textStyleRules = dvaBuildHiddenTextStyleRules()
+        }
+      } else {
+        item.textStyleRules = nil
       }
-      item.textStyleRules = nil
       item.videoComposition = nil
       dvaPipSubRenderer.clearCache()
       return
@@ -3589,14 +3846,21 @@ public final class VideoView: ExpoView, AVPlayerViewControllerDelegate {`
   );
 
   updated = updated.replace(
-    '      if playerViewControllerWrapper.setPlayer(player) {',
-    `      if playerViewControllerWrapper.setPlayer(player) {
-        #if !os(tvOS)
-        dvaAttachPipObservers(to: player?.ref)
-        #endif
-        #if !os(tvOS) && canImport(MetalKit)
-        contrastOverlayView?.setAVPlayer(player?.ref)
-        #endif`
+    playerPropTarget,
+    `  weak var player: VideoPlayer? {
+    didSet {
+      if playerViewControllerWrapper.setPlayer(player) {
+        removeFirstFrameObserver()
+        addFirstFrameObserver()
+      }
+      #if !os(tvOS)
+      dvaAttachPipObservers(to: player?.ref)
+      #endif
+      #if !os(tvOS) && canImport(MetalKit)
+      contrastOverlayView?.setAVPlayer(player?.ref)
+      #endif
+    }
+  }`
   );
 
   updated = updated.replace(
@@ -3610,6 +3874,9 @@ public final class VideoView: ExpoView, AVPlayerViewControllerDelegate {`
   updated = updated.replace(
     initAddSubviewTarget,
     `${initAddSubviewTarget}
+    #if !os(tvOS)
+    dvaInstallPipLifecycleObserversIfNeeded()
+    #endif
     #if !os(tvOS) && canImport(MetalKit)
     if let overlay = contrastOverlayView {
       overlay.frame = bounds
@@ -3624,11 +3891,22 @@ public final class VideoView: ExpoView, AVPlayerViewControllerDelegate {`
     VideoManager.shared.unregister(videoView: self)
     removeFirstFrameObserver()
     #if !os(tvOS)
+    dvaRemovePipLifecycleObservers()
     dvaDetachPipObservers()
     #endif
     #if !os(tvOS) && canImport(MetalKit)
     contrastOverlayView?.cleanup()
     #endif
+  }`
+  );
+
+  updated = updated.replace(
+    startPipTarget,
+    `  func startPictureInPicture() throws {
+    #if !os(tvOS)
+    dvaPreparePipForEntry()
+    #endif
+    try playerViewController.startPictureInPicture()
   }`
   );
 

@@ -342,6 +342,7 @@ export interface OfflineDownloadItem {
   status: OfflineDownloadStatus;
   status_text?: string;
   error_message?: string;
+  paused_by_user?: boolean;
   created_at: string;
   updated_at?: string;
 }

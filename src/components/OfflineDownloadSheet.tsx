@@ -605,7 +605,7 @@ export function OfflineDownloadSheet({
   const cardWidth = isLandscape
     ? Math.min(740, winWidth - Math.max(40, insets.left + insets.right + 20))
     : Math.min(460, winWidth - 24);
-  const cardHeight = isLandscape ? Math.min(354, winHeight - 20) : Math.min(winHeight * 0.84, 660);
+  const cardHeight = isLandscape ? Math.min(364, winHeight - 16) : Math.min(winHeight * 0.84, 660);
 
   return (
     <Modal
@@ -643,9 +643,11 @@ export function OfflineDownloadSheet({
                       ? ` • ${formatEpisodeDisplayTitle(currentEpisodeTitle)}`
                       : ''}
                   </Text>
-                  <Text style={styles.bgDownloadHint} numberOfLines={1}>
-                    Hỗ trợ tải ngầm ngay cả khi thoát ra màn hình chính hoặc khóa máy
-                  </Text>
+                  <View style={styles.bgWarningBox}>
+                    <Text style={styles.bgWarningText} numberOfLines={2}>
+                      Lưu ý: Hỗ trợ tải ngầm khi về màn hình chính hoặc khóa máy — vui lòng không vuốt đóng hoàn toàn ứng dụng trong trình đa nhiệm để tránh gián đoạn.
+                    </Text>
+                  </View>
                 </View>
                 <BouncyButton style={styles.closeBtn} onPress={onClose}>
                   <Ionicons name="close" size={22} color="#FFF" />
@@ -712,10 +714,20 @@ const styles = StyleSheet.create({
     fontSize: 12.5,
     marginTop: 2,
   },
-  bgDownloadHint: {
-    color: COLORS.muted,
-    fontSize: 11,
-    marginTop: 2,
+  bgWarningBox: {
+    marginTop: 5,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: 8,
+    backgroundColor: 'rgba(229, 9, 20, 0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.42)',
+  },
+  bgWarningText: {
+    color: '#FF6B6B',
+    fontSize: 10.5,
+    fontWeight: '600',
+    lineHeight: 14,
   },
   closeBtn: {
     width: 36,

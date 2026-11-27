@@ -31,6 +31,7 @@ import {
   pauseOfflineDownload,
   removeOfflineDownload,
   restartOfflineDownload,
+  resumeBackgroundQueueIfNeeded,
   resumeOfflineDownload,
   subscribeOfflineDownloads,
 } from '../services/downloadService';
@@ -196,6 +197,12 @@ export function LibraryScreen({
       void loadLibrary(false, true);
     }
   }, [watchProgressRevision, offlineOnlyMode, loadLibrary]);
+
+  useEffect(() => {
+    if (activeTab === 'offline' && !offlineOnlyMode) {
+      void resumeBackgroundQueueIfNeeded(true).catch(() => {});
+    }
+  }, [activeTab, offlineOnlyMode]);
 
   useEffect(() => {
     if (!offlineOnlyMode) {

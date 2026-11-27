@@ -230,6 +230,23 @@ export function buildSubtitleUrls(serverFileKey?: string): { vnUrl: string; enUr
   };
 }
 
+function isValidVttTimestamp(raw: string): boolean {
+  const clean = raw.trim().replace(',', '.');
+  const mFull = clean.match(/^(\d{1,2}):(\d{2}):(\d{2}(?:\.\d+)?)$/);
+  if (mFull) {
+    const mm = parseInt(mFull[2], 10);
+    const ss = parseFloat(mFull[3]);
+    return mm >= 0 && mm < 60 && ss >= 0 && ss < 60;
+  }
+  const mShort = clean.match(/^(\d{1,2}):(\d{2}(?:\.\d+)?)$/);
+  if (mShort) {
+    const mm = parseInt(mShort[1], 10);
+    const ss = parseFloat(mShort[2]);
+    return mm >= 0 && mm < 60 && ss >= 0 && ss < 60;
+  }
+  return false;
+}
+
 function parseTimestamp(raw: string): number {
   const clean = raw.trim().replace(',', '.');
   const mFull = clean.match(/(\d{1,2}):(\d{2}):(\d{2}(?:\.\d+)?)/);
@@ -278,7 +295,11 @@ export function splitSubtitleText(text: string, maxLength = 43): string {
 
 export function parseVttCues(vttText: string): ParsedVttCue[] {
   if (!vttText) return [];
-  const lines = vttText.replace(/WEBVTT/gi, '').replace(/\r/g, '').split('\n');
+  const lines = vttText
+    .replace(/\r/g, '')
+    .replace(/(?:^|\n)[ \t]*WEBVTT[^\n]*/gi, '\n')
+    .replace(/WEBVTT/gi, '\n\n')
+    .split('\n');
   const cues: ParsedVttCue[] = [];
   let i = 0;
 
@@ -292,6 +313,13 @@ export function parseVttCues(vttText: string): ParsedVttCue[] {
       /(\d{1,2}:\d{2}(?::\d{2})?(?:[.,]\d{1,3})?)\s*-->\s*(\d{1,2}:\d{2}(?::\d{2})?(?:[.,]\d{1,3})?)/
     );
     if (timeMatch) {
+      if (!isValidVttTimestamp(timeMatch[1]) || !isValidVttTimestamp(timeMatch[2])) {
+        i++;
+        while (i < lines.length && lines[i] && lines[i].trim() !== '' && !lines[i].includes('-->')) {
+          i++;
+        }
+        continue;
+      }
       const lineMatch = line.match(/line:(\d+)/);
       const linePercent = lineMatch ? parseInt(lineMatch[1], 10) : null;
       const isTopLine = line.includes('line:2%');

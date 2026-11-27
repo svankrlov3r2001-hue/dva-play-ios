@@ -16,6 +16,7 @@ import {
   saveWatchProgressApi,
 } from './api';
 import { buildLocalOfflineUrl, isNativePipProxySupported, setNativeBackgroundDownloadActive } from './localMediaServer';
+import { isNetworkError, probeConnectivity } from './networkService';
 import { encodeSubtitlePathUrl } from './subtitleService';
 
 const OFFLINE_DIR = `${FileSystem.documentDirectory ?? ''}dva_offline/`;
@@ -78,6 +79,9 @@ const pendingFollowUpByParentId = new Map<string, OfflineEnqueueParams[]>();
 const downloadQueue: string[] = [];
 const prewarmedItemIds = new Set<string>();
 const prewarmCooldownUntil = new Map<string, number>();
+const unsupportedRetryAfter = new Map<string, number>();
+let bgReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let resumeQueuePromise: Promise<void> | null = null;
 let activePrewarm: { id: string; controller: AbortController } | null = null;
 let currentItemPrewarmGateOpen = false;
 
@@ -644,6 +648,7 @@ export async function loadOfflineDownloads(): Promise<OfflineDownloadItem[]> {
             if (item.status === 'downloading' || item.status === 'preparing') {
               item.status = 'paused';
               item.status_text = 'Đã tạm dừng';
+              item.paused_by_user = false;
             } else if (item.status === 'queued') {
               if (!downloadQueue.includes(item.id)) {
                 downloadQueue.push(item.id);
@@ -1528,8 +1533,17 @@ async function downloadHlsItem(
     }
   }
 
+  const hasEndList = rewrittenLines.some((ln) => ln.trim().startsWith('#EXT-X-ENDLIST'));
+  const normalizedLines = hasEndList
+    ? rewrittenLines.map((ln) =>
+        ln.trim().toUpperCase().startsWith('#EXT-X-PLAYLIST-TYPE:EVENT')
+          ? '#EXT-X-PLAYLIST-TYPE:VOD'
+          : ln
+      )
+    : rewrittenLines;
+
   const localPlaylistUri = `${itemDir}index.m3u8`;
-  await FileSystem.writeAsStringAsync(localPlaylistUri, rewrittenLines.join('\n'));
+  await FileSystem.writeAsStringAsync(localPlaylistUri, normalizedLines.join('\n'));
 
   return {
     localUri: localPlaylistUri,
@@ -2010,19 +2024,31 @@ async function processSingleItem(id: string): Promise<void> {
         await persistIndex(cachedItems);
       }
     } else {
+      const errMsg = err?.message || 'Không thể tải video ngoại tuyến.';
+      const likelyNetErr = isNetworkError(err) || /network|timeout|offline|timed out|connection|socket/i.test(errMsg);
+      const isUnsupported = errMsg.includes('UnsupportedOfflineFormat') || errMsg.includes('Không hỗ trợ định dạng');
+      if (isUnsupported) {
+        unsupportedRetryAfter.set(id, Date.now() + 60_000);
+      } else {
+        unsupportedRetryAfter.delete(id);
+      }
       await persistIndex(
         cachedItems.map((it) =>
           it.id === id
             ? {
                 ...it,
                 status: 'failed',
-                status_text: 'Tải thất bại',
-                error_message: err?.message || 'Không thể tải video ngoại tuyến.',
+                status_text: likelyNetErr ? 'Mất mạng • Chờ tải lại' : 'Tải thất bại',
+                error_message: errMsg,
+                paused_by_user: false,
                 updated_at: new Date().toISOString(),
               }
             : it
         )
       );
+      if (likelyNetErr) {
+        scheduleDownloadReconnectRetry(8000);
+      }
     }
   } finally {
     pendingManualRestartIds.delete(id);
@@ -2035,12 +2061,42 @@ async function processSingleItem(id: string): Promise<void> {
   }
 }
 
+function clearDownloadReconnectTimer(): void {
+  if (bgReconnectTimer) {
+    clearTimeout(bgReconnectTimer);
+    bgReconnectTimer = null;
+  }
+}
+
+function scheduleDownloadReconnectRetry(delayMs = 9000): void {
+  if (bgReconnectTimer) return;
+  bgReconnectTimer = setTimeout(() => {
+    bgReconnectTimer = null;
+    void (async () => {
+      const hasRecoverable = cachedItems.some(
+        (it) =>
+          it.status === 'queued' ||
+          it.status === 'failed' ||
+          (it.status === 'paused' && it.paused_by_user === false)
+      );
+      if (!hasRecoverable) return;
+      const online = await probeConnectivity(2400).catch(() => false);
+      if (online) {
+        await resumeBackgroundQueueIfNeeded(true);
+      } else {
+        scheduleDownloadReconnectRetry(12000);
+      }
+    })();
+  }, delayMs);
+}
+
 async function processDownloadQueue(): Promise<void> {
   if (isProcessingQueue) {
     syncBackgroundDownloadGuard();
     return;
   }
   isProcessingQueue = true;
+  clearDownloadReconnectTimer();
   syncBackgroundDownloadGuard();
   try {
     while (downloadQueue.length > 0) {
@@ -2052,6 +2108,14 @@ async function processDownloadQueue(): Promise<void> {
       }
       await processSingleItem(nextId);
       syncBackgroundDownloadGuard();
+      const updated = cachedItems.find((i) => i.id === nextId);
+      if (updated?.status === 'failed' && downloadQueue.length > 0) {
+        const netOnline = await probeConnectivity(1800).catch(() => false);
+        if (!netOnline) {
+          scheduleDownloadReconnectRetry(8000);
+          break;
+        }
+      }
     }
   } finally {
     isProcessingQueue = false;
@@ -2061,23 +2125,76 @@ async function processDownloadQueue(): Promise<void> {
   }
 }
 
-export async function resumeBackgroundQueueIfNeeded(): Promise<void> {
-  await loadOfflineDownloads();
-  let hasQueued = false;
-  for (const it of cachedItems) {
-    if (it.status === 'queued') {
-      hasQueued = true;
-      if (!downloadQueue.includes(it.id)) {
-        downloadQueue.push(it.id);
+export async function resumeBackgroundQueueIfNeeded(includeRecoverable = true): Promise<void> {
+  if (resumeQueuePromise) {
+    return resumeQueuePromise;
+  }
+  resumeQueuePromise = (async () => {
+    await loadOfflineDownloads();
+    let hasQueued = false;
+    const recoverableIds: string[] = [];
+    const now = Date.now();
+    for (const it of cachedItems) {
+      if (it.status === 'queued') {
+        hasQueued = true;
+        if (!downloadQueue.includes(it.id)) {
+          downloadQueue.push(it.id);
+        }
+      } else if (includeRecoverable) {
+        const isPausedAuto = it.status === 'paused' && it.paused_by_user === false;
+        const isRetryableFailed =
+          it.status === 'failed' &&
+          (!it.error_message?.includes('Không hỗ trợ') || now >= (unsupportedRetryAfter.get(it.id) || 0));
+        if (isPausedAuto || isRetryableFailed) {
+          recoverableIds.push(it.id);
+        }
       }
     }
-  }
-  if (hasQueued && !isProcessingQueue) {
-    syncBackgroundDownloadGuard();
-    void processDownloadQueue();
-  } else {
-    syncBackgroundDownloadGuard();
-  }
+
+    if (hasQueued || recoverableIds.length > 0) {
+      const online = await probeConnectivity(2400).catch(() => false);
+      if (!online) {
+        scheduleDownloadReconnectRetry(10000);
+        syncBackgroundDownloadGuard();
+        return;
+      }
+      clearDownloadReconnectTimer();
+      if (recoverableIds.length > 0) {
+        const recoverSet = new Set(recoverableIds);
+        const nowIso = new Date().toISOString();
+        cachedItems = cachedItems.map((it) => {
+          if (!recoverSet.has(it.id)) return it;
+          unsupportedRetryAfter.delete(it.id);
+          prewarmedItemIds.delete(it.id);
+          prewarmCooldownUntil.delete(it.id);
+          if (!downloadQueue.includes(it.id)) {
+            downloadQueue.push(it.id);
+          }
+          return {
+            ...it,
+            status: 'queued',
+            status_text: 'Đã có mạng • Đang tự động tải tiếp...',
+            error_message: undefined,
+            paused_by_user: false,
+            updated_at: nowIso,
+          };
+        });
+        await persistIndex(cachedItems);
+        hasQueued = true;
+      }
+    }
+
+    if (hasQueued && !isProcessingQueue) {
+      syncBackgroundDownloadGuard();
+      void processDownloadQueue();
+      scheduleNextQueuePrewarm();
+    } else {
+      syncBackgroundDownloadGuard();
+    }
+  })().finally(() => {
+    resumeQueuePromise = null;
+  });
+  return resumeQueuePromise;
 }
 
 export async function enqueueOfflineDownload(
@@ -2137,6 +2254,7 @@ export async function enqueueOfflineDownload(
     progress: existing?.status === 'paused' ? existing.progress : 0,
     status: 'queued',
     status_text: 'Đang chờ trong hàng đợi...',
+    paused_by_user: false,
     created_at: existing?.created_at || new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };
@@ -2218,7 +2336,7 @@ export async function pauseOfflineDownload(id: string): Promise<void> {
   prewarmedItemIds.delete(id);
   prewarmCooldownUntil.delete(id);
 
-  updateItemInMemory(id, { status: 'paused', status_text: 'Đã tạm dừng' }, true);
+  updateItemInMemory(id, { status: 'paused', status_text: 'Đã tạm dừng', paused_by_user: true }, true);
 
   const ctrl = activeControllers.get(id);
   if (ctrl) ctrl.abort();
@@ -2254,7 +2372,7 @@ export async function resumeOfflineDownload(id: string): Promise<void> {
   prewarmCooldownUntil.delete(id);
   updateItemInMemory(
     id,
-    { status: 'queued', status_text: 'Đang tiếp tục tải...', error_message: undefined },
+    { status: 'queued', status_text: 'Đang tiếp tục tải...', error_message: undefined, paused_by_user: false },
     true
   );
   if (!downloadQueue.includes(id)) {
@@ -2302,6 +2420,7 @@ export async function restartOfflineDownload(id: string): Promise<void> {
       status: 'queued',
       status_text: 'Đang khởi động lại liên kết tải...',
       error_message: undefined,
+      paused_by_user: false,
     },
     true
   );
