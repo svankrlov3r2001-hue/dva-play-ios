@@ -58,6 +58,7 @@ interface NativeSubtitleOverlayProps {
   settings: AppSettings;
   episodeSignature: string;
   reloadNonce?: number;
+  previewSampleWhenIdle?: boolean;
 }
 
 function resolveFontFamily(font: SubtitleFontOption): string | undefined {
@@ -1149,6 +1150,7 @@ export function NativeSubtitleOverlay({
   settings,
   episodeSignature,
   reloadNonce = 0,
+  previewSampleWhenIdle = false,
 }: NativeSubtitleOverlayProps) {
   const { width: winWidth, height: winHeight } = useWindowDimensions();
   const [vnMeasuredWidth, setVnMeasuredWidth] = useState(0);
@@ -1390,23 +1392,30 @@ export function NativeSubtitleOverlay({
   const outline: SubtitleOutlineOption = settings.subOutline || 'uniform2';
   const isReversed = Boolean(settings.subReverse);
 
-  const showVnLine = Boolean(settings.subShowVi && mainVnCue?.text);
+  const showSamplePreview = Boolean(previewSampleWhenIdle && !mainVnCue && !mainEnCue);
+  const effectiveDisplayVnText =
+    settings.subShowVi
+      ? mainVnCue?.text || (showSamplePreview ? 'Phụ đề mẫu Đặng Việt Anh' : '')
+      : '';
+  const showVnLine = Boolean(effectiveDisplayVnText);
   const toLang = settings.subTranslateLang || '';
   const translatedText =
     toLang && mainVnCue ? translationCacheRef.current.get(`${toLang}::${mainVnCue.text}`) || '' : '';
   const isTranslatingLoading = Boolean(settings.subShowEn && toLang && mainVnCue && !translatedText);
   const secondaryText =
     settings.subShowEn && toLang
-      ? translatedText
+      ? translatedText || (showSamplePreview ? 'Sample subtitle preview' : '')
       : settings.subShowEn && mainEnCue?.text
         ? mainEnCue.text
-        : '';
+        : settings.subShowEn && showSamplePreview
+          ? 'Sample subtitle preview'
+          : '';
   const showSecondaryLine = Boolean(settings.subShowEn && (secondaryText || isTranslatingLoading));
 
   const primaryColor = palette.main;
   const secondaryColor = palette.sub;
 
-  const vnBlock = showVnLine && mainVnCue ? (
+  const vnBlock = showVnLine && effectiveDisplayVnText ? (
     <View
       onLayout={(e) => {
         const w = Math.round(e.nativeEvent.layout.width);
@@ -1414,7 +1423,7 @@ export function NativeSubtitleOverlay({
       }}
     >
       <OutlinedText
-        text={mainVnCue.text}
+        text={effectiveDisplayVnText}
         outline={outline}
         style={{
           color: isReversed ? secondaryColor : primaryColor,

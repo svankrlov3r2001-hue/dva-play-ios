@@ -6,6 +6,7 @@ const SWIFT_PATCH_MARKER = 'DVA_NATIVE_PROXY_PATCHED';
 const OBJC_PATCH_MARKER = 'DVA_NATIVE_PROXY_WEBVIEW_PATCHED';
 const VIDEO_MODULE_PATCH_MARKER = 'DVA_IOS_VIDEO_CONTRAST_MODULE_V1';
 const VIDEO_VIEW_PATCH_MARKER = 'DVA_IOS_VIDEO_CONTRAST_VIEW_V1';
+const VIDEO_PLAYER_ITEM_PATCH_MARKER = 'DVA_IOS_VIDEO_ITEM_TX3G_V1';
 const ORIENTATION_CONTROLLER_PATCH_MARKER = 'DVA_IOS_PIP_DELEGATE_FORWARD_V1';
 
 function applyExpoFetchModulePatch(sourceText) {
@@ -767,13 +768,79 @@ private struct DvaServerPipCue: Decodable, Sendable {
   let s: Double
   let e: Double
   let t: String
+  let top: Int?
+  var isTop: Bool { (top ?? 0) != 0 }
 }
 
 private let dvaServerPipCuesLock = NSLock()
 nonisolated(unsafe) private var dvaServerPipCues: [DvaServerPipCue] = []
+nonisolated(unsafe) private var dvaServerPipCuesByUrl: [String: [DvaServerPipCue]] = [:]
+
+private func dvaWritePipCuesJsonToTemp(_ trimmedJson: String, urlKey: String?) {
+  let dir = FileManager.default.temporaryDirectory.appendingPathComponent("dva_pip_cues", isDirectory: true)
+  try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+  let name = (urlKey != nil && !urlKey!.isEmpty) ? "\\(dvaStableSessionId(urlKey!)).json" : "active.json"
+  let target = dir.appendingPathComponent(name)
+  if trimmedJson.isEmpty {
+    try? FileManager.default.removeItem(at: target)
+    return
+  }
+  if let data = trimmedJson.data(using: .utf8) {
+    try? data.write(to: target, options: .atomic)
+  }
+}
+
+private func dvaIsWatermarkCueText(_ text: String) -> Bool {
+  let lower = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  if lower.isEmpty { return false }
+  if !lower.contains("đặng việt anh") { return false }
+  return (lower.contains("[") && lower.contains("]")) || lower == "đặng việt anh"
+}
+
+private func dvaRedistributeWatermarkCues(_ cues: [DvaServerPipCue], durationSec: Double) -> [DvaServerPipCue] {
+  if cues.isEmpty { return cues }
+  var watermarks: [DvaServerPipCue] = []
+  var regulars: [DvaServerPipCue] = []
+  var maxRegEnd = 0.0
+  for c in cues {
+    if dvaIsWatermarkCueText(c.t) {
+      watermarks.append(c)
+    } else {
+      regulars.append(c)
+      if c.e > maxRegEnd { maxRegEnd = c.e }
+    }
+  }
+  if watermarks.isEmpty { return cues }
+  let targetDur = durationSec > 30.0 ? durationSec : (maxRegEnd > 30.0 ? maxRegEnd + 15.0 : 0.0)
+  if targetDur <= 30.0 { return cues }
+  let exceeds = watermarks.contains { $0.e > targetDur - 1.0 || $0.s >= targetDur - 2.0 }
+  if !exceeds { return cues }
+
+  var result: [DvaServerPipCue] = []
+  let introDur = min(10.0, max(4.0, targetDur * 0.12))
+  result.append(DvaServerPipCue(s: 0.0, e: (introDur * 100.0).rounded() / 100.0, t: watermarks[0].t, top: 1))
+  let restCount = watermarks.count - 1
+  let usableCount = min(restCount, max(0, Int(floor((targetDur - 18.0) / 12.0))))
+  if usableCount > 0 {
+    let span = targetDur - 20.0
+    let step = span / Double(usableCount)
+    for k in 0..<usableCount {
+      let center = 14.0 + (Double(k) + 0.5) * step
+      let s = (max(12.0, center - 2.0) * 100.0).rounded() / 100.0
+      let e = (min(targetDur - 2.0, s + 4.0) * 100.0).rounded() / 100.0
+      if e > s + 0.5 {
+        let src = watermarks[min(watermarks.count - 1, 1 + k)]
+        result.append(DvaServerPipCue(s: s, e: e, t: src.t, top: 1))
+      }
+    }
+  }
+  result.append(contentsOf: regulars)
+  return result.sorted { $0.s < $1.s }
+}
 
 private func dvaSetServerPipCues(json: String) {
   let trimmed = json.trimmingCharacters(in: .whitespacesAndNewlines)
+  dvaWritePipCuesJsonToTemp(trimmed, urlKey: nil)
   if trimmed.isEmpty {
     dvaServerPipCuesLock.lock()
     dvaServerPipCues = []
@@ -790,6 +857,30 @@ private func dvaSetServerPipCues(json: String) {
   dvaServerPipCuesLock.unlock()
 }
 
+private func dvaSetServerPipCuesForUrl(url: String, json: String) {
+  let cleanUrl = url.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard !cleanUrl.isEmpty else { return }
+  let trimmed = json.trimmingCharacters(in: .whitespacesAndNewlines)
+  dvaWritePipCuesJsonToTemp(trimmed, urlKey: cleanUrl)
+  if trimmed.isEmpty {
+    dvaServerPipCuesLock.lock()
+    dvaServerPipCuesByUrl.removeValue(forKey: cleanUrl)
+    dvaServerPipCuesLock.unlock()
+    return
+  }
+  guard let data = trimmed.data(using: .utf8),
+        let decoded = try? JSONDecoder().decode([DvaServerPipCue].self, from: data) else {
+    return
+  }
+  let sorted = decoded.filter { !$0.t.isEmpty && $0.e > $0.s }.sorted { $0.s < $1.s }
+  dvaServerPipCuesLock.lock()
+  if dvaServerPipCuesByUrl.count >= 8 {
+    dvaServerPipCuesByUrl.removeAll()
+  }
+  dvaServerPipCuesByUrl[cleanUrl] = sorted
+  dvaServerPipCuesLock.unlock()
+}
+
 private func dvaGetServerPipCuesSnapshot() -> [DvaServerPipCue] {
   dvaServerPipCuesLock.lock()
   let copy = dvaServerPipCues
@@ -802,18 +893,18 @@ private func dvaParseVttTimestampSec(_ raw: String) -> Double? {
   let parts = clean.split(separator: ":")
   if parts.count == 3 {
     guard let h = Double(parts[0]), let m = Double(parts[1]), let s = Double(parts[2]),
-          h >= 0, m >= 0, m < 60.0, s >= 0, s < 60.0 else { return nil }
+          h >= 0, m >= 0, s >= 0, s < 60.0 else { return nil }
     return h * 3600.0 + m * 60.0 + s
   }
   if parts.count == 2 {
     guard let m = Double(parts[0]), let s = Double(parts[1]),
-          m >= 0, m < 60.0, s >= 0, s < 60.0 else { return nil }
+          m >= 0, s >= 0, s < 60.0 else { return nil }
     return m * 60.0 + s
   }
   return nil
 }
 
-private func dvaParseVttTextToCues(_ rawText: String) -> [DvaServerPipCue] {
+private func dvaParseVttTextToCues(_ rawText: String, targetDurationSec: Double = 0.0) -> [DvaServerPipCue] {
   var s = rawText
   if s.hasPrefix("\\u{FEFF}") {
     s.removeFirst()
@@ -845,9 +936,8 @@ private func dvaParseVttTextToCues(_ rawText: String) -> [DvaServerPipCue] {
     }
     guard let tIdx = blk.firstIndex(where: { $0.contains("-->") }) else { continue }
     let line = blk[tIdx]
-    if line.lowercased().contains("line:2%") {
-      continue
-    }
+    let lowerLine = line.lowercased()
+    let isTopLine = lowerLine.contains("line:2%") || lowerLine.contains("line:4%")
     guard let arrowRange = line.range(of: "-->") else { continue }
     let startRaw = String(line[..<arrowRange.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
     let afterRaw = String(line[arrowRange.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -860,13 +950,10 @@ private func dvaParseVttTextToCues(_ rawText: String) -> [DvaServerPipCue] {
     }.filter { !$0.isEmpty }
     guard !textLines.isEmpty else { continue }
     let joined = textLines.joined(separator: "\\n")
-    let lowerJoined = joined.lowercased()
-    if lowerJoined.contains("đặng việt anh") && (lowerJoined.contains("[") || textLines.count == 1) {
-      continue
-    }
-    cues.append(DvaServerPipCue(s: startSec, e: endSec, t: joined))
+    let isTopCue = isTopLine || dvaIsWatermarkCueText(joined) || joined.contains("♪") || joined.contains("=")
+    cues.append(DvaServerPipCue(s: startSec, e: endSec, t: joined, top: isTopCue ? 1 : nil))
   }
-  return cues.sorted { $0.s < $1.s }
+  return dvaRedistributeWatermarkCues(cues.sorted { $0.s < $1.s }, durationSec: targetDurationSec)
 }
 
 private func dvaFormatVttTime(_ sec: Double) -> String {
@@ -889,11 +976,15 @@ private func dvaBuildVttSegmentBody(
   isFmp4: Bool
 ) -> String {
   let mapPts: UInt64 = isFmp4 ? 0 : mpegtsPts
-  var out = "WEBVTT\\nX-TIMESTAMP-MAP=MPEGTS:\\(mapPts),LOCAL:00:00:00.000\\n\\n"
+  var out = "WEBVTT\\nX-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:\\(mapPts)\\n\\n"
   var entries: [String] = []
   for c in cues {
     if c.e > segStart && c.s < segEnd {
-      entries.append("\\(dvaFormatVttTime(c.s)) --> \\(dvaFormatVttTime(c.e))\\n\\(c.t)")
+      if c.isTop {
+        entries.append("\\(dvaFormatVttTime(c.s)) --> \\(dvaFormatVttTime(c.e)) line:4%\\n\\(c.t)")
+      } else {
+        entries.append("\\(dvaFormatVttTime(c.s)) --> \\(dvaFormatVttTime(c.e))\\n\\(c.t)")
+      }
     }
   }
   if !entries.isEmpty {
@@ -1049,11 +1140,12 @@ private func dvaServeOfflinePipMaster(clientFd: Int32, itemDirURL: URL, method: 
     if cleanLang.isEmpty || emittedLangs.contains(cleanLang) { continue }
     emittedLangs.insert(cleanLang)
     let subPlaylistUri = "pip_sub_\\(cleanLang)_\\(durInt)_\\(pts)_\\(isFmp4).m3u8"
-    outLines.append("#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\\"dvasubs\\",NAME=\\"\\(meta.label)\\",DEFAULT=NO,AUTOSELECT=YES,FORCED=NO,LANGUAGE=\\"\\(cleanLang)\\",CHARACTERISTICS=\\"public.accessibility.transcribes-spoken-dialog, public.accessibility.describes-music-and-sound\\",URI=\\"\\(subPlaylistUri)\\"")
+    let isDefault = cleanLang == "vi" ? "YES" : "NO"
+    outLines.append("#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\\"dvasubs\\",NAME=\\"\\(meta.label)\\",DEFAULT=\\(isDefault),AUTOSELECT=YES,FORCED=NO,LANGUAGE=\\"\\(cleanLang)\\",CHARACTERISTICS=\\"public.accessibility.transcribes-spoken-dialog, public.accessibility.describes-music-and-sound\\",URI=\\"\\(subPlaylistUri)\\"")
   }
   if emittedLangs.isEmpty {
     let subPlaylistUri = "pip_sub_vi_\\(durInt)_\\(pts)_\\(isFmp4).m3u8"
-    outLines.append("#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\\"dvasubs\\",NAME=\\"Tiếng Việt\\",DEFAULT=NO,AUTOSELECT=YES,FORCED=NO,LANGUAGE=\\"vi\\",CHARACTERISTICS=\\"public.accessibility.transcribes-spoken-dialog, public.accessibility.describes-music-and-sound\\",URI=\\"\\(subPlaylistUri)\\"")
+    outLines.append("#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\\"dvasubs\\",NAME=\\"Tiếng Việt\\",DEFAULT=YES,AUTOSELECT=YES,FORCED=NO,LANGUAGE=\\"vi\\",CHARACTERISTICS=\\"public.accessibility.transcribes-spoken-dialog, public.accessibility.describes-music-and-sound\\",URI=\\"\\(subPlaylistUri)\\"")
   }
   outLines.append("#EXT-X-STREAM-INF:BANDWIDTH=5000000,SUBTITLES=\\"dvasubs\\"")
   outLines.append("pip_video.m3u8")
@@ -1389,10 +1481,10 @@ private func dvaHandleOnlineHlsPip(clientFd: Int32, subPath: String, rawTarget: 
         var arr: [String] = []
         let hasVi = !vnUrl.isEmpty || !dvaGetServerPipCuesSnapshot().isEmpty
         if hasVi {
-          arr.append("#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\\"dvasubs\\",NAME=\\"Tiếng Việt\\",DEFAULT=NO,AUTOSELECT=YES,FORCED=NO,LANGUAGE=\\"vi\\",CHARACTERISTICS=\\"public.accessibility.transcribes-spoken-dialog, public.accessibility.describes-music-and-sound\\",URI=\\"/hls-pip/s/\\(sid)/sub_vi.m3u8\\"")
+          arr.append("#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\\"dvasubs\\",NAME=\\"Tiếng Việt\\",DEFAULT=YES,AUTOSELECT=YES,FORCED=NO,LANGUAGE=\\"vi\\",CHARACTERISTICS=\\"public.accessibility.transcribes-spoken-dialog, public.accessibility.describes-music-and-sound\\",URI=\\"/hls-pip/s/\\(sid)/sub_vi.m3u8\\"")
         }
         if !enUrl.isEmpty {
-          arr.append("#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\\"dvasubs\\",NAME=\\"English\\",DEFAULT=NO,AUTOSELECT=YES,FORCED=NO,LANGUAGE=\\"en\\",CHARACTERISTICS=\\"public.accessibility.transcribes-spoken-dialog, public.accessibility.describes-music-and-sound\\",URI=\\"/hls-pip/s/\\(sid)/sub_en.m3u8\\"")
+          arr.append("#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\\"dvasubs\\",NAME=\\"English\\",DEFAULT=\\(hasVi ? "NO" : "YES"),AUTOSELECT=YES,FORCED=NO,LANGUAGE=\\"en\\",CHARACTERISTICS=\\"public.accessibility.transcribes-spoken-dialog, public.accessibility.describes-music-and-sound\\",URI=\\"/hls-pip/s/\\(sid)/sub_en.m3u8\\"")
         }
         return arr
       }
@@ -1477,11 +1569,11 @@ private func dvaHandleOnlineHlsPip(clientFd: Int32, subPath: String, rawTarget: 
     var hasSub = false
     let hasVi = !vnUrl.isEmpty || !dvaGetServerPipCuesSnapshot().isEmpty
     if hasVi {
-      outLines.append("#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\\"dvasubs\\",NAME=\\"Tiếng Việt\\",DEFAULT=NO,AUTOSELECT=YES,FORCED=NO,LANGUAGE=\\"vi\\",CHARACTERISTICS=\\"public.accessibility.transcribes-spoken-dialog, public.accessibility.describes-music-and-sound\\",URI=\\"/hls-pip/s/\\(sid)/sub_vi.m3u8\\"")
+      outLines.append("#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\\"dvasubs\\",NAME=\\"Tiếng Việt\\",DEFAULT=YES,AUTOSELECT=YES,FORCED=NO,LANGUAGE=\\"vi\\",CHARACTERISTICS=\\"public.accessibility.transcribes-spoken-dialog, public.accessibility.describes-music-and-sound\\",URI=\\"/hls-pip/s/\\(sid)/sub_vi.m3u8\\"")
       hasSub = true
     }
     if !enUrl.isEmpty {
-      outLines.append("#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\\"dvasubs\\",NAME=\\"English\\",DEFAULT=NO,AUTOSELECT=YES,FORCED=NO,LANGUAGE=\\"en\\",CHARACTERISTICS=\\"public.accessibility.transcribes-spoken-dialog, public.accessibility.describes-music-and-sound\\",URI=\\"/hls-pip/s/\\(sid)/sub_en.m3u8\\"")
+      outLines.append("#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\\"dvasubs\\",NAME=\\"English\\",DEFAULT=\\(hasVi ? "NO" : "YES"),AUTOSELECT=YES,FORCED=NO,LANGUAGE=\\"en\\",CHARACTERISTICS=\\"public.accessibility.transcribes-spoken-dialog, public.accessibility.describes-music-and-sound\\",URI=\\"/hls-pip/s/\\(sid)/sub_en.m3u8\\"")
       hasSub = true
     }
     if !hasSub {
@@ -2807,6 +2899,11 @@ public final class ExpoFetchModule: Module {
       return true
     }
 
+    Function("dvaSetPipSubtitleCuesForUrl") { (url: String, json: String) -> Bool in
+      dvaSetServerPipCuesForUrl(url: url, json: json)
+      return true
+    }
+
     Function("dvaGetSigningInfo") { () -> String in
       return dvaBuildSigningInfoJson()
     }
@@ -3392,16 +3489,42 @@ private struct DvaPipCueItem: Decodable, Sendable {
   let s: Double
   let e: Double
   let t: String
+  let top: Int?
+}
+
+private func dvaVideoViewStableHash(_ input: String) -> String {
+  var h: UInt64 = 14695981039346656037
+  for b in input.utf8 {
+    h ^= UInt64(b)
+    h = h &* 1099511628211
+  }
+  return String(format: "%016llx", h)
+}
+
+private func dvaPersistPipCuesTemp(_ trimmedJson: String, currentUrlStr: String?) {
+  let dir = FileManager.default.temporaryDirectory.appendingPathComponent("dva_pip_cues", isDirectory: true)
+  try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+  let activeUrl = dir.appendingPathComponent("active.json")
+  if trimmedJson.isEmpty {
+    try? FileManager.default.removeItem(at: activeUrl)
+  } else if let data = trimmedJson.data(using: .utf8) {
+    try? data.write(to: activeUrl, options: .atomic)
+  }
+  if let urlStr = currentUrlStr, !urlStr.isEmpty {
+    let urlTarget = dir.appendingPathComponent("\\(dvaVideoViewStableHash(urlStr)).json")
+    if trimmedJson.isEmpty {
+      try? FileManager.default.removeItem(at: urlTarget)
+    } else if let data = trimmedJson.data(using: .utf8) {
+      try? data.write(to: urlTarget, options: .atomic)
+    }
+  }
 }
 
 private final class DvaPipSubtitleRenderer: @unchecked Sendable {
   private let lock = NSLock()
-  private var cues: [DvaPipCueItem] = []
   private var lastJsonHash: Int = 0
   private var lastHasCues: Bool = false
   private var _isPipActive: Bool = false
-  private var cachedKey: String = ""
-  private var cachedImage: CIImage?
 
   var isPipActive: Bool {
     get {
@@ -3412,10 +3535,6 @@ private final class DvaPipSubtitleRenderer: @unchecked Sendable {
     set {
       lock.lock()
       _isPipActive = newValue
-      if !newValue {
-        cachedKey = ""
-        cachedImage = nil
-      }
       lock.unlock()
     }
   }
@@ -3438,11 +3557,8 @@ private final class DvaPipSubtitleRenderer: @unchecked Sendable {
 
     if trimmed.isEmpty {
       lock.lock()
-      cues = []
       lastJsonHash = h
       lastHasCues = false
-      cachedKey = ""
-      cachedImage = nil
       lock.unlock()
       return
     }
@@ -3451,165 +3567,14 @@ private final class DvaPipSubtitleRenderer: @unchecked Sendable {
           let decoded = try? JSONDecoder().decode([DvaPipCueItem].self, from: data) else {
       return
     }
-    let sorted = decoded.filter { !$0.t.isEmpty && $0.e > $0.s }.sorted { $0.s < $1.s }
+    let hasValid = decoded.contains { !$0.t.isEmpty && $0.e > $0.s }
     lock.lock()
-    cues = sorted
     lastJsonHash = h
-    lastHasCues = !sorted.isEmpty
-    cachedKey = ""
-    cachedImage = nil
+    lastHasCues = hasValid
     lock.unlock()
   }
 
-  func clearCache() {
-    lock.lock()
-    cachedKey = ""
-    cachedImage = nil
-    lock.unlock()
-  }
-
-  private func activeText(at seconds: Double) -> String? {
-    lock.lock()
-    let list = cues
-    lock.unlock()
-    guard !list.isEmpty else { return nil }
-
-    var lo = 0
-    var hi = list.count - 1
-    while lo <= hi {
-      let mid = (lo + hi) >> 1
-      if list[mid].e < seconds {
-        lo = mid + 1
-      } else {
-        hi = mid - 1
-      }
-    }
-    var lines: [String] = []
-    var idx = lo
-    while idx < list.count && list[idx].s <= seconds {
-      if list[idx].e >= seconds {
-        lines.append(list[idx].t)
-        if lines.count >= 2 { break }
-      }
-      idx += 1
-    }
-    guard !lines.isEmpty else { return nil }
-    return lines.joined(separator: "\\n")
-  }
-
-  func overlayImage(forTime seconds: Double, extent: CGRect) -> CIImage? {
-    guard isPipActive, extent.width > 16, extent.height > 16, let text = activeText(at: seconds) else {
-      return nil
-    }
-    let w = Int(round(extent.width))
-    let h = Int(round(extent.height))
-    let key = "\\(text)|\\(w)x\\(h)"
-
-    lock.lock()
-    if cachedKey == key, let img = cachedImage {
-      lock.unlock()
-      return img
-    }
-    lock.unlock()
-
-    let stripHeight = min(extent.height * 0.45, max(84.0, ceil(extent.height * 0.28)))
-    let widthPx = max(32, Int(ceil(extent.width)))
-    let heightPx = max(32, Int(ceil(stripHeight)))
-    let fontSize = min(76.0, max(28.0, extent.height * 0.062))
-    let ctFont = CTFontCreateWithName("HelveticaNeue-Bold" as CFString, fontSize, nil)
-
-    var alignment = CTTextAlignment.center
-    var lineSpacing = max(2.0, fontSize * 0.12)
-    var lineBreak = CTLineBreakMode.byWordWrapping
-    let ctPara: CTParagraphStyle = withUnsafePointer(to: &alignment) { alignPtr in
-      withUnsafePointer(to: &lineSpacing) { spacePtr in
-        withUnsafePointer(to: &lineBreak) { breakPtr in
-          let paraSettings: [CTParagraphStyleSetting] = [
-            CTParagraphStyleSetting(spec: .alignment, valueSize: MemoryLayout<CTTextAlignment>.size, value: alignPtr),
-            CTParagraphStyleSetting(spec: .lineSpacingAdjustment, valueSize: MemoryLayout<CGFloat>.size, value: spacePtr),
-            CTParagraphStyleSetting(spec: .lineBreakMode, valueSize: MemoryLayout<CTLineBreakMode>.size, value: breakPtr)
-          ]
-          return CTParagraphStyleCreate(paraSettings, paraSettings.count)
-        }
-      }
-    }
-
-    let attrs: [String: Any] = [
-      kCTFontAttributeName as String: ctFont,
-      kCTForegroundColorAttributeName as String: CGColor(red: 1.0, green: 1.0, blue: 1.0, alpha: 1.0),
-      kCTStrokeColorAttributeName as String: CGColor(red: 0.0, green: 0.0, blue: 0.0, alpha: 1.0),
-      kCTStrokeWidthAttributeName as String: NSNumber(value: -3.2),
-      kCTParagraphStyleAttributeName as String: ctPara
-    ]
-    let cfAttrStr = CFAttributedStringCreate(kCFAllocatorDefault, text as CFString, attrs as CFDictionary)!
-    let framesetter = CTFramesetterCreateWithAttributedString(cfAttrStr)
-    let maxTextW = max(40.0, CGFloat(widthPx) * 0.88)
-    let textBounds = CTFramesetterSuggestFrameSizeWithConstraints(
-      framesetter,
-      CFRangeMake(0, CFAttributedStringGetLength(cfAttrStr)),
-      nil,
-      CGSize(width: maxTextW, height: CGFloat(heightPx) - 16.0),
-      nil
-    )
-
-    let padX = fontSize * 0.56
-    let padY = fontSize * 0.28
-    let boxW = min(CGFloat(widthPx) * 0.94, ceil(textBounds.width) + padX * 2.0)
-    let boxH = min(CGFloat(heightPx) - 10.0, ceil(textBounds.height) + padY * 2.0)
-    let bottomMargin = max(14.0, extent.height * 0.045)
-    let boxY = max(4.0, min(CGFloat(heightPx) - boxH - 4.0, bottomMargin))
-    let boxRect = CGRect(
-      x: (CGFloat(widthPx) - boxW) * 0.5,
-      y: boxY,
-      width: boxW,
-      height: boxH
-    )
-
-    let colorSpace = CGColorSpaceCreateDeviceRGB()
-    guard let cg = CGContext(
-      data: nil,
-      width: widthPx,
-      height: heightPx,
-      bitsPerComponent: 8,
-      bytesPerRow: widthPx * 4,
-      space: colorSpace,
-      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-    ) else {
-      return nil
-    }
-    cg.clear(CGRect(x: 0, y: 0, width: widthPx, height: heightPx))
-    let cornerR = min(max(8.0, fontSize * 0.32), min(boxW, boxH) * 0.48)
-    let bgPath = CGPath(roundedRect: boxRect, cornerWidth: cornerR, cornerHeight: cornerR, transform: nil)
-    cg.setFillColor(red: 0.0, green: 0.0, blue: 0.0, alpha: 0.66)
-    cg.addPath(bgPath)
-    cg.fillPath()
-
-    cg.saveGState()
-    cg.setShadow(offset: CGSize(width: 0.0, height: -1.5), blur: 3.5, color: CGColor(red: 0.0, green: 0.0, blue: 0.0, alpha: 0.95))
-    let textRect = CGRect(
-      x: boxRect.minX + padX * 0.5,
-      y: boxRect.minY + max(2.0, (boxRect.height - textBounds.height) * 0.5),
-      width: boxRect.width - padX,
-      height: textBounds.height + 6.0
-    )
-    let framePath = CGPath(rect: textRect, transform: nil)
-    let ctFrame = CTFramesetterCreateFrame(framesetter, CFRangeMake(0, CFAttributedStringGetLength(cfAttrStr)), framePath, nil)
-    cg.textMatrix = .identity
-    CTFrameDraw(ctFrame, cg)
-    cg.restoreGState()
-
-    guard let cgImg = cg.makeImage() else {
-      return nil
-    }
-    let rawCi = CIImage(cgImage: cgImg)
-    let positioned = rawCi.transformed(by: CGAffineTransform(translationX: extent.minX, y: extent.minY))
-
-    lock.lock()
-    cachedKey = key
-    cachedImage = positioned
-    lock.unlock()
-    return positioned
-  }
+  func clearCache() {}
 }
 #endif
 
@@ -3640,23 +3605,21 @@ public final class VideoView: ExpoView, AVPlayerViewControllerDelegate {`
   #if !os(tvOS)
   private var dvaIsInPip: Bool = false
   private var dvaIsPreparingPip: Bool = false
-  private var dvaDidPulsePipTrackInSession: Bool = false
   private let dvaPipSubRenderer = DvaPipSubtitleRenderer()
   private weak var dvaObservedAvPlayer: AVPlayer?
   private var dvaCurrentItemObs: NSKeyValueObservation?
   private var dvaItemStatusObs: NSKeyValueObservation?
-  private var dvaPrebuiltComposition: AVVideoComposition?
-  private var dvaPrebuiltItemId: ObjectIdentifier?
-  private var dvaPrebuildingItemId: ObjectIdentifier?
+  private var dvaItemTracksObs: NSKeyValueObservation?
+  private var dvaLateCueReloadedItemId: ObjectIdentifier?
   private var dvaLifecycleObservers: [NSObjectProtocol] = []
   private var dvaBgTaskId: UIBackgroundTaskIdentifier = .invalid
 
   var pipSubLang: String = "vi" {
     didSet {
       if oldValue != pipSubLang {
-        if dvaIsInPip {
+        if dvaIsInPip || dvaIsPreparingPip {
           dvaApplyPipSubtitleSelection(enable: true)
-        } else if let item = self.player?.ref.currentItem, item.status == .readyToPlay {
+        } else if let item = self.player?.ref.currentItem {
           dvaPrepareSubtitleAssetsOnReady(for: item)
         }
       }
@@ -3665,7 +3628,24 @@ public final class VideoView: ExpoView, AVPlayerViewControllerDelegate {`
   var pipSubCuesJson: String = "" {
     didSet {
       dvaPipSubRenderer.load(json: pipSubCuesJson)
-      dvaSchedulePrebuildCompositionForCurrentItem()
+      let trimmed = pipSubCuesJson.trimmingCharacters(in: .whitespacesAndNewlines)
+      let curItem = self.player?.ref.currentItem
+      let vpItem = curItem as? VideoPlayerItem
+      let currentUrlStr = vpItem?.urlAsset.url.absoluteString ?? vpItem?.videoSource.uri?.absoluteString
+      dvaPersistPipCuesTemp(trimmed, currentUrlStr: currentUrlStr)
+      if let vpItem,
+         !vpItem.isHls,
+         vpItem.dvaInjectedSubCuesCount == 0,
+         dvaPipSubRenderer.hasCues,
+         self.pipSubLang.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "off" {
+        let itemId = ObjectIdentifier(vpItem)
+        if dvaLateCueReloadedItemId != itemId {
+          dvaLateCueReloadedItemId = itemId
+          DispatchQueue.main.async { [weak self] in
+            self?.player?.reloadCurrentSource()
+          }
+        }
+      }
     }
   }
 
@@ -3713,7 +3693,6 @@ public final class VideoView: ExpoView, AVPlayerViewControllerDelegate {`
       self.dvaEndPipBackgroundGrace()
       if !self.dvaIsInPip {
         self.dvaIsPreparingPip = false
-        self.dvaDidPulsePipTrackInSession = false
         self.dvaApplyPipSubtitleSelection(enable: false)
       }
     }
@@ -3733,10 +3712,10 @@ public final class VideoView: ExpoView, AVPlayerViewControllerDelegate {`
     dvaCurrentItemObs = nil
     dvaItemStatusObs?.invalidate()
     dvaItemStatusObs = nil
+    dvaItemTracksObs?.invalidate()
+    dvaItemTracksObs = nil
     dvaObservedAvPlayer = nil
-    dvaPrebuiltComposition = nil
-    dvaPrebuiltItemId = nil
-    dvaPrebuildingItemId = nil
+    dvaLateCueReloadedItemId = nil
   }
 
   private func dvaAttachPipObservers(to avPlayer: AVPlayer?) {
@@ -3758,17 +3737,25 @@ public final class VideoView: ExpoView, AVPlayerViewControllerDelegate {`
   private func dvaObserveCurrentItem(_ item: AVPlayerItem?) {
     dvaItemStatusObs?.invalidate()
     dvaItemStatusObs = nil
-    dvaPrebuiltComposition = nil
-    dvaPrebuiltItemId = nil
-    dvaPrebuildingItemId = nil
+    dvaItemTracksObs?.invalidate()
+    dvaItemTracksObs = nil
     guard let item else { return }
     if item.status == .readyToPlay {
       dvaPrepareSubtitleAssetsOnReady(for: item)
+    } else if !dvaIsHlsAsset(item.asset) {
+      dvaApplyProgressiveSubtitleTrackState(for: item)
     }
     dvaItemStatusObs = item.observe(\\.status, options: [.new]) { [weak self] it, _ in
       if it.status == .readyToPlay {
         DispatchQueue.main.async {
           self?.dvaPrepareSubtitleAssetsOnReady(for: it)
+        }
+      }
+    }
+    dvaItemTracksObs = item.observe(\\.tracks, options: [.new]) { [weak self] it, _ in
+      DispatchQueue.main.async {
+        if let strongSelf = self, !strongSelf.dvaIsHlsAsset(it.asset) {
+          strongSelf.dvaApplyProgressiveSubtitleTrackState(for: it)
         }
       }
     }
@@ -3778,99 +3765,123 @@ public final class VideoView: ExpoView, AVPlayerViewControllerDelegate {`
     if dvaIsHlsAsset(item.asset) {
       dvaPrepareHlsLegibleTrackIfNeeded(for: item)
     } else {
-      dvaSchedulePrebuildCompositionIfNeeded(for: item)
+      dvaApplyProgressiveSubtitleTrackState(for: item)
     }
+  }
+
+  private func dvaBuildHiddenInlineTextStyleRules() -> [AVTextStyleRule]? {
+    let transparent: [NSNumber] = [NSNumber(value: 0.0), NSNumber(value: 0.0), NSNumber(value: 0.0), NSNumber(value: 0.0)]
+    let attrs: [String: Any] = [
+      kCMTextMarkupAttribute_ForegroundColorARGB as String: transparent,
+      kCMTextMarkupAttribute_BackgroundColorARGB as String: transparent,
+      kCMTextMarkupAttribute_CharacterBackgroundColorARGB as String: transparent,
+      kCMTextMarkupAttribute_CharacterEdgeStyle as String: kCMTextMarkupCharacterEdgeStyle_None as String,
+      kCMTextMarkupAttribute_RelativeFontSize as String: NSNumber(value: 10)
+    ]
+    if let rule = AVTextStyleRule(textMarkupAttributes: attrs) {
+      return [rule]
+    }
+    return nil
+  }
+
+  private func dvaSetInlineSubtitleLayersHidden(_ hidden: Bool, in layer: CALayer) {
+    let clsName = String(describing: type(of: layer)).lowercased()
+    if clsName.contains("subtitle") || clsName.contains("caption") {
+      layer.isHidden = hidden
+      layer.opacity = hidden ? 0.0 : 1.0
+      return
+    }
+    if let sublayers = layer.sublayers {
+      for sub in sublayers {
+        dvaSetInlineSubtitleLayersHidden(hidden, in: sub)
+      }
+    }
+  }
+
+  private func dvaSetInlineSubtitleViewsHidden(_ hidden: Bool, in view: UIView) {
+    let clsName = String(describing: type(of: view)).lowercased()
+    if clsName.contains("subtitle") || clsName.contains("caption") {
+      view.isHidden = hidden
+      view.alpha = hidden ? 0.0 : 1.0
+      return
+    }
+    for sub in view.subviews {
+      dvaSetInlineSubtitleViewsHidden(hidden, in: sub)
+    }
+  }
+
+  private func dvaSetInlineSubtitleSubviewsHidden(_ hidden: Bool) {
+    guard let vcView = self.playerViewController.viewIfLoaded else { return }
+    dvaSetInlineSubtitleViewsHidden(hidden, in: vcView)
+    dvaSetInlineSubtitleLayersHidden(hidden, in: vcView.layer)
+    if let overlay = self.playerViewController.contentOverlayView {
+      dvaSetInlineSubtitleViewsHidden(hidden, in: overlay)
+      dvaSetInlineSubtitleLayersHidden(hidden, in: overlay.layer)
+    }
+  }
+
+  private func dvaNudgePausedFrameIfNeeded(avPlayer: AVPlayer, item: AVPlayerItem) {
+    guard avPlayer.rate == 0 else { return }
+    let t = item.currentTime()
+    guard t.isValid && t.isNumeric else { return }
+    avPlayer.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero)
+  }
+
+  private func dvaApplyProgressiveSubtitleTrackState(for item: AVPlayerItem) {
+    let pref = self.pipSubLang.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let wantsSubs = pref != "off"
+    let showInPip = wantsSubs && (self.dvaIsInPip || self.dvaIsPreparingPip)
+    for track in item.tracks {
+      if let mType = track.assetTrack?.mediaType,
+         mType == .subtitle || mType == .text || mType == .closedCaption {
+        track.isEnabled = wantsSubs
+      }
+    }
+    if wantsSubs {
+      item.textStyleRules = showInPip ? dvaBuildPipTextStyleRules() : dvaBuildHiddenInlineTextStyleRules()
+    } else {
+      item.textStyleRules = nil
+    }
+    dvaSetInlineSubtitleSubviewsHidden(!showInPip)
   }
 
   private func dvaPrepareHlsLegibleTrackIfNeeded(for item: AVPlayerItem) {
     guard let avPlayer = self.player?.ref, dvaIsHlsAsset(item.asset) else { return }
-    if self.dvaIsInPip || self.dvaIsPreparingPip {
-      self.dvaApplyPipSubtitleSelection(enable: true)
+    let pref = self.pipSubLang.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    if pref == "off" {
+      let offCriteria = AVPlayerMediaSelectionCriteria(preferredLanguages: [], preferredMediaCharacteristics: [.legible])
+      avPlayer.setMediaSelectionCriteria(offCriteria, forMediaCharacteristic: .legible)
+      avPlayer.appliesMediaSelectionCriteriaAutomatically = false
+      item.textStyleRules = nil
+      if let syncGroup = item.asset.mediaSelectionGroup(forMediaCharacteristic: .legible) {
+        item.select(nil, in: syncGroup)
+      }
+      dvaSetInlineSubtitleSubviewsHidden(true)
       return
     }
-    let offCriteria = AVPlayerMediaSelectionCriteria(preferredLanguages: [], preferredMediaCharacteristics: [.legible])
-    avPlayer.setMediaSelectionCriteria(offCriteria, forMediaCharacteristic: .legible)
-    avPlayer.appliesMediaSelectionCriteriaAutomatically = false
-    item.textStyleRules = nil
-    if let syncGroup = item.asset.mediaSelectionGroup(forMediaCharacteristic: .legible) {
-      item.select(nil, in: syncGroup)
+    let showInPip = self.dvaIsInPip || self.dvaIsPreparingPip
+    if let syncGroup = item.asset.mediaSelectionGroup(forMediaCharacteristic: .legible), !syncGroup.options.isEmpty {
+      dvaApplySelectionGroup(syncGroup, to: item, avPlayer: avPlayer, enable: true, showInPip: showInPip)
       return
     }
     if #available(iOS 15.0, *) {
       Task { @MainActor [weak self, weak item, weak avPlayer] in
         guard let self, let item, let avPlayer, avPlayer.currentItem === item else { return }
-        if let group = try? await item.asset.loadMediaSelectionGroup(for: .legible) {
-          if self.dvaIsInPip || self.dvaIsPreparingPip {
-            self.dvaApplySelectionGroup(group, to: item, avPlayer: avPlayer, enable: true)
-          } else {
-            item.select(nil, in: group)
-          }
+        if let group = try? await item.asset.loadMediaSelectionGroup(for: .legible), !group.options.isEmpty {
+          let curShow = self.dvaIsInPip || self.dvaIsPreparingPip
+          self.dvaApplySelectionGroup(group, to: item, avPlayer: avPlayer, enable: true, showInPip: curShow)
         }
       }
     }
   }
 
   private func dvaPreparePipForEntry() {
-    guard let avPlayer = self.player?.ref, let item = avPlayer.currentItem else { return }
+    guard self.player?.ref.currentItem != nil else { return }
     let pref = self.pipSubLang.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     guard pref != "off" else { return }
     dvaIsPreparingPip = true
-    dvaDidPulsePipTrackInSession = false
     dvaBeginPipBackgroundGrace()
     dvaApplyPipSubtitleSelection(enable: true)
-  }
-
-  private func dvaSchedulePrebuildCompositionForCurrentItem() {
-    guard let item = self.player?.ref.currentItem else { return }
-    dvaSchedulePrebuildCompositionIfNeeded(for: item)
-  }
-
-  private func dvaSchedulePrebuildCompositionIfNeeded(for item: AVPlayerItem) {
-    let pref = self.pipSubLang.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    guard pref != "off",
-          item.status == .readyToPlay,
-          !dvaIsHlsAsset(item.asset),
-          dvaPipSubRenderer.hasCues else {
-      return
-    }
-    let itemId = ObjectIdentifier(item)
-    if dvaPrebuiltItemId == itemId || dvaPrebuildingItemId == itemId {
-      return
-    }
-    dvaPrebuildingItemId = itemId
-    let renderer = self.dvaPipSubRenderer
-    if #available(iOS 16.0, *) {
-      AVVideoComposition.videoComposition(
-        with: item.asset,
-        applyingCIFiltersWithHandler: { request in
-          let src = request.sourceImage
-          let sec = request.compositionTime.seconds
-          if let subImg = renderer.overlayImage(forTime: sec, extent: src.extent) {
-            request.finish(with: subImg.composited(over: src), context: nil)
-          } else {
-            request.finish(with: src, context: nil)
-          }
-        },
-        completionHandler: { [weak self, weak item] composition, _ in
-          DispatchQueue.main.async {
-            guard let self else { return }
-            if self.dvaPrebuildingItemId == itemId {
-              self.dvaPrebuildingItemId = nil
-            }
-            guard let composition, let item else { return }
-            self.dvaPrebuiltComposition = composition
-            self.dvaPrebuiltItemId = ObjectIdentifier(item)
-            if (self.dvaIsInPip || self.dvaPipSubRenderer.isPipActive),
-               self.player?.ref.currentItem === item,
-               self.pipSubLang.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "off" {
-              item.videoComposition = composition
-            }
-          }
-        }
-      )
-    } else {
-      dvaPrebuildingItemId = nil
-    }
   }
 
   private func dvaPickBestLegibleOption(
@@ -3919,7 +3930,8 @@ public final class VideoView: ExpoView, AVPlayerViewControllerDelegate {`
     _ group: AVMediaSelectionGroup,
     to item: AVPlayerItem,
     avPlayer: AVPlayer,
-    enable: Bool
+    enable: Bool,
+    showInPip: Bool? = nil
   ) {
     let pref = self.pipSubLang.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     if !enable || pref == "off" {
@@ -3928,16 +3940,21 @@ public final class VideoView: ExpoView, AVPlayerViewControllerDelegate {`
       avPlayer.appliesMediaSelectionCriteriaAutomatically = false
       item.select(nil, in: group)
       item.textStyleRules = nil
+      dvaSetInlineSubtitleSubviewsHidden(true)
       return
     }
+    let visible = showInPip ?? (self.dvaIsInPip || self.dvaIsPreparingPip)
     let langs = pref == "en" ? ["en", "eng", "vi"] : ["vi", "vie", "vn", "en"]
     let onCriteria = AVPlayerMediaSelectionCriteria(preferredLanguages: langs, preferredMediaCharacteristics: [.legible])
     avPlayer.setMediaSelectionCriteria(onCriteria, forMediaCharacteristic: .legible)
     avPlayer.appliesMediaSelectionCriteriaAutomatically = true
-    item.textStyleRules = dvaBuildPipTextStyleRules()
+    item.textStyleRules = visible ? dvaBuildPipTextStyleRules() : dvaBuildHiddenInlineTextStyleRules()
     if let chosen = dvaPickBestLegibleOption(from: group.options, preferredLang: pref) {
-      item.select(chosen, in: group)
+      if item.currentMediaSelection.selectedMediaOption(in: group) != chosen {
+        item.select(chosen, in: group)
+      }
     }
+    dvaSetInlineSubtitleSubviewsHidden(!visible)
   }
 
   private func dvaIsHlsAsset(_ asset: AVAsset) -> Bool {
@@ -3946,98 +3963,49 @@ public final class VideoView: ExpoView, AVPlayerViewControllerDelegate {`
     return s.contains(".m3u8") || s.contains("/hls-pip/") || s.contains("pip_master.m3u8")
   }
 
-  private func dvaAttachProgressivePipSubtitles(to item: AVPlayerItem, avPlayer: AVPlayer) {
-    let pref = self.pipSubLang.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    guard pref != "off", !dvaIsHlsAsset(item.asset), dvaPipSubRenderer.hasCues else {
-      return
-    }
-    let itemId = ObjectIdentifier(item)
-    if dvaPrebuiltItemId == itemId, let prebuilt = dvaPrebuiltComposition {
-      if item.videoComposition !== prebuilt {
-        item.videoComposition = prebuilt
-      }
-      return
-    }
-    if dvaPrebuildingItemId == itemId {
-      return
-    }
-    dvaPrebuildingItemId = itemId
-    let renderer = self.dvaPipSubRenderer
-    if #available(iOS 16.0, *) {
-      AVVideoComposition.videoComposition(
-        with: item.asset,
-        applyingCIFiltersWithHandler: { request in
-          let src = request.sourceImage
-          let sec = request.compositionTime.seconds
-          if let subImg = renderer.overlayImage(forTime: sec, extent: src.extent) {
-            request.finish(with: subImg.composited(over: src), context: nil)
-          } else {
-            request.finish(with: src, context: nil)
-          }
-        },
-        completionHandler: { [weak self, weak avPlayer, weak item] composition, _ in
-          DispatchQueue.main.async {
-            guard let self else { return }
-            if self.dvaPrebuildingItemId == itemId {
-              self.dvaPrebuildingItemId = nil
-            }
-            guard let composition, let avPlayer, let item else { return }
-            self.dvaPrebuiltComposition = composition
-            self.dvaPrebuiltItemId = ObjectIdentifier(item)
-            guard (self.dvaIsInPip || self.dvaPipSubRenderer.isPipActive),
-                  self.pipSubLang.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "off",
-                  avPlayer.currentItem === item else {
-              return
-            }
-            item.videoComposition = composition
-          }
-        }
-      )
-    } else {
-      dvaPrebuildingItemId = nil
-    }
-  }
-
   private func dvaApplyPipSubtitleSelection(enable: Bool) {
     dvaPipSubRenderer.isPipActive = enable
     guard let avPlayer = self.player?.ref, let item = avPlayer.currentItem else {
       return
     }
-    if !enable {
-      let offCriteria = AVPlayerMediaSelectionCriteria(preferredLanguages: [], preferredMediaCharacteristics: [.legible])
-      avPlayer.setMediaSelectionCriteria(offCriteria, forMediaCharacteristic: .legible)
-      avPlayer.appliesMediaSelectionCriteriaAutomatically = false
-      if let syncGroup = item.asset.mediaSelectionGroup(forMediaCharacteristic: .legible) {
-        item.select(nil, in: syncGroup)
+    let pref = self.pipSubLang.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let isHls = dvaIsHlsAsset(item.asset)
+    if !isHls {
+      dvaApplyProgressiveSubtitleTrackState(for: item)
+      if enable && pref != "off" {
+        dvaNudgePausedFrameIfNeeded(avPlayer: avPlayer, item: item)
       }
-      item.textStyleRules = nil
-      item.videoComposition = nil
-      dvaPipSubRenderer.clearCache()
       return
     }
 
-    let isHls = dvaIsHlsAsset(item.asset)
-    if !isHls && dvaPipSubRenderer.hasCues {
-      dvaAttachProgressivePipSubtitles(to: item, avPlayer: avPlayer)
-      return
-    }
-    if let syncGroup = item.asset.mediaSelectionGroup(forMediaCharacteristic: .legible), !syncGroup.options.isEmpty {
-      item.videoComposition = nil
-      dvaApplySelectionGroup(syncGroup, to: item, avPlayer: avPlayer, enable: true)
-      return
-    }
-    if isHls {
-      let pref = self.pipSubLang.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-      if pref != "off" {
-        let langs = pref == "en" ? ["en", "eng", "vi"] : ["vi", "vie", "vn", "en"]
-        let onCriteria = AVPlayerMediaSelectionCriteria(preferredLanguages: langs, preferredMediaCharacteristics: [.legible])
-        avPlayer.setMediaSelectionCriteria(onCriteria, forMediaCharacteristic: .legible)
-        avPlayer.appliesMediaSelectionCriteriaAutomatically = true
-        item.textStyleRules = dvaBuildPipTextStyleRules()
+    if pref == "off" {
+      if let syncGroup = item.asset.mediaSelectionGroup(forMediaCharacteristic: .legible) {
+        dvaApplySelectionGroup(syncGroup, to: item, avPlayer: avPlayer, enable: false)
+      } else {
+        let offCriteria = AVPlayerMediaSelectionCriteria(preferredLanguages: [], preferredMediaCharacteristics: [.legible])
+        avPlayer.setMediaSelectionCriteria(offCriteria, forMediaCharacteristic: .legible)
+        avPlayer.appliesMediaSelectionCriteriaAutomatically = false
+        item.textStyleRules = nil
+        dvaSetInlineSubtitleSubviewsHidden(true)
       }
-    } else {
-      dvaAttachProgressivePipSubtitles(to: item, avPlayer: avPlayer)
+      return
     }
+
+    if let syncGroup = item.asset.mediaSelectionGroup(forMediaCharacteristic: .legible), !syncGroup.options.isEmpty {
+      dvaApplySelectionGroup(syncGroup, to: item, avPlayer: avPlayer, enable: true, showInPip: enable)
+      if enable {
+        dvaNudgePausedFrameIfNeeded(avPlayer: avPlayer, item: item)
+      }
+      return
+    }
+
+    let langs = pref == "en" ? ["en", "eng", "vi"] : ["vi", "vie", "vn", "en"]
+    let onCriteria = AVPlayerMediaSelectionCriteria(preferredLanguages: langs, preferredMediaCharacteristics: [.legible])
+    avPlayer.setMediaSelectionCriteria(onCriteria, forMediaCharacteristic: .legible)
+    avPlayer.appliesMediaSelectionCriteriaAutomatically = true
+    item.textStyleRules = enable ? dvaBuildPipTextStyleRules() : dvaBuildHiddenInlineTextStyleRules()
+    dvaSetInlineSubtitleSubviewsHidden(!enable)
+
     if #available(iOS 15.0, *) {
       Task { @MainActor [weak self] in
         guard let self,
@@ -4045,16 +4013,14 @@ public final class VideoView: ExpoView, AVPlayerViewControllerDelegate {`
               let currentItem = currentAvPlayer.currentItem else {
           return
         }
-        guard (self.dvaIsInPip || self.dvaIsPreparingPip) else { return }
         let group = try? await currentItem.asset.loadMediaSelectionGroup(for: .legible)
-        guard (self.dvaIsInPip || self.dvaIsPreparingPip), currentAvPlayer.currentItem === currentItem else { return }
-        if !self.dvaIsHlsAsset(currentItem.asset) && self.dvaPipSubRenderer.hasCues {
-          self.dvaAttachProgressivePipSubtitles(to: currentItem, avPlayer: currentAvPlayer)
-        } else if let group, !group.options.isEmpty {
-          currentItem.videoComposition = nil
-          self.dvaApplySelectionGroup(group, to: currentItem, avPlayer: currentAvPlayer, enable: true)
-        } else if !self.dvaIsHlsAsset(currentItem.asset) && currentItem.videoComposition == nil {
-          self.dvaAttachProgressivePipSubtitles(to: currentItem, avPlayer: currentAvPlayer)
+        guard currentAvPlayer.currentItem === currentItem else { return }
+        let curShow = self.dvaIsInPip || self.dvaIsPreparingPip
+        if let group, !group.options.isEmpty {
+          self.dvaApplySelectionGroup(group, to: currentItem, avPlayer: currentAvPlayer, enable: true, showInPip: curShow)
+          if curShow {
+            self.dvaNudgePausedFrameIfNeeded(avPlayer: currentAvPlayer, item: currentItem)
+          }
         }
       }
     }
@@ -4142,7 +4108,6 @@ public final class VideoView: ExpoView, AVPlayerViewControllerDelegate {`
   public func playerViewController(_ playerViewController: AVPlayerViewController, failedToStartPictureInPictureWithError error: Error) {
     dvaIsInPip = false
     dvaIsPreparingPip = false
-    dvaDidPulsePipTrackInSession = false
     #if canImport(MetalKit)
     contrastOverlayView?.isInPictureInPicture = false
     #endif
@@ -4158,40 +4123,22 @@ public final class VideoView: ExpoView, AVPlayerViewControllerDelegate {`
     contrastOverlayView?.isInPictureInPicture = true
     #endif
     dvaApplyPipSubtitleSelection(enable: true)
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.10) { [weak self] in
-      guard let self, self.dvaIsInPip else { return }
-      let pref = self.pipSubLang.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-      guard pref != "off",
-            !self.dvaDidPulsePipTrackInSession,
-            let avPlayer = self.player?.ref,
-            let item = avPlayer.currentItem,
-            self.dvaIsHlsAsset(item.asset),
-            let group = item.asset.mediaSelectionGroup(forMediaCharacteristic: .legible),
-            !group.options.isEmpty else {
-        return
-      }
-      self.dvaDidPulsePipTrackInSession = true
-      item.select(nil, in: group)
-      DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self, weak item, weak avPlayer] in
-        guard let self, self.dvaIsInPip, let item, let avPlayer, avPlayer.currentItem === item else { return }
-        if let freshGroup = item.asset.mediaSelectionGroup(forMediaCharacteristic: .legible), !freshGroup.options.isEmpty {
-          self.dvaApplySelectionGroup(freshGroup, to: item, avPlayer: avPlayer, enable: true)
-        }
-      }
-    }
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) { [weak self] in
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
       guard let self, self.dvaIsInPip else { return }
       let pref = self.pipSubLang.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
       guard pref != "off",
             let avPlayer = self.player?.ref,
-            let item = avPlayer.currentItem,
-            self.dvaIsHlsAsset(item.asset),
-            let group = item.asset.mediaSelectionGroup(forMediaCharacteristic: .legible),
-            !group.options.isEmpty else {
+            let item = avPlayer.currentItem else {
         return
       }
-      if item.currentMediaSelection.selectedMediaOption(in: group) == nil {
-        self.dvaApplySelectionGroup(group, to: item, avPlayer: avPlayer, enable: true)
+      if self.dvaIsHlsAsset(item.asset),
+         let group = item.asset.mediaSelectionGroup(forMediaCharacteristic: .legible),
+         !group.options.isEmpty {
+        self.dvaApplySelectionGroup(group, to: item, avPlayer: avPlayer, enable: true, showInPip: true)
+        self.dvaNudgePausedFrameIfNeeded(avPlayer: avPlayer, item: item)
+      } else if !self.dvaIsHlsAsset(item.asset) {
+        self.dvaApplyProgressiveSubtitleTrackState(for: item)
+        self.dvaNudgePausedFrameIfNeeded(avPlayer: avPlayer, item: item)
       }
     }
     #endif
@@ -4202,11 +4149,13 @@ public final class VideoView: ExpoView, AVPlayerViewControllerDelegate {`
     #if !os(tvOS)
     dvaIsInPip = false
     dvaIsPreparingPip = false
-    dvaDidPulsePipTrackInSession = false
     #if canImport(MetalKit)
     contrastOverlayView?.isInPictureInPicture = false
     #endif
     dvaApplyPipSubtitleSelection(enable: false)
+    if let avPlayer = self.player?.ref, let item = avPlayer.currentItem {
+      dvaNudgePausedFrameIfNeeded(avPlayer: avPlayer, item: item)
+    }
     #endif
     onPictureInPictureStop()
   }`
@@ -4248,6 +4197,569 @@ function applyExpoOrientationControllerPatch(sourceText) {
 
 ${target}`
   );
+}
+
+function applyExpoVideoPlayerItemPatch(sourceText) {
+  const normalized = String(sourceText || '').replace(/\r\n/g, '\n');
+  if (normalized.includes(VIDEO_PLAYER_ITEM_PATCH_MARKER)) {
+    return normalized;
+  }
+
+  const importTarget = 'import ExpoModulesCore\nimport AVKit';
+  if (!normalized.includes(importTarget)) {
+    throw new Error('Could not find import anchor in VideoPlayerItem.swift');
+  }
+
+  const classPropTarget = '  let isHls: Bool';
+  if (!normalized.includes(classPropTarget)) {
+    throw new Error('Could not find isHls property anchor in VideoPlayerItem.swift');
+  }
+
+  const superInitTarget = `    try Task.checkCancellation()
+    super.init(asset: urlAsset, automaticallyLoadedAssetKeys: nil)
+    try Task.checkCancellation()
+    self.createTracksLoadingTask()`;
+  if (!normalized.includes(superInitTarget)) {
+    throw new Error('Could not find super.init anchor in VideoPlayerItem.swift');
+  }
+
+  const deinitTarget = `  deinit {
+    tracksLoadingTask?.cancel()
+  }`;
+  if (!normalized.includes(deinitTarget)) {
+    throw new Error('Could not find deinit anchor in VideoPlayerItem.swift');
+  }
+
+  let updated = normalized.replace(
+    importTarget,
+    `// ${VIDEO_PLAYER_ITEM_PATCH_MARKER}
+import Foundation
+import CoreMedia
+import ExpoModulesCore
+import AVKit
+
+#if !os(tvOS)
+private struct DvaTx3gCue: Decodable, Sendable {
+  let s: Double
+  let e: Double
+  let t: String
+  let top: Int?
+  var isTop: Bool { (top ?? 0) != 0 }
+}
+
+private func dvaTx3gFnv1aHex(_ input: String) -> String {
+  var h: UInt64 = 14695981039346656037
+  for b in input.utf8 {
+    h ^= UInt64(b)
+    h = h &* 1099511628211
+  }
+  return String(format: "%016llx", h)
+}
+
+private func dvaTx3gIsWatermarkText(_ text: String) -> Bool {
+  let lower = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  if lower.isEmpty { return false }
+  if !lower.contains("đặng việt anh") { return false }
+  return (lower.contains("[") && lower.contains("]")) || lower == "đặng việt anh"
+}
+
+private func dvaTx3gRedistributeWatermarks(_ cues: [DvaTx3gCue], durationSec: Double) -> [DvaTx3gCue] {
+  if cues.isEmpty { return cues }
+  var watermarks: [DvaTx3gCue] = []
+  var regulars: [DvaTx3gCue] = []
+  var maxRegEnd = 0.0
+  for c in cues {
+    if dvaTx3gIsWatermarkText(c.t) {
+      watermarks.append(c)
+    } else {
+      regulars.append(c)
+      if c.e > maxRegEnd { maxRegEnd = c.e }
+    }
+  }
+  if watermarks.isEmpty { return cues }
+  let targetDur = durationSec > 30.0 ? durationSec : (maxRegEnd > 30.0 ? maxRegEnd + 15.0 : 0.0)
+  if targetDur <= 30.0 { return cues }
+  let exceeds = watermarks.contains { $0.e > targetDur - 1.0 || $0.s >= targetDur - 2.0 }
+  if !exceeds { return cues }
+
+  var result: [DvaTx3gCue] = []
+  let introDur = min(10.0, max(4.0, targetDur * 0.12))
+  result.append(DvaTx3gCue(s: 0.0, e: (introDur * 100.0).rounded() / 100.0, t: watermarks[0].t, top: 1))
+  let restCount = watermarks.count - 1
+  let usableCount = min(restCount, max(0, Int(floor((targetDur - 18.0) / 12.0))))
+  if usableCount > 0 {
+    let span = targetDur - 20.0
+    let step = span / Double(usableCount)
+    for k in 0..<usableCount {
+      let center = 14.0 + (Double(k) + 0.5) * step
+      let s = (max(12.0, center - 2.0) * 100.0).rounded() / 100.0
+      let e = (min(targetDur - 2.0, s + 4.0) * 100.0).rounded() / 100.0
+      if e > s + 0.2 {
+        result.append(DvaTx3gCue(s: s, e: e, t: watermarks[k + 1].t, top: 1))
+      }
+    }
+  }
+  result.append(contentsOf: regulars)
+  result.sort { $0.s == $1.s ? $0.e < $1.e : $0.s < $1.s }
+  return result
+}
+
+private func dvaLoadTx3gCues(urlCandidates: [String], durationSec: Double) -> [DvaTx3gCue] {
+  let dir = FileManager.default.temporaryDirectory.appendingPathComponent("dva_pip_cues", isDirectory: true)
+  var fileUrls: [URL] = []
+  for u in urlCandidates where !u.isEmpty {
+    fileUrls.append(dir.appendingPathComponent("\\(dvaTx3gFnv1aHex(u)).json"))
+  }
+  fileUrls.append(dir.appendingPathComponent("active.json"))
+
+  var chosenData: Data? = nil
+  for candidate in fileUrls {
+    if let data = try? Data(contentsOf: candidate), !data.isEmpty {
+      chosenData = data
+      break
+    }
+  }
+  guard let data = chosenData,
+        let decoded = try? JSONDecoder().decode([DvaTx3gCue].self, from: data),
+        !decoded.isEmpty else {
+    return []
+  }
+  let cleaned = decoded.filter { !$0.t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.e > $0.s }
+  return dvaTx3gRedistributeWatermarks(cleaned, durationSec: durationSec)
+}
+
+private func dvaFlattenCuesToContiguousTx3gSegments(_ cues: [DvaTx3gCue], durationSec: Double) -> [(durMs: UInt32, text: String)] {
+  guard !cues.isEmpty else { return [] }
+  let maxEndSec = max(durationSec, cues.map { $0.e }.max() ?? 0.0)
+  let totalMsMax = UInt64(max(1000.0, ceil(maxEndSec * 1000.0)))
+
+  var ptsSet: Set<UInt64> = [0]
+  struct CueMs {
+    let s: UInt64
+    let e: UInt64
+    let t: String
+    let isTop: Bool
+  }
+  var cuesMs: [CueMs] = []
+  cuesMs.reserveCapacity(cues.count)
+  for c in cues {
+    let sMs = UInt64(max(0.0, floor(c.s * 1000.0)))
+    var eMs = UInt64(max(0.0, ceil(c.e * 1000.0)))
+    if eMs <= sMs { eMs = sMs + 250 }
+    if sMs >= totalMsMax { continue }
+    if eMs > totalMsMax { eMs = totalMsMax }
+    ptsSet.insert(sMs)
+    ptsSet.insert(eMs)
+    cuesMs.append(CueMs(s: sMs, e: eMs, t: c.t, isTop: c.isTop))
+  }
+  ptsSet.insert(totalMsMax)
+  let pts = ptsSet.sorted()
+  guard pts.count >= 2 else { return [] }
+
+  var segments: [(durMs: UInt32, text: String)] = []
+  segments.reserveCapacity(pts.count)
+
+  for i in 0..<(pts.count - 1) {
+    let a = pts[i]
+    let b = pts[i + 1]
+    guard b > a else { continue }
+    let mid = a + (b - a) / 2
+    var topLines: [String] = []
+    var botLines: [String] = []
+    for c in cuesMs {
+      if c.s <= mid && mid < c.e {
+        if c.isTop || dvaTx3gIsWatermarkText(c.t) {
+          topLines.append(c.t)
+        } else {
+          botLines.append(c.t)
+        }
+      }
+    }
+    let combined = (topLines + botLines).joined(separator: "\\n")
+    var remaining = b - a
+    while remaining > 0 {
+      let chunk = min(remaining, UInt64(UInt32.max))
+      segments.append((durMs: UInt32(chunk), text: combined))
+      remaining -= chunk
+    }
+  }
+  return segments
+}
+
+private func dvaBe16(_ v: UInt16) -> Data {
+  var x = v.bigEndian
+  return Data(bytes: &x, count: 2)
+}
+
+private func dvaBe32(_ v: UInt32) -> Data {
+  var x = v.bigEndian
+  return Data(bytes: &x, count: 4)
+}
+
+private func dvaMp4Box(_ fourcc: String, _ payload: Data) -> Data {
+  var out = Data(capacity: 8 + payload.count)
+  out.append(dvaBe32(UInt32(8 + payload.count)))
+  out.append(contentsOf: fourcc.utf8.prefix(4))
+  out.append(payload)
+  return out
+}
+
+private func dvaEncodeIso639Lang(_ code: String) -> UInt16 {
+  let chars = Array(code.lowercased().utf8)
+  guard chars.count >= 3 else { return 0x55C4 }
+  let c1 = UInt16((chars[0] >= 0x61 ? chars[0] - 0x60 : 0) & 0x1F)
+  let c2 = UInt16((chars[1] >= 0x61 ? chars[1] - 0x60 : 0) & 0x1F)
+  let c3 = UInt16((chars[2] >= 0x61 ? chars[2] - 0x60 : 0) & 0x1F)
+  return (c1 << 10) | (c2 << 5) | c3
+}
+
+private func dvaTruncateUtf8(_ text: String, maxBytes: Int) -> Data {
+  guard let raw = text.data(using: .utf8) else { return Data() }
+  if raw.count <= maxBytes { return raw }
+  var out = Data()
+  for ch in text {
+    if let d = String(ch).data(using: .utf8), out.count + d.count <= maxBytes {
+      out.append(d)
+    } else {
+      break
+    }
+  }
+  return out
+}
+
+private func dvaBuildTx3gMp4Data(segments: [(durMs: UInt32, text: String)], langCode: String = "vie") -> Data {
+  var totalMs: UInt64 = 0
+  var mdatPayload = Data()
+  var sampleSizes: [UInt32] = []
+  sampleSizes.reserveCapacity(segments.count)
+
+  for seg in segments {
+    totalMs += UInt64(seg.durMs)
+    let txtData = seg.text.isEmpty ? Data() : dvaTruncateUtf8(seg.text, maxBytes: 1024)
+    let sampleLen = 2 + txtData.count
+    mdatPayload.append(dvaBe16(UInt16(txtData.count)))
+    if !txtData.isEmpty {
+      mdatPayload.append(txtData)
+    }
+    sampleSizes.append(UInt32(sampleLen))
+  }
+  let totalDur32 = UInt32(min(totalMs, UInt64(UInt32.max)))
+
+  // ftyp
+  var ftypBody = Data()
+  ftypBody.append(contentsOf: "isom".utf8)
+  ftypBody.append(dvaBe32(0x00000200))
+  ftypBody.append(contentsOf: "isomiso2mp41".utf8)
+  let ftypBox = dvaMp4Box("ftyp", ftypBody)
+
+  let chunkOffset = UInt32(ftypBox.count + 8)
+  let mdatBox = dvaMp4Box("mdat", mdatPayload)
+
+  // mvhd (version 0, 100 bytes payload)
+  var mvhdBody = Data()
+  mvhdBody.append(contentsOf: [0, 0, 0, 0]) // version + flags
+  mvhdBody.append(dvaBe32(0)) // creation
+  mvhdBody.append(dvaBe32(0)) // mod
+  mvhdBody.append(dvaBe32(1000)) // timescale
+  mvhdBody.append(dvaBe32(totalDur32)) // duration
+  mvhdBody.append(dvaBe32(0x00010000)) // rate 1.0
+  mvhdBody.append(dvaBe16(0x0100)) // volume 1.0
+  mvhdBody.append(Data(count: 10)) // reserved
+  let identityMatrix: [UInt32] = [0x00010000, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000]
+  for m in identityMatrix { mvhdBody.append(dvaBe32(m)) }
+  mvhdBody.append(Data(count: 24)) // pre_defined
+  mvhdBody.append(dvaBe32(2)) // next_track_ID
+  let mvhdBox = dvaMp4Box("mvhd", mvhdBody)
+
+  // tkhd (flags=3: enabled | in_movie, alternate_group=2)
+  var tkhdBody = Data()
+  tkhdBody.append(contentsOf: [0, 0, 0, 3])
+  tkhdBody.append(dvaBe32(0))
+  tkhdBody.append(dvaBe32(0))
+  tkhdBody.append(dvaBe32(1)) // track_ID
+  tkhdBody.append(dvaBe32(0)) // reserved
+  tkhdBody.append(dvaBe32(totalDur32))
+  tkhdBody.append(Data(count: 8)) // reserved
+  tkhdBody.append(dvaBe16(0)) // layer
+  tkhdBody.append(dvaBe16(2)) // alternate_group
+  tkhdBody.append(dvaBe16(0)) // volume
+  tkhdBody.append(dvaBe16(0)) // reserved
+  for m in identityMatrix { tkhdBody.append(dvaBe32(m)) }
+  tkhdBody.append(dvaBe32(0)) // width
+  tkhdBody.append(dvaBe32(0)) // height
+  let tkhdBox = dvaMp4Box("tkhd", tkhdBody)
+
+  // mdhd
+  var mdhdBody = Data()
+  mdhdBody.append(contentsOf: [0, 0, 0, 0])
+  mdhdBody.append(dvaBe32(0))
+  mdhdBody.append(dvaBe32(0))
+  mdhdBody.append(dvaBe32(1000)) // timescale
+  mdhdBody.append(dvaBe32(totalDur32))
+  mdhdBody.append(dvaBe16(dvaEncodeIso639Lang(langCode)))
+  mdhdBody.append(dvaBe16(0)) // pre_defined
+  let mdhdBox = dvaMp4Box("mdhd", mdhdBody)
+
+  // hdlr ('sbtl')
+  var hdlrBody = Data()
+  hdlrBody.append(contentsOf: [0, 0, 0, 0])
+  hdlrBody.append(dvaBe32(0))
+  hdlrBody.append(contentsOf: "sbtl".utf8)
+  hdlrBody.append(Data(count: 12))
+  hdlrBody.append(contentsOf: "SubtitleHandler".utf8)
+  hdlrBody.append(0)
+  let hdlrBox = dvaMp4Box("hdlr", hdlrBody)
+
+  // nmhd & dinf
+  let nmhdBox = dvaMp4Box("nmhd", Data(count: 4))
+  let urlBox = dvaMp4Box("url ", Data([0, 0, 0, 1]))
+  var drefBody = Data([0, 0, 0, 0])
+  drefBody.append(dvaBe32(1))
+  drefBody.append(urlBox)
+  let dinfBox = dvaMp4Box("dinf", dvaMp4Box("dref", drefBody))
+
+  // stsd -> tx3g -> ftab
+  let fontName = Data("Sans-Serif".utf8)
+  var ftabBody = Data()
+  ftabBody.append(dvaBe16(1)) // entry_count
+  ftabBody.append(dvaBe16(1)) // font_ID
+  ftabBody.append(UInt8(fontName.count))
+  ftabBody.append(fontName)
+  let ftabBox = dvaMp4Box("ftab", ftabBody)
+
+  var tx3gBody = Data()
+  tx3gBody.append(Data(count: 6)) // reserved
+  tx3gBody.append(dvaBe16(1)) // data_reference_index
+  tx3gBody.append(dvaBe32(0)) // displayFlags
+  tx3gBody.append(UInt8(1)) // horizontal justification: center
+  tx3gBody.append(UInt8(0xFF)) // vertical justification: bottom (-1)
+  tx3gBody.append(contentsOf: [0, 0, 0, 0]) // transparent background RGBA
+  tx3gBody.append(Data(count: 8)) // default text box
+  tx3gBody.append(dvaBe16(0)) // startChar
+  tx3gBody.append(dvaBe16(0)) // endChar
+  tx3gBody.append(dvaBe16(1)) // fontID
+  tx3gBody.append(UInt8(0)) // face
+  tx3gBody.append(UInt8(18)) // fontSize
+  tx3gBody.append(contentsOf: [0xFF, 0xFF, 0xFF, 0xFF]) // text RGBA white
+  tx3gBody.append(ftabBox)
+  let tx3gBox = dvaMp4Box("tx3g", tx3gBody)
+
+  var stsdBody = Data([0, 0, 0, 0])
+  stsdBody.append(dvaBe32(1))
+  stsdBody.append(tx3gBox)
+  let stsdBox = dvaMp4Box("stsd", stsdBody)
+
+  // stts
+  var sttsBody = Data([0, 0, 0, 0])
+  sttsBody.append(dvaBe32(UInt32(segments.count)))
+  for seg in segments {
+    sttsBody.append(dvaBe32(1))
+    sttsBody.append(dvaBe32(seg.durMs))
+  }
+  let sttsBox = dvaMp4Box("stts", sttsBody)
+
+  // stsc
+  var stscBody = Data([0, 0, 0, 0])
+  stscBody.append(dvaBe32(1))
+  stscBody.append(dvaBe32(1)) // first_chunk
+  stscBody.append(dvaBe32(UInt32(segments.count))) // samples_per_chunk
+  stscBody.append(dvaBe32(1)) // sample_description_index
+  let stscBox = dvaMp4Box("stsc", stscBody)
+
+  // stsz
+  var stszBody = Data([0, 0, 0, 0])
+  stszBody.append(dvaBe32(0)) // variable size
+  stszBody.append(dvaBe32(UInt32(sampleSizes.count)))
+  for sz in sampleSizes {
+    stszBody.append(dvaBe32(sz))
+  }
+  let stszBox = dvaMp4Box("stsz", stszBody)
+
+  // stco
+  var stcoBody = Data([0, 0, 0, 0])
+  stcoBody.append(dvaBe32(1))
+  stcoBody.append(dvaBe32(chunkOffset))
+  let stcoBox = dvaMp4Box("stco", stcoBody)
+
+  var stblPayload = Data()
+  stblPayload.append(stsdBox)
+  stblPayload.append(sttsBox)
+  stblPayload.append(stscBox)
+  stblPayload.append(stszBox)
+  stblPayload.append(stcoBox)
+  let stblBox = dvaMp4Box("stbl", stblPayload)
+
+  var minfPayload = Data()
+  minfPayload.append(nmhdBox)
+  minfPayload.append(dinfBox)
+  minfPayload.append(stblBox)
+  let minfBox = dvaMp4Box("minf", minfPayload)
+
+  var mdiaPayload = Data()
+  mdiaPayload.append(mdhdBox)
+  mdiaPayload.append(hdlrBox)
+  mdiaPayload.append(minfBox)
+  let mdiaBox = dvaMp4Box("mdia", mdiaPayload)
+
+  var trakPayload = Data()
+  trakPayload.append(tkhdBox)
+  trakPayload.append(mdiaBox)
+  let trakBox = dvaMp4Box("trak", trakPayload)
+
+  var moovPayload = Data()
+  moovPayload.append(mvhdBox)
+  moovPayload.append(trakBox)
+  let moovBox = dvaMp4Box("moov", moovPayload)
+
+  var out = Data(capacity: ftypBox.count + mdatBox.count + moovBox.count)
+  out.append(ftypBox)
+  out.append(mdatBox)
+  out.append(moovBox)
+  return out
+}
+
+@VideoLoadingActor
+private func dvaMuxSubtitlesIfNeeded(
+  baseAsset: VideoAsset,
+  sourceUrl: URL,
+  videoSourceUri: URL?,
+  durationSec: Double
+) async -> (asset: AVAsset, tempSubUrl: URL?, cueCount: Int) {
+  let candidates = [
+    sourceUrl.absoluteString,
+    baseAsset.effectivePlaybackURL.absoluteString,
+    videoSourceUri?.absoluteString
+  ].compactMap { $0 }
+
+  let cues = dvaLoadTx3gCues(urlCandidates: candidates, durationSec: durationSec)
+  guard !cues.isEmpty else {
+    return (baseAsset, nil, 0)
+  }
+  let segments = dvaFlattenCuesToContiguousTx3gSegments(cues, durationSec: durationSec)
+  guard !segments.isEmpty else {
+    return (baseAsset, nil, 0)
+  }
+
+  let tx3gDir = FileManager.default.temporaryDirectory.appendingPathComponent("dva_pip_tx3g", isDirectory: true)
+  try? FileManager.default.createDirectory(at: tx3gDir, withIntermediateDirectories: true)
+  if let existing = try? FileManager.default.contentsOfDirectory(
+    at: tx3gDir,
+    includingPropertiesForKeys: [.contentModificationDateKey],
+    options: .skipsHiddenFiles
+  ) {
+    let cutoff = Date().addingTimeInterval(-6 * 3600)
+    for f in existing {
+      if let rv = try? f.resourceValues(forKeys: [.contentModificationDateKey]),
+         let mdate = rv.contentModificationDate,
+         mdate < cutoff {
+        try? FileManager.default.removeItem(at: f)
+      }
+    }
+  }
+
+  let mp4Data = dvaBuildTx3gMp4Data(segments: segments, langCode: "vie")
+  let tempUrl = tx3gDir.appendingPathComponent("sub_\\(UUID().uuidString).mp4")
+  do {
+    try mp4Data.write(to: tempUrl, options: .atomic)
+  } catch {
+    return (baseAsset, nil, 0)
+  }
+
+  do {
+    let comp = AVMutableComposition()
+    let vTracks = try await baseAsset.loadTracks(withMediaType: .video)
+    guard let srcVideo = vTracks.first,
+          let compVideo = comp.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+      try? FileManager.default.removeItem(at: tempUrl)
+      return (baseAsset, nil, 0)
+    }
+    let fallbackDur = CMTime(seconds: max(1.0, durationSec), preferredTimescale: 600)
+    let vRange = (try? await srcVideo.load(.timeRange)) ?? CMTimeRange(start: .zero, duration: fallbackDur)
+    let vTransform = (try? await srcVideo.load(.preferredTransform)) ?? .identity
+    try compVideo.insertTimeRange(vRange, of: srcVideo, at: .zero)
+    compVideo.preferredTransform = vTransform
+
+    let aTracks = (try? await baseAsset.loadTracks(withMediaType: .audio)) ?? []
+    for srcAudio in aTracks {
+      if let compAudio = comp.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) {
+        let aRange = (try? await srcAudio.load(.timeRange)) ?? vRange
+        let maxDur = max(0.0, min(aRange.duration.seconds, vRange.duration.seconds))
+        if maxDur > 0.05 {
+          let clipped = CMTimeRange(start: aRange.start, duration: CMTime(seconds: maxDur, preferredTimescale: aRange.duration.timescale))
+          try? compAudio.insertTimeRange(clipped, of: srcAudio, at: .zero)
+        }
+      }
+    }
+
+    let subAsset = AVURLAsset(url: tempUrl)
+    let sTracks = try await subAsset.loadTracks(withMediaType: .subtitle)
+    guard let srcSub = sTracks.first,
+          let compSub = comp.addMutableTrack(withMediaType: .subtitle, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+      try? FileManager.default.removeItem(at: tempUrl)
+      return (baseAsset, nil, 0)
+    }
+    compSub.languageCode = "vie"
+    let sRange = try await srcSub.load(.timeRange)
+    try compSub.insertTimeRange(sRange, of: srcSub, at: .zero)
+
+    return (comp, tempUrl, cues.count)
+  } catch {
+    try? FileManager.default.removeItem(at: tempUrl)
+    return (baseAsset, nil, 0)
+  }
+}
+#endif`
+  );
+
+  updated = updated.replace(
+    classPropTarget,
+    `${classPropTarget}
+  var dvaInjectedSubCuesCount: Int = 0
+  private var dvaTempSubAssetUrl: URL? = nil`
+  );
+
+  updated = updated.replace(
+    superInitTarget,
+    `    #if !os(tvOS)
+    var effectiveAsset: AVAsset = urlAsset
+    if !self.isHls {
+      let durSecRaw = (try? await urlAsset.load(.duration))?.seconds ?? 0.0
+      let durSec = (durSecRaw.isFinite && durSecRaw > 0.0) ? durSecRaw : 0.0
+      let muxResult = await dvaMuxSubtitlesIfNeeded(
+        baseAsset: urlAsset,
+        sourceUrl: url,
+        videoSourceUri: videoSource.uri,
+        durationSec: durSec
+      )
+      effectiveAsset = muxResult.asset
+      self.dvaTempSubAssetUrl = muxResult.tempSubUrl
+      self.dvaInjectedSubCuesCount = muxResult.cueCount
+    }
+    if Task.isCancelled, let tmpUrl = self.dvaTempSubAssetUrl {
+      try? FileManager.default.removeItem(at: tmpUrl)
+      self.dvaTempSubAssetUrl = nil
+    }
+    try Task.checkCancellation()
+    super.init(asset: effectiveAsset, automaticallyLoadedAssetKeys: nil)
+    #else
+    try Task.checkCancellation()
+    super.init(asset: urlAsset, automaticallyLoadedAssetKeys: nil)
+    #endif
+    try Task.checkCancellation()
+    self.createTracksLoadingTask()`
+  );
+
+  updated = updated.replace(
+    deinitTarget,
+    `  deinit {
+    tracksLoadingTask?.cancel()
+    if let tmpUrl = dvaTempSubAssetUrl {
+      try? FileManager.default.removeItem(at: tmpUrl)
+    }
+  }`
+  );
+
+  return updated;
 }
 
 function patchNodeModules(projectRoot) {
@@ -4338,7 +4850,24 @@ function patchNodeModules(projectRoot) {
     }
   }
 
-  return { fetchModuleChanged, webViewChanged, videoModuleChanged, videoViewChanged, orientationCtrlChanged };
+  const videoPlayerItemPath = path.join(
+    projectRoot,
+    'node_modules',
+    'expo-video',
+    'ios',
+    'VideoPlayerItem.swift'
+  );
+  let videoPlayerItemChanged = false;
+  if (fs.existsSync(videoPlayerItemPath)) {
+    const raw = fs.readFileSync(videoPlayerItemPath, 'utf8');
+    const patched = applyExpoVideoPlayerItemPatch(raw);
+    if (patched !== raw.replace(/\r\n/g, '\n')) {
+      fs.writeFileSync(videoPlayerItemPath, patched, 'utf8');
+      videoPlayerItemChanged = true;
+    }
+  }
+
+  return { fetchModuleChanged, webViewChanged, videoModuleChanged, videoViewChanged, videoPlayerItemChanged, orientationCtrlChanged };
 }
 
 /**
@@ -4360,6 +4889,7 @@ withIosNativeProxy.applyExpoFetchModulePatch = applyExpoFetchModulePatch;
 withIosNativeProxy.applyRncWebViewPatch = applyRncWebViewPatch;
 withIosNativeProxy.applyExpoVideoModulePatch = applyExpoVideoModulePatch;
 withIosNativeProxy.applyExpoVideoViewPatch = applyExpoVideoViewPatch;
+withIosNativeProxy.applyExpoVideoPlayerItemPatch = applyExpoVideoPlayerItemPatch;
 withIosNativeProxy.applyExpoOrientationControllerPatch = applyExpoOrientationControllerPatch;
 withIosNativeProxy.patchNodeModules = patchNodeModules;
 module.exports = withIosNativeProxy;

@@ -1,6 +1,7 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Animated,
   FlatList,
   Modal,
   Pressable,
@@ -48,6 +49,7 @@ interface PlayerSubtitleSettingsModalProps {
   subHighRaw?: string;
   onReloadSubtitles?: () => void | Promise<void>;
   isReloadingSubtitles?: boolean;
+  onLivePreviewModeChange?: (mode: 'layout' | 'timing' | null) => void;
 }
 
 export function PlayerSubtitleSettingsModal({
@@ -56,6 +58,7 @@ export function PlayerSubtitleSettingsModal({
   subHighRaw,
   onReloadSubtitles,
   isReloadingSubtitles = false,
+  onLivePreviewModeChange,
 }: PlayerSubtitleSettingsModalProps) {
   const insets = useSafeAreaInsets();
   const { width: winWidth, height: winHeight } = useWindowDimensions();
@@ -64,6 +67,33 @@ export function PlayerSubtitleSettingsModal({
 
   const [subView, setSubView] = useState<SubSettingsView>('grid');
   const [langQuery, setLangQuery] = useState('');
+  const [activeScrubSlider, setActiveScrubSlider] = useState<
+    'fontSize' | 'position' | 'delay' | 'extend' | null
+  >(null);
+  const chromeOpacity = useRef(new Animated.Value(1)).current;
+  const onLivePreviewModeChangeRef = useRef(onLivePreviewModeChange);
+  onLivePreviewModeChangeRef.current = onLivePreviewModeChange;
+
+  useEffect(() => {
+    const mode: 'layout' | 'timing' | null =
+      activeScrubSlider === 'fontSize' || activeScrubSlider === 'position'
+        ? 'layout'
+        : activeScrubSlider === 'delay' || activeScrubSlider === 'extend'
+          ? 'timing'
+          : null;
+    onLivePreviewModeChangeRef.current?.(visible ? mode : null);
+
+    chromeOpacity.stopAnimation();
+    Animated.timing(chromeOpacity, {
+      toValue: activeScrubSlider ? 0 : 1,
+      duration: activeScrubSlider ? 180 : 220,
+      useNativeDriver: true,
+    }).start();
+  }, [activeScrubSlider, visible, chromeOpacity]);
+
+  useEffect(() => {
+    setActiveScrubSlider(null);
+  }, [subView, visible]);
 
   const filteredLanguages = useMemo(() => {
     const q = langQuery
@@ -96,8 +126,10 @@ export function PlayerSubtitleSettingsModal({
     : Math.min(winHeight * 0.84, 620);
 
   const handleClose = () => {
+    setActiveScrubSlider(null);
     setSubView('grid');
     setLangQuery('');
+    onLivePreviewModeChangeRef.current?.(null);
     onClose();
   };
 
@@ -376,11 +408,15 @@ export function PlayerSubtitleSettingsModal({
       return (
         <ScrollView
           nestedScrollEnabled
+          scrollEnabled={activeScrubSlider === null}
           style={styles.scrollBleed}
           showsVerticalScrollIndicator={false}
           contentContainerStyle={{ gap: 10, paddingHorizontal: 16, paddingTop: 6, paddingBottom: 6 }}
         >
-          <View style={styles.switchRow}>
+          <Animated.View
+            style={[styles.switchRow, { opacity: chromeOpacity }]}
+            pointerEvents={activeScrubSlider ? 'none' : 'auto'}
+          >
             <View style={{ flex: 1, paddingRight: 10 }}>
               <Text style={styles.switchTitle}>Tự động cân chỉnh phụ đề</Text>
               <Text style={[styles.switchSub, { textAlign: 'left' }]}>
@@ -395,58 +431,76 @@ export function PlayerSubtitleSettingsModal({
                 void updateSetting('subAutoLayout', val);
               }}
             />
-          </View>
+          </Animated.View>
 
-          <IosRulerSlider
-            label="Kích cỡ chữ (1 – 20)"
-            value={displayStep}
-            min={1}
-            max={20}
-            step={1}
-            majorStep={1}
-            defaultValue={18}
-            valueText={`Cỡ ${displayStep}`}
-            tickSpacing={28}
-            resetLabel="Cỡ 18"
-            onChange={(v) =>
-              void updateSettingsBatch({
-                subAutoLayout: false,
-                subFontSizeStep: Math.round(v),
-              })
-            }
-            onReset={() =>
-              void updateSettingsBatch({
-                subAutoLayout: false,
-                subFontSizeStep: 18,
-              })
-            }
-          />
+          <Animated.View
+            style={{ opacity: activeScrubSlider === 'position' ? chromeOpacity : 1 }}
+            pointerEvents={activeScrubSlider === 'position' ? 'none' : 'auto'}
+          >
+            <IosRulerSlider
+              label="Kích cỡ chữ (1 – 20)"
+              value={displayStep}
+              min={1}
+              max={20}
+              step={1}
+              majorStep={1}
+              defaultValue={18}
+              valueText={`Cỡ ${displayStep}`}
+              tickSpacing={28}
+              resetLabel="Cỡ 18"
+              onInteractionStart={() => setActiveScrubSlider('fontSize')}
+              onInteractionEnd={() =>
+                setActiveScrubSlider((cur) => (cur === 'fontSize' ? null : cur))
+              }
+              onChange={(v) =>
+                void updateSettingsBatch({
+                  subAutoLayout: false,
+                  subFontSizeStep: Math.round(v),
+                })
+              }
+              onReset={() =>
+                void updateSettingsBatch({
+                  subAutoLayout: false,
+                  subFontSizeStep: 18,
+                })
+              }
+            />
+          </Animated.View>
 
-          <IosRulerSlider
-            label="Vị trí từ dưới lên (-10% – 40%)"
-            value={displayPos}
-            min={-10}
-            max={40}
-            step={1}
-            majorStep={5}
-            defaultValue={12}
-            valueText={`${displayPos}%`}
-            formatTickLabel={(v) => `${v}%`}
-            tickSpacing={14}
-            resetLabel="12%"
-            onChange={(v) =>
-              void updateSettingsBatch({
-                subAutoLayout: false,
-                subPositionPct: Math.round(v),
-              })
-            }
-            onReset={() =>
-              void updateSettingsBatch({
-                subAutoLayout: false,
-                subPositionPct: 12,
-              })
-            }
-          />
+          <Animated.View
+            style={{ opacity: activeScrubSlider === 'fontSize' ? chromeOpacity : 1 }}
+            pointerEvents={activeScrubSlider === 'fontSize' ? 'none' : 'auto'}
+          >
+            <IosRulerSlider
+              label="Vị trí từ dưới lên (-10% – 40%)"
+              value={displayPos}
+              min={-10}
+              max={40}
+              step={1}
+              majorStep={5}
+              defaultValue={12}
+              valueText={`${displayPos}%`}
+              formatTickLabel={(v) => `${v}%`}
+              tickSpacing={14}
+              resetLabel="12%"
+              onInteractionStart={() => setActiveScrubSlider('position')}
+              onInteractionEnd={() =>
+                setActiveScrubSlider((cur) => (cur === 'position' ? null : cur))
+              }
+              onChange={(v) =>
+                void updateSettingsBatch({
+                  subAutoLayout: false,
+                  subPositionPct: Math.round(v),
+                })
+              }
+              onReset={() =>
+                void updateSettingsBatch({
+                  subAutoLayout: false,
+                  subPositionPct: 12,
+                })
+              }
+            />
+          </Animated.View>
         </ScrollView>
       );
     }
@@ -476,6 +530,7 @@ export function PlayerSubtitleSettingsModal({
     if (subView === 'delay' || subView === 'extend') {
       const isDelay = subView === 'delay';
       const val = isDelay ? settings.subDelaySec : settings.subExtendSec;
+      const sliderKind = isDelay ? 'delay' : 'extend';
       const updateDelta = (delta: number) => {
         Haptics.selectionAsync();
         const next = Math.max(-30, Math.min(30, Math.round((val + delta) * 100) / 100));
@@ -484,6 +539,7 @@ export function PlayerSubtitleSettingsModal({
       return (
         <ScrollView
           nestedScrollEnabled
+          scrollEnabled={activeScrubSlider === null}
           style={styles.scrollBleed}
           showsVerticalScrollIndicator={false}
           contentContainerStyle={{ gap: 12, paddingHorizontal: 16, paddingTop: 6, paddingBottom: 6 }}
@@ -500,27 +556,36 @@ export function PlayerSubtitleSettingsModal({
             formatTickLabel={(v) => `${v}s`}
             tickSpacing={11}
             resetLabel="0.00s"
+            onInteractionStart={() => setActiveScrubSlider(sliderKind)}
+            onInteractionEnd={() =>
+              setActiveScrubSlider((cur) => (cur === sliderKind ? null : cur))
+            }
             onChange={(v) => void updateSetting(isDelay ? 'subDelaySec' : 'subExtendSec', v)}
             onReset={() => void updateSetting(isDelay ? 'subDelaySec' : 'subExtendSec', 0)}
           />
-          <Text style={styles.switchSub}>
-            {isDelay
-              ? 'Kéo sang trái (-) để phụ đề hiện sớm hơn, sang phải (+) để hiện trễ hơn'
-              : 'Kéo dài hoặc rút ngắn thời lượng hiển thị mỗi câu phụ đề (-30s đến +30s)'}
-          </Text>
-          <View style={styles.stepperControls}>
-            {[-5, -1, -0.25, 0.25, 1, 5].map((d) => (
-              <BouncyButton
-                key={d}
-                style={styles.stepBtn}
-                onPress={() => updateDelta(d)}
-              >
-                <Text style={styles.stepBtnTxt}>
-                  {d > 0 ? `+${d}` : `${d}`}s
-                </Text>
-              </BouncyButton>
-            ))}
-          </View>
+          <Animated.View
+            style={{ opacity: chromeOpacity, gap: 12 }}
+            pointerEvents={activeScrubSlider ? 'none' : 'auto'}
+          >
+            <Text style={styles.switchSub}>
+              {isDelay
+                ? 'Kéo sang trái (-) để phụ đề hiện sớm hơn, sang phải (+) để hiện trễ hơn'
+                : 'Kéo dài hoặc rút ngắn thời lượng hiển thị mỗi câu phụ đề (-30s đến +30s)'}
+            </Text>
+            <View style={styles.stepperControls}>
+              {[-5, -1, -0.25, 0.25, 1, 5].map((d) => (
+                <BouncyButton
+                  key={d}
+                  style={styles.stepBtn}
+                  onPress={() => updateDelta(d)}
+                >
+                  <Text style={styles.stepBtnTxt}>
+                    {d > 0 ? `+${d}` : `${d}`}s
+                  </Text>
+                </BouncyButton>
+              ))}
+            </View>
+          </Animated.View>
         </ScrollView>
       );
     }
@@ -662,16 +727,28 @@ export function PlayerSubtitleSettingsModal({
       onRequestClose={handleClose}
     >
       <View style={styles.backdrop}>
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            StyleSheet.absoluteFill,
+            { backgroundColor: 'rgba(0, 0, 0, 0.34)', opacity: chromeOpacity },
+          ]}
+        />
         <Pressable style={StyleSheet.absoluteFill} onPress={handleClose} />
         <WaterDropPopupView visible={visible} from="center">
           <GlassSurface
             variant="liquid"
             radius={40}
             intensity={34}
+            noShadow={activeScrubSlider !== null}
+            backgroundOpacity={chromeOpacity}
             style={[styles.cardWrap, { width: cardWidth, height: cardHeight }]}
           >
             <View style={styles.inner}>
-              <View style={styles.header}>
+              <Animated.View
+                style={[styles.header, { opacity: chromeOpacity }]}
+                pointerEvents={activeScrubSlider ? 'none' : 'auto'}
+              >
                 {subView !== 'grid' ? (
                   <BouncyButton
                     style={styles.backIconBtn}
@@ -689,7 +766,7 @@ export function PlayerSubtitleSettingsModal({
                 <BouncyButton style={styles.closeBtn} onPress={handleClose}>
                   <Ionicons name="close" size={20} color="#FFF" />
                 </BouncyButton>
-              </View>
+              </Animated.View>
 
               {renderBody()}
             </View>
@@ -704,7 +781,7 @@ export function PlayerSubtitleSettingsModal({
 const styles = StyleSheet.create({
   backdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.34)',
+    backgroundColor: 'transparent',
     alignItems: 'center',
     justifyContent: 'center',
     padding: 12,

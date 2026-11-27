@@ -7,6 +7,7 @@ interface DvaNativeMediaServerBridge {
   dvaStopOfflineMediaServer(): Promise<boolean>;
   dvaHasPipSubtitleProxy?: () => boolean;
   dvaSetPipSubtitleCues?: (cuesJson: string) => boolean;
+  dvaSetPipSubtitleCuesForUrl?: (url: string, cuesJson: string) => boolean;
   dvaGetSigningInfo?: () => string;
   dvaSetBackgroundDownloadActive?: (active: boolean) => boolean;
   dvaSetVideoPlaybackActive?: (active: boolean) => boolean;
@@ -57,13 +58,26 @@ export function isNativePipProxySupported(): boolean {
   }
 }
 
-export function setNativePipSubtitleCues(cuesJson: string): boolean {
+export function setNativePipSubtitleCues(
+  cuesJson: string,
+  mediaUrl?: string,
+  onlyForUrl = false
+): boolean {
   const bridge = getNativeMediaBridge();
-  if (!bridge || typeof bridge.dvaSetPipSubtitleCues !== 'function') {
+  if (!bridge) {
     return false;
   }
+  const safeJson = String(cuesJson || '');
   try {
-    return Boolean(bridge.dvaSetPipSubtitleCues(String(cuesJson || '')));
+    let ok = false;
+    if (!onlyForUrl && typeof bridge.dvaSetPipSubtitleCues === 'function') {
+      ok = Boolean(bridge.dvaSetPipSubtitleCues(safeJson));
+    }
+    if (mediaUrl && typeof bridge.dvaSetPipSubtitleCuesForUrl === 'function') {
+      const perUrlOk = Boolean(bridge.dvaSetPipSubtitleCuesForUrl(String(mediaUrl), safeJson));
+      ok = ok || perUrlOk;
+    }
+    return ok;
   } catch {
     return false;
   }

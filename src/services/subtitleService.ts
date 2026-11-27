@@ -230,26 +230,100 @@ export function buildSubtitleUrls(serverFileKey?: string): { vnUrl: string; enUr
   };
 }
 
+export function isWatermarkSubtitleText(text: string): boolean {
+  const clean = String(text || '').trim();
+  if (!clean) return false;
+  return /^\s*\[.*đặng\s*việt\s*anh.*\]\s*$/i.test(clean) || /^đặng\s*việt\s*anh$/i.test(clean);
+}
+
+export function redistributeWatermarkCuesForDuration(
+  cues: ParsedVttCue[],
+  videoDurationSec?: number
+): ParsedVttCue[] {
+  if (!Array.isArray(cues) || cues.length === 0) return cues;
+  const watermarks: ParsedVttCue[] = [];
+  const regulars: ParsedVttCue[] = [];
+  let maxRegularEnd = 0;
+
+  for (let i = 0; i < cues.length; i++) {
+    const c = cues[i];
+    if (!c) continue;
+    if (isWatermarkSubtitleText(c.text)) {
+      watermarks.push(c);
+    } else {
+      regulars.push(c);
+      if (c.end > maxRegularEnd) maxRegularEnd = c.end;
+    }
+  }
+
+  if (watermarks.length === 0) return cues;
+
+  const targetDur =
+    videoDurationSec && videoDurationSec > 30
+      ? videoDurationSec
+      : maxRegularEnd > 30
+        ? maxRegularEnd + 15
+        : 0;
+  if (targetDur <= 30) return cues;
+
+  const exceedsDuration = watermarks.some((w) => w.end > targetDur - 1 || w.start >= targetDur - 2);
+  if (!exceedsDuration) return cues;
+
+  const redistributed: ParsedVttCue[] = [];
+  const introDur = Math.min(10, Math.max(4, targetDur * 0.12));
+  redistributed.push({
+    ...watermarks[0],
+    start: 0,
+    end: Math.round(introDur * 100) / 100,
+    isTop: true,
+    linePercent: watermarks[0].linePercent ?? 2,
+  });
+
+  const restCount = watermarks.length - 1;
+  const usableCount = Math.min(restCount, Math.max(0, Math.floor((targetDur - 18) / 12)));
+  if (usableCount > 0) {
+    const span = targetDur - 20;
+    const step = span / usableCount;
+    for (let k = 0; k < usableCount; k++) {
+      const center = 14 + (k + 0.5) * step;
+      const start = Math.round(Math.max(12, center - 2) * 100) / 100;
+      const end = Math.round(Math.min(targetDur - 2, start + 4) * 100) / 100;
+      if (end > start + 0.5) {
+        const src = watermarks[Math.min(watermarks.length - 1, 1 + k)];
+        redistributed.push({
+          ...src,
+          start,
+          end,
+          isTop: true,
+          linePercent: src.linePercent ?? 2,
+        });
+      }
+    }
+  }
+
+  return [...redistributed, ...regulars].sort((a, b) => a.start - b.start);
+}
+
 function isValidVttTimestamp(raw: string): boolean {
   const clean = raw.trim().replace(',', '.');
-  const mFull = clean.match(/^(\d{1,2}):(\d{2}):(\d{2}(?:\.\d+)?)$/);
+  const mFull = clean.match(/^(\d{1,3}):(\d{2}):(\d{2}(?:\.\d+)?)$/);
   if (mFull) {
     const mm = parseInt(mFull[2], 10);
     const ss = parseFloat(mFull[3]);
-    return mm >= 0 && mm < 60 && ss >= 0 && ss < 60;
+    return mm >= 0 && ss >= 0 && ss < 60;
   }
-  const mShort = clean.match(/^(\d{1,2}):(\d{2}(?:\.\d+)?)$/);
+  const mShort = clean.match(/^(\d{1,3}):(\d{2}(?:\.\d+)?)$/);
   if (mShort) {
     const mm = parseInt(mShort[1], 10);
     const ss = parseFloat(mShort[2]);
-    return mm >= 0 && mm < 60 && ss >= 0 && ss < 60;
+    return mm >= 0 && ss >= 0 && ss < 60;
   }
   return false;
 }
 
 function parseTimestamp(raw: string): number {
   const clean = raw.trim().replace(',', '.');
-  const mFull = clean.match(/(\d{1,2}):(\d{2}):(\d{2}(?:\.\d+)?)/);
+  const mFull = clean.match(/(\d{1,3}):(\d{2}):(\d{2}(?:\.\d+)?)/);
   if (mFull) {
     return (
       parseInt(mFull[1], 10) * 3600 +
@@ -257,7 +331,7 @@ function parseTimestamp(raw: string): number {
       parseFloat(mFull[3])
     );
   }
-  const mShort = clean.match(/(\d{1,2}):(\d{2}(?:\.\d+)?)/);
+  const mShort = clean.match(/(\d{1,3}):(\d{2}(?:\.\d+)?)/);
   if (mShort) {
     return parseInt(mShort[1], 10) * 60 + parseFloat(mShort[2]);
   }
@@ -332,7 +406,8 @@ export function parseVttCues(vttText: string): ParsedVttCue[] {
       }
       const rawJoined = buf.join('\n');
       if (rawJoined) {
-        const isTopText = rawJoined.includes('♪') || rawJoined.includes('=');
+        const isWatermark = isWatermarkSubtitleText(rawJoined);
+        const isTopText = rawJoined.includes('♪') || rawJoined.includes('=') || isWatermark;
         const formatted = rawJoined
           .split('\n')
           .map((l) => splitSubtitleText(l, 43))
@@ -345,7 +420,7 @@ export function parseVttCues(vttText: string): ParsedVttCue[] {
             end,
             text: formatted,
             isTop: isTopLine || isTopText,
-            linePercent,
+            linePercent: linePercent ?? (isWatermark ? 2 : null),
           });
         }
       }
@@ -354,7 +429,7 @@ export function parseVttCues(vttText: string): ParsedVttCue[] {
     }
   }
 
-  return cues.sort((a, b) => a.start - b.start);
+  return redistributeWatermarkCuesForDuration(cues.sort((a, b) => a.start - b.start));
 }
 
 async function fetchTextSafe(url: string, bustCache = false): Promise<string> {

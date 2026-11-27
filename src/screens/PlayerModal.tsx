@@ -113,8 +113,10 @@ import {
 } from '../services/playerServerService';
 import {
   buildSubtitleUrls,
+  isWatermarkSubtitleText,
   loadDualSubtitles,
   ParsedVttCue,
+  redistributeWatermarkCuesForDuration,
 } from '../services/subtitleService';
 import {
   EpisodeItem,
@@ -363,31 +365,36 @@ function buildPipCuesJsonFromData(
     subReverse: boolean;
     subDelaySec: number;
     subExtendSec: number;
-  }
+  },
+  videoDurationSec?: number
 ): string {
   if (!cfg.subShowVi && !cfg.subShowEn) return '';
   const delay = cfg.subDelaySec || 0;
   const extend = cfg.subExtendSec || 0;
-  const vi = cfg.subShowVi ? viCues : [];
+  const rawVi = cfg.subShowVi ? viCues : [];
+  const vi =
+    videoDurationSec && videoDurationSec > 30
+      ? redistributeWatermarkCuesForDuration(rawVi, videoDurationSec)
+      : rawVi;
   const en = cfg.subShowEn ? enCues : [];
   if (vi.length === 0 && en.length === 0) return '';
   const primary = cfg.subReverse && en.length > 0 ? en : vi.length > 0 ? vi : en;
   const secondary = primary === vi ? en : vi;
-  const rows: { s: number; e: number; t: string }[] = [];
+  const rows: { s: number; e: number; t: string; top?: number }[] = [];
   let secIdx = 0;
   for (let i = 0; i < primary.length; i++) {
     const c = primary[i];
-    if (c.isTop || /^\s*\[.*đặng\s*việt\s*anh.*\]\s*$/i.test(c.text)) continue;
+    const isTop = Boolean(c.isTop || isWatermarkSubtitleText(c.text));
     const s = Math.max(0, Number((c.start + delay).toFixed(2)));
     const e = Math.max(s + 0.25, Number((c.end + delay + extend).toFixed(2)));
     let text = c.text.trim();
-    if (secondary.length > 0) {
+    if (!isTop && secondary.length > 0) {
       while (secIdx < secondary.length && secondary[secIdx].end < c.start - 0.6) {
         secIdx++;
       }
       if (secIdx < secondary.length) {
         const m = secondary[secIdx];
-        if (m.start <= c.end + 0.6 && m.end >= c.start - 0.6) {
+        if (!m.isTop && m.start <= c.end + 0.6 && m.end >= c.start - 0.6) {
           const secTxt = m.text.trim();
           if (secTxt && secTxt !== text) {
             text = `${text}\n${secTxt}`;
@@ -395,7 +402,9 @@ function buildPipCuesJsonFromData(
         }
       }
     }
-    if (text) rows.push({ s, e, t: text });
+    if (text) {
+      rows.push(isTop ? { s, e, t: text, top: 1 } : { s, e, t: text });
+    }
   }
   if (rows.length === 0) return '';
   rows.sort((a, b) => a.s - b.s);
@@ -1046,6 +1055,7 @@ export function PlayerModal({
   const [proxyConfig, setProxyConfig] = useState<ProxyRuntimeConfig>(() => getProxyConfig());
   const [episodeModalOpen, setEpisodeModalOpen] = useState(false);
   const [subSettingsOpen, setSubSettingsOpen] = useState(false);
+  const [subLivePreviewMode, setSubLivePreviewMode] = useState<'layout' | 'timing' | null>(null);
   const [generalSettingsOpen, setGeneralSettingsOpen] = useState(false);
   const [offlineSheetOpen, setOfflineSheetOpen] = useState(false);
   const [castPopupOpen, setCastPopupOpen] = useState(false);
@@ -1594,6 +1604,9 @@ export function PlayerModal({
       }
 
       try {
+        if (pipSubCuesJsonRef.current) {
+          setNativePipSubtitleCues(pipSubCuesJsonRef.current, wrapped.uri);
+        }
         await player.replaceAsync({
           uri: wrapped.uri,
           contentType: wrapped.contentType,
@@ -2689,6 +2702,22 @@ export function PlayerModal({
         servers: nextServers,
       };
       preloadedNextRef.current = pkg;
+
+      const nextPipJson = buildPipCuesJsonFromData(
+        dual.vnCues,
+        dual.enCues,
+        {
+          subShowVi: settingsRef.current.subShowVi,
+          subShowEn: settingsRef.current.subShowEn,
+          subReverse: settingsRef.current.subReverse,
+          subDelaySec: settingsRef.current.subDelaySec || 0,
+          subExtendSec: settingsRef.current.subExtendSec || 0,
+        },
+        nextResolved.end_credits_sec > 30 ? nextResolved.end_credits_sec + 120 : 0
+      );
+      if (nextPipJson) {
+        setNativePipSubtitleCues(nextPipJson, wrapped.uri, true);
+      }
 
       const inactive = getInactivePlayer();
       inactive.muted = true;
@@ -3875,6 +3904,7 @@ export function PlayerModal({
       setProxyModalOpen(false);
       setEpisodeModalOpen(false);
       setSubSettingsOpen(false);
+      setSubLivePreviewMode(null);
       setGeneralSettingsOpen(false);
       setOfflineSheetOpen(false);
       setCastPopupOpen(false);
@@ -4210,6 +4240,7 @@ export function PlayerModal({
       setProxyModalOpen(false);
       setEpisodeModalOpen(false);
       setSubSettingsOpen(false);
+      setSubLivePreviewMode(null);
       setGeneralSettingsOpen(false);
       setOfflineSheetOpen(false);
       setCastPopupOpen(false);
@@ -4689,30 +4720,43 @@ export function PlayerModal({
     [clearHudTimer, seekToWithWarning, showHudWithTimer]
   );
 
+  const effectiveVnCues = useMemo(
+    () => redistributeWatermarkCuesForDuration(vnCues, duration),
+    [vnCues, duration]
+  );
+
   const pipSubCuesJson = useMemo(() => {
-    return buildPipCuesJsonFromData(vnCues, enCues, {
-      subShowVi: settings.subShowVi,
-      subShowEn: settings.subShowEn,
-      subReverse: settings.subReverse,
-      subDelaySec: settings.subDelaySec || 0,
-      subExtendSec: settings.subExtendSec || 0,
-    });
+    return buildPipCuesJsonFromData(
+      effectiveVnCues,
+      enCues,
+      {
+        subShowVi: settings.subShowVi,
+        subShowEn: settings.subShowEn,
+        subReverse: settings.subReverse,
+        subDelaySec: settings.subDelaySec || 0,
+        subExtendSec: settings.subExtendSec || 0,
+      },
+      duration
+    );
   }, [
     settings.subShowVi,
     settings.subShowEn,
     settings.subReverse,
     settings.subDelaySec,
     settings.subExtendSec,
-    vnCues,
+    effectiveVnCues,
     enCues,
+    duration,
   ]);
+  const pipSubCuesJsonRef = useRef('');
+  pipSubCuesJsonRef.current = pipSubCuesJson;
 
   useEffect(() => {
     if (!visible) {
       setNativePipSubtitleCues('');
       return;
     }
-    setNativePipSubtitleCues(pipSubCuesJson || '');
+    setNativePipSubtitleCues(pipSubCuesJson || '', activeMediaUrlRef.current || undefined);
     return () => {
       setNativePipSubtitleCues('');
     };
@@ -5078,7 +5122,7 @@ export function PlayerModal({
 
         {/* Native Dual Subtitle & AI Voice Engine matching subtitleUI.php */}
         <NativeSubtitleOverlay
-          vnCues={vnCues}
+          vnCues={effectiveVnCues}
           enCues={enCues}
           currentTime={currentTime}
           isPlaying={isPlaying}
@@ -5088,6 +5132,7 @@ export function PlayerModal({
           settings={settings}
           episodeSignature={`${params.videosId}|${activeStreamCode}`}
           reloadNonce={subReloadNonce}
+          previewSampleWhenIdle={subLivePreviewMode === 'layout'}
         />
 
         {/* Water-drop dynamic notification banner */}
@@ -5125,7 +5170,7 @@ export function PlayerModal({
         ) : null}
 
         {/* Image 1 Liquid Glass HUD Layer */}
-        {hudVisible && !screenLocked ? (
+        {hudVisible && !screenLocked && !subLivePreviewMode ? (
           <View
             pointerEvents="box-none"
             style={[
@@ -6167,11 +6212,13 @@ export function PlayerModal({
           visible={subSettingsOpen}
           onClose={() => {
             setSubSettingsOpen(false);
+            setSubLivePreviewMode(null);
             showHudWithTimer();
           }}
           subHighRaw={resolved?.sub_high}
           onReloadSubtitles={handleReloadSubtitles}
           isReloadingSubtitles={isReloadingSubtitles}
+          onLivePreviewModeChange={setSubLivePreviewMode}
         />
 
         <PlayerGeneralSettingsModal

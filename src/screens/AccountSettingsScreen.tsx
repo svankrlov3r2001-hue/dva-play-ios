@@ -1471,6 +1471,17 @@ export function AccountSettingsScreen({
                       versionCode: APP_VERSION_CODE,
                       versionName: APP_VERSION,
                       date: APP_RELEASE_DATE,
+                      title: 'Phụ Đề Thu Nhỏ Khung Hình Chuẩn Xác & Hiệu Ứng Kéo Thước Trong Suốt',
+                      changes: [
+                        'Khắc phục triệt để lỗi mất phụ đề khi chuyển sang chế độ Thu nhỏ khung hình cho cả nguồn trực tuyến lẫn phim đã tải về máy ở mọi định dạng, kể cả lúc đang tạm dừng',
+                        'Giữ nguyên đầy đủ các mốc phụ đề thương hiệu ở cạnh trên và tự động dàn đều hợp lý theo đúng thời lượng thực tế của từng bộ phim',
+                        'Bổ sung hiệu ứng tự động ẩn nền tối và các mục xung quanh khi kéo thước chỉnh Kích cỡ chữ, Vị trí, Độ trễ hoặc Kéo dài để quan sát phụ đề trực tiếp trên khung hình',
+                      ],
+                    },
+                    {
+                      versionCode: 48,
+                      versionName: '1.0.47',
+                      date: '27/11/2026',
                       title: 'Thuyết Minh Tức Thì Không Độ Trễ & Thanh Âm Lượng Dễ Nhìn',
                       changes: [
                         'Nâng cấp cơ chế Giọng thuyết minh đọc tức thì theo phụ đề, loại bỏ hoàn toàn độ trễ khi bắt đầu câu thoại bằng cách nạp sẵn câu kế tiếp vào trình phát dự phòng',

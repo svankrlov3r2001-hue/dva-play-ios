@@ -119,6 +119,7 @@ interface GlassSurfaceProps {
   tint?: BlurTint;
   variant?: 'default' | 'liquid';
   noShadow?: boolean;
+  backgroundOpacity?: Animated.Value | Animated.AnimatedInterpolation<number> | number;
 }
 
 export function GlassSurface({
@@ -130,6 +131,7 @@ export function GlassSurface({
   tint = 'systemUltraThinMaterialDark',
   variant = 'default',
   noShadow = false,
+  backgroundOpacity,
 }: GlassSurfaceProps) {
   const iosIntensity = Math.max(12, Math.min(intensity, 32));
   const androidIntensity = Math.max(16, Math.min(intensity, 42));
@@ -145,11 +147,12 @@ export function GlassSurface({
           style,
         ]}
       >
-        <View
+        <Animated.View
           pointerEvents="none"
           style={[
             StyleSheet.absoluteFill,
             { borderRadius: radius, overflow: 'hidden' },
+            backgroundOpacity !== undefined ? { opacity: backgroundOpacity } : null,
           ]}
         >
           <BlurView
@@ -166,7 +169,7 @@ export function GlassSurface({
               },
             ]}
           />
-        </View>
+        </Animated.View>
         {contentStyle ? <View style={contentStyle}>{children}</View> : children}
       </View>
     );
@@ -181,11 +184,12 @@ export function GlassSurface({
         style,
       ]}
     >
-      <View
+      <Animated.View
         pointerEvents="none"
         style={[
           StyleSheet.absoluteFill,
           { borderRadius: radius, overflow: 'hidden' },
+          backgroundOpacity !== undefined ? { opacity: backgroundOpacity } : null,
         ]}
       >
         <BlurView
@@ -204,7 +208,7 @@ export function GlassSurface({
             },
           ]}
         />
-      </View>
+      </Animated.View>
       {contentStyle ? <View style={contentStyle}>{children}</View> : children}
     </View>
   );

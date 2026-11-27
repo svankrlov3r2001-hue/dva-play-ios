@@ -30,6 +30,8 @@ export interface IosRulerSliderProps {
   tickSpacing?: number;
   accentColor?: string;
   staggerLabels?: boolean;
+  onInteractionStart?: () => void;
+  onInteractionEnd?: () => void;
 }
 
 function roundToStepPrecision(val: number, step: number): number {
@@ -63,12 +65,59 @@ export function IosRulerSlider({
   tickSpacing = 14,
   accentColor = COLORS.accent,
   staggerLabels = false,
+  onInteractionStart,
+  onInteractionEnd,
 }: IosRulerSliderProps) {
   const scrollRef = useRef<React.ComponentRef<typeof ScrollView> | null>(null);
   const [containerWidth, setContainerWidth] = useState(0);
   const isUserInteractingRef = useRef(false);
+  const didDragRef = useRef(false);
+  const isNotifyingActiveRef = useRef(false);
+  const endSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastEmittedRef = useRef<number>(value);
   const didInitialScrollRef = useRef(false);
+  const onInteractionStartRef = useRef(onInteractionStart);
+  onInteractionStartRef.current = onInteractionStart;
+  const onInteractionEndRef = useRef(onInteractionEnd);
+  onInteractionEndRef.current = onInteractionEnd;
+
+  const beginInteraction = useCallback(() => {
+    if (endSettleTimerRef.current) {
+      clearTimeout(endSettleTimerRef.current);
+      endSettleTimerRef.current = null;
+    }
+    if (!isNotifyingActiveRef.current) {
+      isNotifyingActiveRef.current = true;
+      onInteractionStartRef.current?.();
+    }
+  }, []);
+
+  const scheduleEndInteraction = useCallback((delayMs = 180) => {
+    if (endSettleTimerRef.current) {
+      clearTimeout(endSettleTimerRef.current);
+    }
+    endSettleTimerRef.current = setTimeout(() => {
+      endSettleTimerRef.current = null;
+      didDragRef.current = false;
+      if (isNotifyingActiveRef.current) {
+        isNotifyingActiveRef.current = false;
+        onInteractionEndRef.current?.();
+      }
+    }, delayMs);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (endSettleTimerRef.current) {
+        clearTimeout(endSettleTimerRef.current);
+        endSettleTimerRef.current = null;
+      }
+      if (isNotifyingActiveRef.current) {
+        isNotifyingActiveRef.current = false;
+        onInteractionEndRef.current?.();
+      }
+    };
+  }, []);
 
   const ticks = useMemo(() => {
     const count = Math.max(1, Math.round((max - min) / step) + 1);
@@ -143,6 +192,10 @@ export function IosRulerSlider({
 
   const onScroll = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+      if (isUserInteractingRef.current && endSettleTimerRef.current) {
+        clearTimeout(endSettleTimerRef.current);
+        endSettleTimerRef.current = null;
+      }
       handleScrollOffset(e.nativeEvent.contentOffset.x, isUserInteractingRef.current);
     },
     [handleScrollOffset]
@@ -152,8 +205,9 @@ export function IosRulerSlider({
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
       handleScrollOffset(e.nativeEvent.contentOffset.x, true);
       isUserInteractingRef.current = false;
+      scheduleEndInteraction(180);
     },
-    [handleScrollOffset]
+    [handleScrollOffset, scheduleEndInteraction]
   );
 
   const handleTapTick = useCallback(
@@ -212,8 +266,23 @@ export function IosRulerSlider({
             snapToInterval={tickSpacing}
             snapToAlignment="start"
             scrollEventThrottle={16}
+            onTouchStart={() => {
+              didDragRef.current = false;
+              beginInteraction();
+            }}
+            onTouchEnd={() => {
+              if (!didDragRef.current && !isUserInteractingRef.current) {
+                scheduleEndInteraction(160);
+              }
+            }}
+            onTouchCancel={() => {
+              isUserInteractingRef.current = false;
+              scheduleEndInteraction(140);
+            }}
             onScrollBeginDrag={() => {
               isUserInteractingRef.current = true;
+              didDragRef.current = true;
+              beginInteraction();
             }}
             onScroll={onScroll}
             onMomentumScrollEnd={onScrollEnd}
