@@ -580,11 +580,13 @@ export function buildTtsProxyUrl(
   text: string,
   lang: string,
   speed: number,
-  voiceGd: 'hoaimy' | 'namminh' | 'google'
+  voiceGd: 'hoaimy' | 'namminh' | 'google',
+  prewarm = false
 ): string {
-  return `https://handle.dangvietanh.com/tts_proxy?text=${encodeURIComponent(
+  const base = `https://handle.dangvietanh.com/tts_proxy?text=${encodeURIComponent(
     text
   )}&tl=${encodeURIComponent(lang || 'vi')}&speed=${speed}&voice_gd=${encodeURIComponent(
     voiceGd
   )}`;
+  return prewarm ? `${base}&prewarm=1` : base;
 }

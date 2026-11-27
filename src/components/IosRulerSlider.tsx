@@ -29,6 +29,7 @@ export interface IosRulerSliderProps {
   resetLabel?: string;
   tickSpacing?: number;
   accentColor?: string;
+  staggerLabels?: boolean;
 }
 
 function roundToStepPrecision(val: number, step: number): number {
@@ -61,6 +62,7 @@ export function IosRulerSlider({
   resetLabel = 'Mặc định',
   tickSpacing = 14,
   accentColor = COLORS.accent,
+  staggerLabels = false,
 }: IosRulerSliderProps) {
   const scrollRef = useRef<React.ComponentRef<typeof ScrollView> | null>(null);
   const [containerWidth, setContainerWidth] = useState(0);
@@ -70,7 +72,14 @@ export function IosRulerSlider({
 
   const ticks = useMemo(() => {
     const count = Math.max(1, Math.round((max - min) / step) + 1);
-    const arr: { val: number; isMajor: boolean; isMid: boolean; label: string }[] = [];
+    const arr: {
+      val: number;
+      isMajor: boolean;
+      isMid: boolean;
+      label: string;
+      labelPos: 'top' | 'bottom' | 'none';
+    }[] = [];
+    let majorCount = 0;
     for (let i = 0; i < count; i++) {
       const v = roundToStepPrecision(Math.min(max, min + i * step), step);
       const isMajor = isMultipleOf(v, majorStep) || (majorStep === step);
@@ -80,10 +89,19 @@ export function IosRulerSlider({
           ? formatTickLabel(v)
           : String(Math.round(v * 100) / 100)
         : '';
-      arr.push({ val: v, isMajor, isMid, label: tickLbl });
+      let labelPos: 'top' | 'bottom' | 'none' = 'none';
+      if (tickLbl) {
+        if (!staggerLabels) {
+          labelPos = 'top';
+        } else {
+          labelPos = majorCount % 2 === 0 ? 'top' : 'bottom';
+          majorCount += 1;
+        }
+      }
+      arr.push({ val: v, isMajor, isMid, label: tickLbl, labelPos });
     }
     return arr;
-  }, [min, max, step, majorStep, formatTickLabel]);
+  }, [min, max, step, majorStep, formatTickLabel, staggerLabels]);
 
   const valueToOffset = useCallback(
     (v: number) => {
@@ -176,7 +194,7 @@ export function IosRulerSlider({
       </View>
 
       <View
-        style={styles.capsule}
+        style={[styles.capsule, staggerLabels && styles.capsuleStaggered]}
         onLayout={(e) => {
           const w = Math.round(e.nativeEvent.layout.width);
           if (w > 0 && Math.abs(w - containerWidth) > 2) {
@@ -206,11 +224,75 @@ export function IosRulerSlider({
                 onScrollEnd(e);
               }
             }}
-            contentContainerStyle={{ paddingHorizontal: sidePad, alignItems: 'flex-end' }}
+            contentContainerStyle={{
+              paddingHorizontal: sidePad,
+              alignItems: staggerLabels ? 'center' : 'flex-end',
+            }}
           >
             {ticks.map((item, idx) => {
               const isSelected = Math.abs(item.val - value) < step * 0.45;
               const isNear = Math.abs(item.val - value) <= majorStep * 1.1;
+              const barEl = (
+                <View style={styles.tickTrackRow}>
+                  <View
+                    style={[
+                      styles.tickBar,
+                      item.isMajor
+                        ? styles.tickBarMajor
+                        : item.isMid
+                          ? styles.tickBarMid
+                          : styles.tickBarMinor,
+                      isSelected && { backgroundColor: '#FFFFFF' },
+                    ]}
+                  />
+                </View>
+              );
+
+              if (staggerLabels) {
+                return (
+                  <TouchableOpacity
+                    key={idx}
+                    activeOpacity={0.8}
+                    onPress={() => handleTapTick(idx)}
+                    style={[styles.tickColStaggered, { width: tickSpacing }]}
+                  >
+                    <View style={styles.tickLabelSlotTop}>
+                      {item.labelPos === 'top' ? (
+                        <Text
+                          numberOfLines={1}
+                          style={[
+                            styles.tickLabel,
+                            styles.tickLabelStagger,
+                            isSelected && styles.tickLabelSelected,
+                            !isSelected && isNear && styles.tickLabelNear,
+                          ]}
+                        >
+                          {item.label}
+                        </Text>
+                      ) : null}
+                    </View>
+
+                    {barEl}
+
+                    <View style={styles.tickLabelSlotBottom}>
+                      {item.labelPos === 'bottom' ? (
+                        <Text
+                          numberOfLines={1}
+                          style={[
+                            styles.tickLabel,
+                            styles.tickLabelStagger,
+                            isSelected && styles.tickLabelSelected,
+                            !isSelected && isNear && styles.tickLabelNear,
+                          ]}
+                        >
+                          {item.label}
+                        </Text>
+                      ) : null}
+                    </View>
+                  </TouchableOpacity>
+                );
+              }
+
               return (
                 <TouchableOpacity
                   key={idx}
@@ -233,19 +315,7 @@ export function IosRulerSlider({
                     <View style={styles.tickLabelSpacer} />
                   )}
 
-                  <View style={styles.tickTrackRow}>
-                    <View
-                      style={[
-                        styles.tickBar,
-                        item.isMajor
-                          ? styles.tickBarMajor
-                          : item.isMid
-                            ? styles.tickBarMid
-                            : styles.tickBarMinor,
-                        isSelected && { backgroundColor: '#FFFFFF' },
-                      ]}
-                    />
-                  </View>
+                  {barEl}
 
                   {decorativeBetween && idx < ticks.length - 1 ? (
                     <View
@@ -283,10 +353,23 @@ export function IosRulerSlider({
         />
 
         {/* Fixed glowing center needle + crimson triangle pointer */}
-        <View pointerEvents="none" style={styles.centerOverlay}>
-          <View style={styles.centerNeedle} />
-          <View style={[styles.centerTriangle, { borderBottomColor: accentColor }]} />
-        </View>
+        {staggerLabels ? (
+          <View pointerEvents="none" style={styles.centerOverlayStaggered}>
+            <View style={styles.centerNeedleStaggered} />
+            <View
+              style={[
+                styles.centerTriangle,
+                styles.centerTriangleStaggered,
+                { borderBottomColor: accentColor },
+              ]}
+            />
+          </View>
+        ) : (
+          <View pointerEvents="none" style={styles.centerOverlay}>
+            <View style={styles.centerNeedle} />
+            <View style={[styles.centerTriangle, { borderBottomColor: accentColor }]} />
+          </View>
+        )}
       </View>
     </View>
   );
@@ -349,12 +432,38 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     position: 'relative',
   },
+  capsuleStaggered: {
+    height: 94,
+  },
   tickCol: {
     height: 72,
     alignItems: 'center',
     justifyContent: 'flex-start',
     paddingTop: 9,
     position: 'relative',
+  },
+  tickColStaggered: {
+    height: 92,
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+    overflow: 'visible',
+  },
+  tickLabelSlotTop: {
+    height: 22,
+    width: 44,
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    marginBottom: 4,
+    overflow: 'visible',
+  },
+  tickLabelSlotBottom: {
+    height: 22,
+    width: 44,
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    marginTop: 4,
+    overflow: 'visible',
   },
   tickLabel: {
     color: 'rgba(255,255,255,0.34)',
@@ -363,6 +472,10 @@ const styles = StyleSheet.create({
     marginBottom: 5,
     textAlign: 'center',
     minWidth: 36,
+  },
+  tickLabelStagger: {
+    marginBottom: 0,
+    minWidth: 42,
   },
   tickLabelNear: {
     color: 'rgba(255,255,255,0.68)',
@@ -442,6 +555,14 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
     paddingBottom: 6,
   },
+  centerOverlayStaggered: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+  },
   centerNeedle: {
     width: 3,
     height: 26,
@@ -453,6 +574,18 @@ const styles = StyleSheet.create({
     shadowRadius: 6,
     marginBottom: 4,
   },
+  centerNeedleStaggered: {
+    position: 'absolute',
+    top: 34,
+    width: 3,
+    height: 24,
+    borderRadius: 1.5,
+    backgroundColor: '#FFFFFF',
+    shadowColor: '#FFFFFF',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.9,
+    shadowRadius: 6,
+  },
   centerTriangle: {
     width: 0,
     height: 0,
@@ -463,5 +596,9 @@ const styles = StyleSheet.create({
     borderBottomWidth: 7,
     borderLeftColor: 'transparent',
     borderRightColor: 'transparent',
+  },
+  centerTriangleStaggered: {
+    position: 'absolute',
+    bottom: 3,
   },
 });

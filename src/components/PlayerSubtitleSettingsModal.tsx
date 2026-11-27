@@ -590,22 +590,6 @@ export function PlayerSubtitleSettingsModal({
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ gap: 10, paddingHorizontal: 16, paddingTop: 6, paddingBottom: 6 }}
       >
-        <IosRulerSlider
-          label="Âm lượng thuyết minh"
-          value={Math.round(settings.subAiVoiceVolume ?? 80)}
-          min={0}
-          max={100}
-          step={5}
-          majorStep={10}
-          defaultValue={80}
-          valueText={`${Math.round(settings.subAiVoiceVolume ?? 80)}%`}
-          formatTickLabel={(v) => `${v}%`}
-          tickSpacing={14}
-          resetLabel="80%"
-          onChange={(v) => void updateSetting('subAiVoiceVolume', Math.round(v))}
-          onReset={() => void updateSetting('subAiVoiceVolume', 80)}
-        />
-
         {AI_VOICE_OPTIONS.map((opt) => {
           const isSelected =
             opt.value === 'none'
@@ -638,6 +622,32 @@ export function PlayerSubtitleSettingsModal({
             </BouncyButton>
           );
         })}
+
+        <View
+          style={{
+            marginTop: 6,
+            paddingTop: 10,
+            borderTopWidth: 1,
+            borderTopColor: 'rgba(255,255,255,0.08)',
+          }}
+        >
+          <IosRulerSlider
+            label="Âm lượng thuyết minh"
+            value={Math.round(settings.subAiVoiceVolume ?? 80)}
+            min={0}
+            max={100}
+            step={5}
+            majorStep={10}
+            defaultValue={80}
+            valueText={`${Math.round(settings.subAiVoiceVolume ?? 80)}%`}
+            formatTickLabel={(v) => `${v}%`}
+            tickSpacing={18}
+            staggerLabels
+            resetLabel="80%"
+            onChange={(v) => void updateSetting('subAiVoiceVolume', Math.round(v))}
+            onReset={() => void updateSetting('subAiVoiceVolume', 80)}
+          />
+        </View>
       </ScrollView>
     );
   };

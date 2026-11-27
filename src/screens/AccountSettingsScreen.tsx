@@ -1471,6 +1471,17 @@ export function AccountSettingsScreen({
                       versionCode: APP_VERSION_CODE,
                       versionName: APP_VERSION,
                       date: APP_RELEASE_DATE,
+                      title: 'Thuyết Minh Tức Thì Không Độ Trễ & Thanh Âm Lượng Dễ Nhìn',
+                      changes: [
+                        'Nâng cấp cơ chế Giọng thuyết minh đọc tức thì theo phụ đề, loại bỏ hoàn toàn độ trễ khi bắt đầu câu thoại bằng cách nạp sẵn câu kế tiếp vào trình phát dự phòng',
+                        'Tự động nạp trước các lời thuyết minh sắp tới vào bộ nhớ máy và làm ấm trước dữ liệu âm thanh trên máy chủ giúp phát mượt mà ngay cả khi vừa mở tập hoặc tua nhanh',
+                        'Sắp xếp mục Chọn giọng đọc lên đầu bảng Giọng Thuyết Minh, đưa thanh Âm lượng thuyết minh xuống dưới cùng và chia xen kẽ các mốc phần trăm chẵn lên trên, lẻ xuống dưới tránh dính chữ',
+                      ],
+                    },
+                    {
+                      versionCode: 47,
+                      versionName: '1.0.46',
+                      date: '27/11/2026',
                       title: 'Phụ Đề Thu Nhỏ Khung Hình, Gọn Nhãn Lưu Ý Tải Ngầm & Chi Tiết Bản Cập Nhật',
                       changes: [
                         'Khắc phục triệt để lỗi không hiện phụ đề khi xem ở chế độ Thu nhỏ khung hình cho cả luồng phát trực tuyến lẫn phim Phát từ máy',

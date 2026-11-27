@@ -859,13 +859,13 @@ export function PlayerModal({
   // Mount two AVPlayers unconditionally for zero-glitch 2-layer ping-pong transitions
   const playerA = useVideoPlayer(null, (p) => {
     p.allowsExternalPlayback = true;
-    p.timeUpdateEventInterval = 0.25;
+    p.timeUpdateEventInterval = 0.15;
     p.keepScreenOnWhilePlaying = true;
     p.staysActiveInBackground = Boolean(settings.pipEnabled);
   });
   const playerB = useVideoPlayer(null, (p) => {
     p.allowsExternalPlayback = true;
-    p.timeUpdateEventInterval = 0.25;
+    p.timeUpdateEventInterval = 0.15;
     p.keepScreenOnWhilePlaying = true;
     p.staysActiveInBackground = Boolean(settings.pipEnabled);
   });
