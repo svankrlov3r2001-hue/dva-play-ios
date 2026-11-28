@@ -36,9 +36,16 @@ import { useAuth } from '../context/AuthContext';
 import { useSettings } from '../context/SettingsContext';
 import {
   checkOtaUpdateApi,
+  fetchPasskeyStatusApi,
   fetchProxyPresetsApi,
+  requestPasskeyLinkTicketApi,
   resolveProxyPresetApi,
+  unlinkPasskeyApi,
 } from '../services/api';
+import {
+  isNativeAuthSessionSupported,
+  openNativeAuthSession,
+} from '../services/localMediaServer';
 import {
   disableProxyAsync,
   enableProxyAsync,
@@ -59,6 +66,7 @@ import {
   enforceOfflineRetentionPolicy,
   formatBytes,
   loadOfflineDownloads,
+  resumeBackgroundQueueIfNeeded,
   setOfflineRuntimePolicy,
   subscribeOfflineDownloads,
 } from '../services/downloadService';
@@ -135,7 +143,90 @@ export function AccountSettingsScreen({
   } | null>(null);
   const probeRunIdRef = useRef(0);
   const nativeProxyReady = isNativeProxySupported();
+  const [passkeyLinked, setPasskeyLinked] = useState(false);
+  const [passkeyCount, setPasskeyCount] = useState(0);
+  const [passkeyBusy, setPasskeyBusy] = useState(false);
   const enterAnim = useRef(new Animated.Value(0)).current;
+
+  const refreshPasskeyStatus = useCallback(async () => {
+    try {
+      const res = await fetchPasskeyStatusApi();
+      if (res?.success) {
+        setPasskeyLinked(Boolean(res.linked));
+        setPasskeyCount(Number(res.count || 0));
+      }
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    if (visible) {
+      void refreshPasskeyStatus();
+    }
+  }, [visible, refreshPasskeyStatus]);
+
+  const handleLinkPasskey = async () => {
+    if (passkeyBusy) return;
+    if (!isNativeAuthSessionSupported()) {
+      showAppAlert(
+        'Cần cập nhật ứng dụng',
+        'Liên kết Passkey / Face ID yêu cầu cài đặt bản ứng dụng iOS mới nhất.'
+      );
+      return;
+    }
+    setPasskeyBusy(true);
+    try {
+      const ticketRes = await requestPasskeyLinkTicketApi();
+      if (!ticketRes?.success || !ticketRes?.url) {
+        throw new Error('Không tạo được phiên liên kết Passkey.');
+      }
+      const cbUrl = await openNativeAuthSession(ticketRes.url, 'dvaplay');
+      await refreshPasskeyStatus();
+      if (cbUrl && cbUrl.includes('status=linked')) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        showAppAlert(
+          'Liên kết thành công',
+          'Tài khoản của bạn đã liên kết Passkey / Face ID với iCloud Keychain (Apple ID). Bạn có thể dùng để đăng nhập nhanh một chạm.'
+        );
+      }
+    } catch (err: any) {
+      showAppAlert('Lỗi liên kết Passkey', err?.message || 'Không thể liên kết Passkey lúc này.');
+    } finally {
+      setPasskeyBusy(false);
+    }
+  };
+
+  const handlePasskeyPress = () => {
+    Haptics.selectionAsync();
+    if (!passkeyLinked) {
+      void handleLinkPasskey();
+      return;
+    }
+    showAppAlert(
+      'Passkey / Face ID (Apple ID)',
+      `Tài khoản đang liên kết ${passkeyCount} khóa truy cập Passkey trên Apple ID.`,
+      [
+        { text: 'Đóng', style: 'cancel' },
+        { text: 'Thêm thiết bị mới', onPress: () => void handleLinkPasskey() },
+        {
+          text: 'Hủy liên kết',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              setPasskeyBusy(true);
+              const res = await unlinkPasskeyApi();
+              setPasskeyLinked(Boolean(res?.linked));
+              setPasskeyCount(Number(res?.count || 0));
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            } catch (e: any) {
+              showAppAlert('Lỗi', e?.message || 'Không thể hủy liên kết Passkey.');
+            } finally {
+              setPasskeyBusy(false);
+            }
+          },
+        },
+      ]
+    );
+  };
 
   useEffect(() => {
     if (visible) {
@@ -1018,6 +1109,36 @@ export function AccountSettingsScreen({
             value={settings.preferOfflineWhenOnline}
             onChange={(v) => void updateSetting('preferOfflineWhenOnline', v)}
           />
+
+          <View style={styles.insetDivider} />
+          <IosSwitchRow
+            icon="cellular"
+            badgeColor="#F59E0B"
+            label="Cho phép tải phim bằng dữ liệu di động"
+            desc="Mặc định tắt: chỉ tải khi kết nối Wi-Fi và hiện cảnh báo nếu đang dùng 4G/5G"
+            value={!settings.wifiOnlyDownload}
+            onChange={(allowCellular) => {
+              const nextWifiOnly = !allowCellular;
+              setOfflineRuntimePolicy({ wifiOnlyDownload: nextWifiOnly });
+              void updateSetting('wifiOnlyDownload', nextWifiOnly);
+              if (allowCellular) {
+                void resumeBackgroundQueueIfNeeded(true).catch(() => {});
+              }
+            }}
+          />
+
+          <View style={styles.insetDivider} />
+          <IosSwitchRow
+            icon="speedometer"
+            badgeColor="#8B5CF6"
+            label="Ưu tiên băng thông khi đang xem"
+            desc="Giảm ~50% tốc độ tải khi đang phát trực tuyến để tránh giật hình; tự tăng tối đa khi phát từ máy"
+            value={settings.offlineThrottleWhileWatching}
+            onChange={(v) => {
+              setOfflineRuntimePolicy({ throttleWhileWatching: v });
+              void updateSetting('offlineThrottleWhileWatching', v);
+            }}
+          />
         </GlassSurface>
 
         {/* Section 3: Security, Proxy & TV Cast */}
@@ -1048,6 +1169,32 @@ export function AccountSettingsScreen({
               }
             }}
           />
+
+          <View style={styles.insetDivider} />
+          <BouncyButton
+            bounciness="gentle"
+            activeOpacity={0.78}
+            style={styles.navRow}
+            disabled={passkeyBusy}
+            onPress={handlePasskeyPress}
+          >
+            <View style={[styles.iosBadge, { backgroundColor: '#38BDF8' }]}>
+              <Ionicons name="finger-print" size={16} color="#FFFFFF" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.settingLabel}>Liên kết Passkey / Face ID (Apple ID)</Text>
+              <Text style={styles.settingDesc}>
+                {passkeyLinked
+                  ? `Đã liên kết (${passkeyCount} khóa truy cập) • Dùng đăng nhập nhanh không cần mật khẩu`
+                  : 'Chưa liên kết • Chạm để liên kết với iCloud Keychain trên Apple ID'}
+              </Text>
+            </View>
+            {passkeyBusy ? (
+              <ActivityIndicator size="small" color="#38BDF8" />
+            ) : (
+              <Feather name="chevron-right" size={17} color="rgba(255,255,255,0.38)" />
+            )}
+          </BouncyButton>
 
           <View style={styles.insetDivider} />
           <BouncyButton
@@ -1430,6 +1577,32 @@ export function AccountSettingsScreen({
               )}
             </BouncyButton>
           </View>
+
+          <View style={styles.insetDivider} />
+          <BouncyButton
+            bounciness="gentle"
+            activeOpacity={0.78}
+            style={styles.navRow}
+            disabled={passkeyBusy}
+            onPress={handlePasskeyPress}
+          >
+            <View style={[styles.iosBadge, { backgroundColor: '#38BDF8' }]}>
+              <Ionicons name="finger-print" size={16} color="#FFFFFF" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.settingLabel}>Liên kết Passkey / Face ID (Apple ID)</Text>
+              <Text style={styles.settingDesc}>
+                {passkeyLinked
+                  ? `Đã liên kết (${passkeyCount} khóa truy cập) • Dùng đăng nhập nhanh không cần mật khẩu`
+                  : 'Chưa liên kết • Chạm để liên kết với iCloud Keychain trên Apple ID'}
+              </Text>
+            </View>
+            {passkeyBusy ? (
+              <ActivityIndicator size="small" color="#38BDF8" />
+            ) : (
+              <Feather name="chevron-right" size={17} color="rgba(255,255,255,0.38)" />
+            )}
+          </BouncyButton>
 
           <View style={styles.insetDivider} />
           <BouncyButton

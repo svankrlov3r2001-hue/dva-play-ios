@@ -27,6 +27,11 @@ interface AuthContextValue {
   lockPromptVisible: boolean;
   lockSeq: number;
   login: (identity: string, password: string) => Promise<void>;
+  loginWithAuthPayload: (payload: {
+    token: string;
+    cookies?: AuthCookies | null;
+    user: User;
+  }) => Promise<void>;
   logout: () => Promise<void>;
   unlockWithBiometrics: () => Promise<boolean>;
   attemptAutoUnlockWithBiometrics: () => Promise<boolean>;
@@ -48,6 +53,7 @@ const AuthContext = createContext<AuthContextValue>({
   lockPromptVisible: false,
   lockSeq: 0,
   login: async () => {},
+  loginWithAuthPayload: async () => {},
   logout: async () => {},
   unlockWithBiometrics: async () => true,
   attemptAutoUnlockWithBiometrics: async () => true,
@@ -378,32 +384,49 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
   }, [settingsLoaded]);
 
-  const login = useCallback(async (identity: string, password: string) => {
-    const res = await loginApi(identity, password);
-    if (!res.success || !res.token || !res.user) {
-      throw new Error('Đăng nhập thất bại.');
-    }
-    setAuthTransition('login');
-    setApiAuthToken(res.token);
-    setToken(res.token);
-    setUser(res.user);
-    setCookies(res.cookies || null);
-    setLockPromptVisible(false);
-    setIsLocked(false);
+  const loginWithAuthPayload = useCallback(
+    async (payload: { token: string; cookies?: AuthCookies | null; user: User }) => {
+      if (!payload?.token || !payload?.user) {
+        throw new Error('Đăng nhập thất bại.');
+      }
+      setAuthTransition('login');
+      setApiAuthToken(payload.token);
+      setToken(payload.token);
+      setUser(payload.user);
+      setCookies(payload.cookies || null);
+      setLockPromptVisible(false);
+      setIsLocked(false);
 
-    try {
-      await Promise.all([
-        SecureStore.setItemAsync(KEY_TOKEN, res.token),
-        SecureStore.setItemAsync(KEY_USER, JSON.stringify(res.user)),
-        res.cookies
-          ? SecureStore.setItemAsync(KEY_COOKIES, JSON.stringify(res.cookies))
-          : SecureStore.deleteItemAsync(KEY_COOKIES),
-        new Promise((r) => setTimeout(r, SPLASH_MIN_DURATION_MS)),
-      ]);
-    } finally {
-      setAuthTransition(null);
-    }
-  }, []);
+      try {
+        await Promise.all([
+          SecureStore.setItemAsync(KEY_TOKEN, payload.token),
+          SecureStore.setItemAsync(KEY_USER, JSON.stringify(payload.user)),
+          payload.cookies
+            ? SecureStore.setItemAsync(KEY_COOKIES, JSON.stringify(payload.cookies))
+            : SecureStore.deleteItemAsync(KEY_COOKIES),
+          new Promise((r) => setTimeout(r, SPLASH_MIN_DURATION_MS)),
+        ]);
+      } finally {
+        setAuthTransition(null);
+      }
+    },
+    []
+  );
+
+  const login = useCallback(
+    async (identity: string, password: string) => {
+      const res = await loginApi(identity, password);
+      if (!res.success || !res.token || !res.user) {
+        throw new Error('Đăng nhập thất bại.');
+      }
+      await loginWithAuthPayload({
+        token: res.token,
+        cookies: res.cookies || null,
+        user: res.user,
+      });
+    },
+    [loginWithAuthPayload]
+  );
 
   const logout = useCallback(async () => {
     setAuthTransition('logout');
@@ -455,6 +478,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         lockPromptVisible,
         lockSeq,
         login,
+        loginWithAuthPayload,
         logout,
         unlockWithBiometrics,
         attemptAutoUnlockWithBiometrics,

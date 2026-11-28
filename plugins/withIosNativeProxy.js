@@ -63,6 +63,9 @@ import UIKit
 #endif
 #if os(iOS) && canImport(AVFoundation)
 import AVFoundation
+#endif
+#if os(iOS) && canImport(AuthenticationServices)
+import AuthenticationServices
 #endif`
   );
 
@@ -2807,6 +2810,134 @@ private final class DvaBackgroundDownloadGuard: @unchecked Sendable {
 #endif
 }
 
+private final class DvaNetworkPathMonitor: @unchecked Sendable {
+  static let shared = DvaNetworkPathMonitor()
+  private let lock = NSLock()
+  private var latestJson: String = "{\\"type\\":\\"unknown\\",\\"isWifi\\":false,\\"isCellular\\":false,\\"isExpensive\\":false,\\"isConstrained\\":false,\\"isConnected\\":true}"
+  private var hasInitialPath = false
+#if canImport(Network)
+  private var monitor: NWPathMonitor?
+  private let queue = DispatchQueue(label: "com.dangvietanh.dvaplay.netmon", qos: .utility)
+  private let initSem = DispatchSemaphore(value: 0)
+#endif
+
+  private init() {
+#if canImport(Network)
+    let mon = NWPathMonitor()
+    self.monitor = mon
+    mon.pathUpdateHandler = { [weak self] path in
+      guard let self else { return }
+      let isConnected = (path.status == .satisfied || path.status == .requiresConnection)
+      let isWifi = path.usesInterfaceType(.wifi)
+      let isCellular = path.usesInterfaceType(.cellular)
+      let isEthernet = path.usesInterfaceType(.wiredEthernet)
+      let typeStr: String
+      if path.status == .unsatisfied {
+        typeStr = "none"
+      } else if isWifi {
+        typeStr = "wifi"
+      } else if isCellular {
+        typeStr = "cellular"
+      } else if isEthernet {
+        typeStr = "ethernet"
+      } else {
+        typeStr = "other"
+      }
+      let json = "{\\"type\\":\\"\\(typeStr)\\",\\"isWifi\\":\\(isWifi),\\"isCellular\\":\\(isCellular),\\"isExpensive\\":\\(path.isExpensive),\\"isConstrained\\":\\(path.isConstrained),\\"isConnected\\":\\(isConnected)}"
+      self.lock.lock()
+      let first = !self.hasInitialPath
+      self.latestJson = json
+      self.hasInitialPath = true
+      self.lock.unlock()
+      if first {
+        self.initSem.signal()
+      }
+    }
+    mon.start(queue: self.queue)
+#endif
+  }
+
+  func getInfoJson() -> String {
+    lock.lock()
+    let ready = hasInitialPath
+    var out = latestJson
+    lock.unlock()
+#if canImport(Network)
+    if !ready {
+      _ = initSem.wait(timeout: .now() + 0.15)
+      lock.lock()
+      out = latestJson
+      lock.unlock()
+    }
+#endif
+    return out
+  }
+}
+
+#if os(iOS) && canImport(AuthenticationServices) && canImport(UIKit)
+private final class DvaWebAuthSessionManager: NSObject, ASWebAuthenticationPresentationContextProviding, @unchecked Sendable {
+  static let shared = DvaWebAuthSessionManager()
+  private let lock = NSLock()
+  private var activeSession: ASWebAuthenticationSession?
+
+  func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+    let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+    for scene in scenes {
+      if let keyWin = scene.windows.first(where: { $0.isKeyWindow }) {
+        return keyWin
+      }
+    }
+    if let firstWin = scenes.first?.windows.first {
+      return firstWin
+    }
+    return ASPresentationAnchor()
+  }
+
+  func open(url: URL, callbackScheme: String, promise: Promise) {
+    DispatchQueue.main.async {
+      self.lock.lock()
+      self.activeSession?.cancel()
+      self.activeSession = nil
+      self.lock.unlock()
+
+      let session = ASWebAuthenticationSession(
+        url: url,
+        callbackURLScheme: callbackScheme
+      ) { [weak self] callbackURL, error in
+        self?.lock.lock()
+        self?.activeSession = nil
+        self?.lock.unlock()
+
+        if let cb = callbackURL {
+          promise.resolve(cb.absoluteString)
+          return
+        }
+        if let nsErr = error as NSError?,
+           nsErr.domain == ASWebAuthenticationSessionErrorDomain,
+           nsErr.code == ASWebAuthenticationSessionError.canceledLogin.rawValue {
+          promise.resolve("")
+          return
+        }
+        promise.reject("E_AUTH_SESSION", error?.localizedDescription ?? "Không thể mở phiên xác thực.")
+      }
+      session.presentationContextProvider = self
+      session.prefersEphemeralWebBrowserSession = false
+
+      self.lock.lock()
+      self.activeSession = session
+      self.lock.unlock()
+
+      if !session.start() {
+        self.lock.lock()
+        self.activeSession = nil
+        self.lock.unlock()
+        promise.reject("E_AUTH_START", "Không thể khởi chạy trình xác thực Safari.")
+      }
+    }
+  }
+}
+#endif
+
 public final class ExpoFetchModule: Module {
   private var dvaProxySpec: DvaProxySpec?
   private var dvaActiveRelay: DvaLocalProxyRelay?
@@ -2920,6 +3051,27 @@ public final class ExpoFetchModule: Module {
 
     Function("dvaIsBackgroundDownloadActive") { () -> Bool in
       return DvaBackgroundDownloadGuard.shared.isActive
+    }
+
+    Function("dvaGetNetworkInfo") { () -> String in
+      return DvaNetworkPathMonitor.shared.getInfoJson()
+    }
+
+    AsyncFunction("dvaOpenAuthSession") { (urlStr: String, callbackScheme: String, promise: Promise) in
+#if os(iOS) && canImport(AuthenticationServices) && canImport(UIKit)
+      guard let url = URL(string: urlStr.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+        promise.reject("E_AUTH_URL", "Liên kết xác thực không hợp lệ.")
+        return
+      }
+      let scheme = callbackScheme.trimmingCharacters(in: .whitespacesAndNewlines)
+      DvaWebAuthSessionManager.shared.open(
+        url: url,
+        callbackScheme: scheme.isEmpty ? "dvaplay" : scheme,
+        promise: promise
+      )
+#else
+      promise.reject("E_AUTH_UNSUPPORTED", "Thiết bị chưa hỗ trợ phiên xác thực.")
+#endif
     }
 
     Function("dvaIsProxySupported") { () -> Bool in

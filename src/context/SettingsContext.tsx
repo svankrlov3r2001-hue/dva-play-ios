@@ -64,6 +64,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   offlineAutoDeleteEnabled: false,
   offlineAutoDeleteDays: 7,
   offlineAntiStallEnabled: true,
+  offlineThrottleWhileWatching: true,
   autoOptimalServer: true,
   autoDubNext: false,
   contrastLevel: 'Mặc định',

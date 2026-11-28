@@ -376,3 +376,89 @@ export async function resolveProxyPresetApi(
     body: JSON.stringify({ preset_id: presetId }),
   });
 }
+
+export async function initQrLoginSessionApi(device = 'DVA Play iPhone'): Promise<{
+  success: boolean;
+  key: string;
+  formatted_key: string;
+  qr_url: string;
+  expires_in: number;
+}> {
+  return apiRequest(`auth.php?action=qr_session_init&_t=${Date.now()}`, {
+    method: 'POST',
+    body: JSON.stringify({ device }),
+  });
+}
+
+export async function pollQrLoginSessionApi(qrLoginKey: string): Promise<{
+  success: boolean;
+  state: 'waiting' | 'claimed' | 'approved' | 'expired';
+  expires_in?: number;
+  name?: string;
+  avatar_url?: string;
+  token?: string;
+  cookies?: AuthCookies;
+  user?: User;
+}> {
+  return apiRequest(`auth.php?action=qr_session_poll&_t=${Date.now()}`, {
+    method: 'POST',
+    body: JSON.stringify({ qr_login_key: qrLoginKey }),
+  });
+}
+
+export async function cancelQrLoginSessionApi(qrLoginKey: string): Promise<{ success: boolean }> {
+  return apiRequest('auth.php?action=qr_session_cancel', {
+    method: 'POST',
+    body: JSON.stringify({ qr_login_key: qrLoginKey }),
+  });
+}
+
+export interface PasskeyCredentialInfo {
+  id: number;
+  device_name: string;
+  created_at: string;
+  last_used_at: string;
+}
+
+export async function fetchPasskeyStatusApi(): Promise<{
+  success: boolean;
+  linked: boolean;
+  count: number;
+  credentials: PasskeyCredentialInfo[];
+}> {
+  return apiRequest(`auth.php?action=passkey_status&_t=${Date.now()}`);
+}
+
+export async function requestPasskeyLinkTicketApi(): Promise<{
+  success: boolean;
+  ticket: string;
+  url: string;
+}> {
+  return apiRequest(`auth.php?action=passkey_ticket&_t=${Date.now()}`, {
+    method: 'POST',
+    body: '{}',
+  });
+}
+
+export async function unlinkPasskeyApi(id?: number): Promise<{
+  success: boolean;
+  linked: boolean;
+  count: number;
+}> {
+  return apiRequest('auth.php?action=passkey_unlink', {
+    method: 'POST',
+    body: JSON.stringify(id ? { id } : { all: true }),
+  });
+}
+
+export async function exchangePasskeyCodeApi(code: string): Promise<{
+  success: boolean;
+  token: string;
+  cookies: AuthCookies;
+  user: User;
+}> {
+  return apiRequest(`auth.php?action=passkey_exchange&_t=${Date.now()}`, {
+    method: 'POST',
+    body: JSON.stringify({ code }),
+  });
+}

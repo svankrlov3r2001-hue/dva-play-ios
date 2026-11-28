@@ -27,12 +27,14 @@ import {
   formatBytes,
   formatEpisodeDisplayTitle,
   getCurrentAndNextEpisodes,
+  isCellularDownloadBlocked,
   loadOfflineDownloads,
   normalizeEpisodeOrder,
   OfflineEnqueueParams,
   pauseOfflineDownload,
   removeOfflineDownload,
   resumeOfflineDownload,
+  setOfflineRuntimePolicy,
   setPendingFollowUpDownloads,
   subscribeOfflineDownloads,
 } from '../services/downloadService';
@@ -190,17 +192,42 @@ export function OfflineDownloadSheet({
     });
   }, [isSeries, targetStreamCode, safeNextCount, nextTargets, offlineItems, videosId]);
 
+  const ensureNetworkAllowsDownload = (onProceed: () => Promise<unknown> | unknown) => {
+    if (!isCellularDownloadBlocked()) {
+      void onProceed();
+      return;
+    }
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+    showAppAlert(
+      'Đang dùng dữ liệu di động',
+      'Tùy chọn cho phép tải phim bằng dữ liệu di động đang tắt. Tải phim qua 4G/5G có thể tiêu tốn nhiều dung lượng.',
+      [
+        { text: 'Đóng', style: 'cancel' },
+        {
+          text: 'Bật & Tải ngay',
+          onPress: async () => {
+            await updateSetting('wifiOnlyDownload', false);
+            setOfflineRuntimePolicy({ wifiOnlyDownload: false });
+            await onProceed();
+          },
+        },
+      ]
+    );
+  };
+
   const handleDownloadNextPendingOnly = async () => {
     if (!isCurrentCompleted || pendingNextEpisodes.length === 0) return;
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    setSubmittingBatch(true);
-    try {
-      await enqueueEpisodeBatch(pendingNextEpisodes.map((ep) => buildEnqueueReq(ep)));
-    } catch (e: any) {
-      showAppAlert('Lỗi tải ngoại tuyến', e?.message || 'Không thể đưa vào hàng chờ.');
-    } finally {
-      setSubmittingBatch(false);
-    }
+    ensureNetworkAllowsDownload(async () => {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      setSubmittingBatch(true);
+      try {
+        await enqueueEpisodeBatch(pendingNextEpisodes.map((ep) => buildEnqueueReq(ep)));
+      } catch (e: any) {
+        showAppAlert('Lỗi tải ngoại tuyến', e?.message || 'Không thể đưa vào hàng chờ.');
+      } finally {
+        setSubmittingBatch(false);
+      }
+    });
   };
 
   const handleDownloadCurrentAndNext = async (includeNext: boolean) => {
@@ -208,31 +235,33 @@ export function OfflineDownloadSheet({
       showAppAlert('Thông báo', 'Không tìm thấy nguồn phát cho mục này.');
       return;
     }
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    setSubmittingBatch(true);
-    try {
-      const curEp = orderedEpisodes.find((e) => e.stream_code === targetStreamCode);
-      const curItem = await enqueueOfflineDownload(buildEnqueueReq(curEp));
-      if (includeNext && isSeries && safeNextCount > 0) {
-        const targets = getCurrentAndNextEpisodes(
-          orderedEpisodes,
-          targetStreamCode,
-          safeNextCount
-        );
-        const nextOnlyReqs = targets
-          .filter((ep) => ep.stream_code !== targetStreamCode)
-          .map((ep) => buildEnqueueReq(ep));
-        if (nextOnlyReqs.length > 0) {
-          await setPendingFollowUpDownloads(curItem.id, nextOnlyReqs);
+    ensureNetworkAllowsDownload(async () => {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      setSubmittingBatch(true);
+      try {
+        const curEp = orderedEpisodes.find((e) => e.stream_code === targetStreamCode);
+        const curItem = await enqueueOfflineDownload(buildEnqueueReq(curEp));
+        if (includeNext && isSeries && safeNextCount > 0) {
+          const targets = getCurrentAndNextEpisodes(
+            orderedEpisodes,
+            targetStreamCode,
+            safeNextCount
+          );
+          const nextOnlyReqs = targets
+            .filter((ep) => ep.stream_code !== targetStreamCode)
+            .map((ep) => buildEnqueueReq(ep));
+          if (nextOnlyReqs.length > 0) {
+            await setPendingFollowUpDownloads(curItem.id, nextOnlyReqs);
+          }
+        } else {
+          clearPendingFollowUpDownloads(curItem.id);
         }
-      } else {
-        clearPendingFollowUpDownloads(curItem.id);
+      } catch (e: any) {
+        showAppAlert('Lỗi tải ngoại tuyến', e?.message || 'Không thể đưa vào hàng chờ.');
+      } finally {
+        setSubmittingBatch(false);
       }
-    } catch (e: any) {
-      showAppAlert('Lỗi tải ngoại tuyến', e?.message || 'Không thể đưa vào hàng chờ.');
-    } finally {
-      setSubmittingBatch(false);
-    }
+    });
   };
 
   const adjustNextCount = (delta: number) => {
@@ -275,13 +304,13 @@ export function OfflineDownloadSheet({
     Haptics.selectionAsync();
     const existing = findItemForEpisode(ep.stream_code);
     if (!existing) {
-      await enqueueOfflineDownload(buildEnqueueReq(ep));
+      ensureNetworkAllowsDownload(() => enqueueOfflineDownload(buildEnqueueReq(ep)));
       return;
     }
     if (existing.status === 'downloading' || existing.status === 'preparing') {
       await pauseOfflineDownload(existing.id);
     } else if (existing.status === 'paused' || existing.status === 'failed') {
-      await resumeOfflineDownload(existing.id);
+      ensureNetworkAllowsDownload(() => resumeOfflineDownload(existing.id));
     } else if (existing.status === 'queued') {
       await cancelOfflineDownload(existing.id);
     } else if (existing.status === 'completed') {

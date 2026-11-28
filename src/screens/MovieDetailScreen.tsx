@@ -28,6 +28,7 @@ import {
 } from '../services/api';
 import {
   loadOfflineDownloads,
+  mergeServerEpisodeProgressToMeta,
   subscribeOfflineDownloads,
   syncOnlineProgressToOffline,
 } from '../services/downloadService';
@@ -175,6 +176,9 @@ export function MovieDetailScreen({
       setMovie(res.movie);
       setRelated(res.related || []);
       setInWishlist(Boolean(res.movie?.in_wishlist));
+      if (res.movie?.videos_id && res.movie?.episode_progress) {
+        void mergeServerEpisodeProgressToMeta(res.movie.videos_id, res.movie.episode_progress);
+      }
       if (
         res.movie?.watch_history?.resume_seconds > 2 &&
         res.movie.watch_history.last_stream_code
@@ -558,6 +562,20 @@ export function MovieDetailScreen({
                     <View style={styles.epGrid}>
                       {seasonEpisodes.map((ep, idx) => {
                         const isActive = movie.watch_history?.last_stream_code === ep.stream_code;
+                        const epProg = ep.stream_code
+                          ? movie.episode_progress?.[ep.stream_code]?.progress_percent || 0
+                          : 0;
+                        const dlMatch = offlineItems.find(
+                          (o) =>
+                            o.status === 'completed' &&
+                            o.videos_id === movie.videos_id &&
+                            o.stream_code === ep.stream_code
+                        );
+                        const localPct =
+                          dlMatch && dlMatch.duration_sec && dlMatch.duration_sec > 0 && dlMatch.resume_sec
+                            ? Math.min(100, Math.round((dlMatch.resume_sec / dlMatch.duration_sec) * 100))
+                            : 0;
+                        const finalPct = Math.max(epProg, localPct);
                         return (
                           <BouncyButton
                             key={ep.episodes_id}
@@ -581,6 +599,17 @@ export function MovieDetailScreen({
                             <Text style={[styles.epTxt, isActive && { color: '#FFF' }]} numberOfLines={1}>
                               {ep.episodes_name}
                             </Text>
+                            {finalPct > 0 ? (
+                              <View style={styles.epProgTrack}>
+                                <View
+                                  style={[
+                                    styles.epProgFill,
+                                    isActive && { backgroundColor: '#FFFFFF' },
+                                    { width: `${finalPct}%` },
+                                  ]}
+                                />
+                              </View>
+                            ) : null}
                           </BouncyButton>
                         );
                       })}
@@ -1015,6 +1044,20 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     backgroundColor: 'rgba(255,255,255,0.08)',
     alignItems: 'center',
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  epProgTrack: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 3,
+    backgroundColor: 'rgba(255,255,255,0.16)',
+  },
+  epProgFill: {
+    height: '100%',
+    backgroundColor: COLORS.accent,
   },
   epBtnActive: {
     backgroundColor: COLORS.accent,

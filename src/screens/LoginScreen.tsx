@@ -16,13 +16,20 @@ import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { showAppAlert } from '../components/AppAlertModal';
 import { BouncyButton } from '../components/BouncyButton';
+import { LoginQrModal } from '../components/LoginQrModal';
 import { GLASS_SHADOW } from '../constants/config';
 import { useAuth } from '../context/AuthContext';
+import { exchangePasskeyCodeApi } from '../services/api';
+import {
+  isNativeAuthSessionSupported,
+  openNativeAuthSession,
+} from '../services/localMediaServer';
 
 export function LoginScreen() {
   const insets = useSafeAreaInsets();
-  const { login } = useAuth();
+  const { login, loginWithAuthPayload } = useAuth();
   const verticalPad = Math.max(insets.top + 56, insets.bottom + 28);
   const [identity, setIdentity] = useState('');
   const [password, setPassword] = useState('');
@@ -30,6 +37,58 @@ export function LoginScreen() {
   const [focusedField, setFocusedField] = useState<'id' | 'pw' | null>(null);
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [qrModalVisible, setQrModalVisible] = useState(false);
+  const [passkeySubmitting, setPasskeySubmitting] = useState(false);
+
+  const handlePasskeyLogin = async () => {
+    if (submitting || passkeySubmitting) return;
+    setError('');
+    if (!isNativeAuthSessionSupported()) {
+      showAppAlert(
+        'Cần cập nhật ứng dụng',
+        'Đăng nhập bằng Passkey / Face ID yêu cầu cài đặt bản ứng dụng iOS mới nhất.'
+      );
+      return;
+    }
+    setPasskeySubmitting(true);
+    try {
+      const callbackUrl = await openNativeAuthSession(
+        'https://dangvietanh.com/dva_ios/api/passkey_bridge.php?mode=login',
+        'dvaplay'
+      );
+      if (!callbackUrl) {
+        return;
+      }
+      const statusMatch = callbackUrl.match(/[?&]status=([^&]+)/i);
+      const codeMatch = callbackUrl.match(/[?&]code=([^&]+)/i);
+      const status = statusMatch ? decodeURIComponent(statusMatch[1]) : '';
+      const code = codeMatch ? decodeURIComponent(codeMatch[1]) : '';
+      if (status === 'cancelled' || !code) {
+        if (status && status !== 'cancelled') {
+          setError('Không thể xác thực Passkey / Face ID.');
+        }
+        return;
+      }
+      const authRes = await exchangePasskeyCodeApi(code);
+      if (!authRes?.success || !authRes?.token || !authRes?.user) {
+        throw new Error('Không thể hoàn tất đăng nhập Passkey.');
+      }
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      await loginWithAuthPayload({
+        token: authRes.token,
+        cookies: authRes.cookies || null,
+        user: authRes.user,
+      });
+    } catch (err: any) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      setError(
+        err?.message ||
+          'Đăng nhập Passkey / Face ID chưa thành công. Hãy đảm bảo bạn đã liên kết trước trong Cài đặt.'
+      );
+    } finally {
+      setPasskeySubmitting(false);
+    }
+  };
 
   const handleLogin = async () => {
     setError('');
@@ -205,11 +264,61 @@ export function LoginScreen() {
                     )}
                   </LinearGradient>
                 </BouncyButton>
+
+                <View style={styles.dividerRow}>
+                  <View style={styles.dividerLine} />
+                  <Text style={styles.dividerText}>Hoặc đăng nhập nhanh</Text>
+                  <View style={styles.dividerLine} />
+                </View>
+
+                <View style={styles.quickMethodsCol}>
+                  <BouncyButton
+                    bounciness="gentle"
+                    activeOpacity={0.85}
+                    disabled={submitting || passkeySubmitting}
+                    onPress={() => {
+                      Haptics.selectionAsync();
+                      setError('');
+                      setQrModalVisible(true);
+                    }}
+                    style={styles.altAuthBtn}
+                  >
+                    <Ionicons name="qr-code-outline" size={19} color="#FFFFFF" />
+                    <Text style={styles.altAuthText}>Mã QR / Mã thiết bị</Text>
+                  </BouncyButton>
+
+                  <BouncyButton
+                    bounciness="gentle"
+                    activeOpacity={0.85}
+                    disabled={submitting || passkeySubmitting}
+                    onPress={() => {
+                      Haptics.selectionAsync();
+                      void handlePasskeyLogin();
+                    }}
+                    style={styles.altAuthBtn}
+                  >
+                    {passkeySubmitting ? (
+                      <ActivityIndicator size="small" color="#FFFFFF" />
+                    ) : (
+                      <Ionicons name="finger-print-outline" size={19} color="#38BDF8" />
+                    )}
+                    <Text style={styles.altAuthText}>Passkey / Face ID (Apple ID)</Text>
+                  </BouncyButton>
+                </View>
               </View>
             </View>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
+
+      <LoginQrModal
+        visible={qrModalVisible}
+        onClose={() => setQrModalVisible(false)}
+        onApproved={async (payload) => {
+          setQrModalVisible(false);
+          await loginWithAuthPayload(payload);
+        }}
+      />
     </ImageBackground>
   );
 }
@@ -342,6 +451,43 @@ const styles = StyleSheet.create({
   submitText: {
     color: '#FFFFFF',
     fontSize: 16,
+    fontWeight: '600',
+  },
+  dividerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 4,
+    marginBottom: 2,
+  },
+  dividerLine: {
+    flex: 1,
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  dividerText: {
+    color: 'rgba(245, 246, 250, 0.56)',
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  quickMethodsCol: {
+    gap: 10,
+  },
+  altAuthBtn: {
+    height: 50,
+    borderRadius: 24,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.18)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    paddingHorizontal: 16,
+  },
+  altAuthText: {
+    color: '#FFFFFF',
+    fontSize: 14.5,
     fontWeight: '600',
   },
 });

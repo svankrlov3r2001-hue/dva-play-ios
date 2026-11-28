@@ -1,11 +1,58 @@
 import { AppState } from 'react-native';
 import { API_BASE_URL } from '../constants/config';
+import { getNativeNetworkInfo } from './localMediaServer';
+
+export type ConnectionKind = 'wifi' | 'cellular' | 'ethernet' | 'other' | 'none' | 'unknown';
 
 let lastKnownOnline = true;
+let lastKnownConnectionKind: ConnectionKind = 'unknown';
 let consecutiveFailures = 0;
 let probeInFlight: Promise<boolean> | null = null;
 const statusListeners = new Set<(online: boolean) => void>();
 const offlineRequestListeners = new Set<() => void>();
+const connectionListeners = new Set<(kind: ConnectionKind) => void>();
+
+export function getConnectionKind(): ConnectionKind {
+  const info = getNativeNetworkInfo();
+  if (info) {
+    if (!info.isConnected || info.type === 'none') {
+      lastKnownConnectionKind = 'none';
+    } else if (info.isWifi || info.type === 'wifi') {
+      lastKnownConnectionKind = 'wifi';
+    } else if (info.isCellular || info.type === 'cellular') {
+      lastKnownConnectionKind = 'cellular';
+    } else if (info.type === 'ethernet') {
+      lastKnownConnectionKind = 'ethernet';
+    } else {
+      lastKnownConnectionKind = 'other';
+    }
+  }
+  return lastKnownConnectionKind;
+}
+
+export function isOnCellularNetwork(): boolean {
+  const kind = getConnectionKind();
+  return kind === 'cellular';
+}
+
+export function subscribeConnectionType(cb: (kind: ConnectionKind) => void): () => void {
+  connectionListeners.add(cb);
+  return () => {
+    connectionListeners.delete(cb);
+  };
+}
+
+function checkAndNotifyConnectionKind(): void {
+  const prev = lastKnownConnectionKind;
+  const next = getConnectionKind();
+  if (prev !== next) {
+    connectionListeners.forEach((cb) => {
+      try {
+        cb(next);
+      } catch {}
+    });
+  }
+}
 
 export function isNetworkError(err: unknown): boolean {
   const msg = String(
@@ -121,6 +168,7 @@ let monitorAppStateSub: { remove: () => void } | null = null;
 let monitorIntervalMs = 4500;
 
 async function runMonitorTick() {
+  checkAndNotifyConnectionKind();
   if (AppState.currentState !== 'active') return;
   const ok = await probeConnectivity(2800);
   if (ok) {

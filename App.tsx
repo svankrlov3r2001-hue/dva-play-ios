@@ -40,6 +40,7 @@ import { HomeScreen } from './src/screens/HomeScreen';
 import { LibraryScreen } from './src/screens/LibraryScreen';
 import { LoginScreen } from './src/screens/LoginScreen';
 import { MovieDetailScreen } from './src/screens/MovieDetailScreen';
+import { OfflineMovieDetailScreen } from './src/screens/OfflineMovieDetailScreen';
 import { PlayerLaunchParams, PlayerModal } from './src/screens/PlayerModal';
 import { QuickLoginQrModal } from './src/screens/QuickLoginQrModal';
 import { SearchScreen } from './src/screens/SearchScreen';
@@ -50,12 +51,14 @@ import {
 } from './src/services/activeSessionService';
 import { checkAuthStatusApi } from './src/services/api';
 import {
+  backfillMissingOfflineMovieMetas,
   enforceOfflineRetentionPolicy,
   findCompletedOfflineItem,
   flushPendingOfflineProgressToServer,
   getOfflineDownloadsSnapshot,
   getOfflineRootDir,
   loadOfflineDownloads,
+  pauseDownloadsForWifiWait,
   pullOnlineProgressForOfflineItems,
   resumeBackgroundQueueIfNeeded,
   setOfflineRuntimePolicy,
@@ -66,6 +69,7 @@ import {
   probeConnectivity,
   startNetworkMonitor,
   subscribeAutoOfflineRequest,
+  subscribeConnectionType,
   subscribeNetworkStatus,
 } from './src/services/networkService';
 import {
@@ -143,6 +147,7 @@ function RootAppContent() {
   const [previewId, setPreviewId] = useState<number | null>(null);
   const [previewMovie, setPreviewMovie] = useState<MovieItem | null>(null);
   const [detailId, setDetailId] = useState<number | null>(null);
+  const [offlineDetailId, setOfflineDetailId] = useState<number | null>(null);
   const [playerParams, setPlayerParams] = useState<PlayerLaunchParams | null>(null);
   const [playerPhase, setPlayerPhase] = useState<PlayerTransitionPhase>('idle');
   const playerPhaseRef = useRef<PlayerTransitionPhase>(playerPhase);
@@ -249,12 +254,20 @@ function RootAppContent() {
         enterOfflineMode();
       }
     });
+    const unsubConn = subscribeConnectionType((kind) => {
+      if (kind === 'cellular' && settings.wifiOnlyDownload) {
+        void pauseDownloadsForWifiWait();
+      } else if (kind === 'wifi' || kind === 'ethernet') {
+        void resumeBackgroundQueueIfNeeded(true).catch(() => {});
+      }
+    });
     return () => {
       stopMonitor();
       unsubAutoOffline();
       unsubNet();
+      unsubConn();
     };
-  }, [enterOfflineMode]);
+  }, [enterOfflineMode, settings.wifiOnlyDownload]);
 
   useEffect(() => {
     if (!settingsLoaded) return;
@@ -263,6 +276,8 @@ function RootAppContent() {
       autoDeleteEnabled: settings.offlineAutoDeleteEnabled,
       autoDeleteDays: settings.offlineAutoDeleteDays,
       antiStallEnabled: settings.offlineAntiStallEnabled,
+      wifiOnlyDownload: settings.wifiOnlyDownload,
+      throttleWhileWatching: settings.offlineThrottleWhileWatching,
     };
     setOfflineRuntimePolicy(policy);
     enforceOfflineRetentionPolicy(policy).catch(() => {});
@@ -272,12 +287,15 @@ function RootAppContent() {
     settings.offlineAutoDeleteEnabled,
     settings.offlineAutoDeleteDays,
     settings.offlineAntiStallEnabled,
+    settings.wifiOnlyDownload,
+    settings.offlineThrottleWhileWatching,
   ]);
 
   useEffect(() => {
     if (!serverReady || !user || offlineModeActive) return;
     const runBidirectionalSync = () => {
       resumeBackgroundQueueIfNeeded(true).catch(() => {});
+      backfillMissingOfflineMovieMetas().catch(() => {});
       flushPendingOfflineProgressToServer()
         .then(() => pullOnlineProgressForOfflineItems())
         .catch(() => {});
@@ -407,6 +425,7 @@ function RootAppContent() {
         setPreviewId(null);
         setPreviewMovie(null);
         setDetailId(null);
+        setOfflineDetailId(null);
         setCastVisible(false);
         setActiveTab('home');
       }
@@ -911,6 +930,7 @@ function RootAppContent() {
                   offlineOnlyMode
                   watchProgressRevision={watchProgressRevision}
                   onOpenPreview={() => {}}
+                  onOpenOfflineDetail={(vid) => setOfflineDetailId(vid)}
                   onPlayOffline={handlePlayOffline}
                   onReconnectOnline={() => {
                     offlineModeActiveRef.current = false;
@@ -926,6 +946,15 @@ function RootAppContent() {
                   }}
                 />
               </View>
+
+              <OfflineMovieDetailScreen
+                visible={offlineDetailId !== null}
+                videosId={offlineDetailId}
+                offlineOnlyMode
+                watchProgressRevision={watchProgressRevision}
+                onClose={() => setOfflineDetailId(null)}
+                onPlayOffline={handlePlayOffline}
+              />
             </Animated.View>
           </SafeAreaInsetsContext.Provider>
 
@@ -1013,6 +1042,7 @@ function RootAppContent() {
                 <LibraryScreen
                   watchProgressRevision={watchProgressRevision}
                   onOpenPreview={handleOpenPreview}
+                  onOpenOfflineDetail={(vid) => setOfflineDetailId(vid)}
                   onPlayOffline={handlePlayOffline}
                 />
               ) : null}
@@ -1026,6 +1056,14 @@ function RootAppContent() {
             />
 
             {/* Global In-Tree Overlays */}
+            <OfflineMovieDetailScreen
+              visible={offlineDetailId !== null}
+              videosId={offlineDetailId}
+              offlineOnlyMode={false}
+              watchProgressRevision={watchProgressRevision}
+              onClose={() => setOfflineDetailId(null)}
+              onPlayOffline={handlePlayOffline}
+            />
             <MovieDetailScreen
               visible={detailId !== null}
               videosId={detailId}

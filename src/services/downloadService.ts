@@ -3,8 +3,14 @@ import * as Sharing from 'expo-sharing';
 import { MAX_AUTO_DOWNLOAD_NEXT_COUNT } from '../constants/config';
 import {
   EpisodeItem,
+  MovieDetail,
+  MovieEpisodeProgress,
   OfflineDownloadItem,
+  OfflineLocalEpisodeProgress,
+  OfflineLocalStarItem,
+  OfflineMovieMeta,
   OfflineSubtitleTrack,
+  StarItem,
   StreamQuality,
   StreamResolvedData,
   StreamSubtitle,
@@ -16,7 +22,7 @@ import {
   saveWatchProgressApi,
 } from './api';
 import { buildLocalOfflineUrl, isNativePipProxySupported, setNativeBackgroundDownloadActive } from './localMediaServer';
-import { isNetworkError, probeConnectivity } from './networkService';
+import { isNetworkError, isOnCellularNetwork, probeConnectivity } from './networkService';
 import { encodeSubtitlePathUrl } from './subtitleService';
 
 const OFFLINE_DIR = `${FileSystem.documentDirectory ?? ''}dva_offline/`;
@@ -90,6 +96,8 @@ export interface OfflineRetentionPolicy {
   autoDeleteEnabled: boolean;
   autoDeleteDays: number;
   antiStallEnabled: boolean;
+  wifiOnlyDownload: boolean;
+  throttleWhileWatching: boolean;
 }
 
 const DOWNLOAD_REQUEST_TIMEOUT_MS = 15000;
@@ -103,6 +111,14 @@ let activeOfflinePolicy: OfflineRetentionPolicy = {
   autoDeleteEnabled: false,
   autoDeleteDays: 7,
   antiStallEnabled: true,
+  wifiOnlyDownload: true,
+  throttleWhileWatching: true,
+};
+
+let onlinePlaybackThrottleState = {
+  activeOnlineStreaming: false,
+  videosId: 0,
+  streamCode: '',
 };
 
 let cachedItems: OfflineDownloadItem[] = [];
@@ -133,7 +149,38 @@ export function setOfflineRuntimePolicy(policy: Partial<OfflineRetentionPolicy>)
       typeof policy.antiStallEnabled === 'boolean'
         ? policy.antiStallEnabled
         : activeOfflinePolicy.antiStallEnabled,
+    wifiOnlyDownload:
+      typeof policy.wifiOnlyDownload === 'boolean'
+        ? policy.wifiOnlyDownload
+        : activeOfflinePolicy.wifiOnlyDownload,
+    throttleWhileWatching:
+      typeof policy.throttleWhileWatching === 'boolean'
+        ? policy.throttleWhileWatching
+        : activeOfflinePolicy.throttleWhileWatching,
   };
+}
+
+export function isCellularDownloadBlocked(): boolean {
+  return activeOfflinePolicy.wifiOnlyDownload && isOnCellularNetwork();
+}
+
+export function setOnlinePlaybackThrottleState(state: {
+  activeOnlineStreaming: boolean;
+  videosId?: number;
+  streamCode?: string;
+}): void {
+  onlinePlaybackThrottleState = {
+    activeOnlineStreaming: Boolean(state.activeOnlineStreaming),
+    videosId: state.videosId || 0,
+    streamCode: state.streamCode || '',
+  };
+}
+
+function shouldThrottleDownloadNow(): boolean {
+  return (
+    activeOfflinePolicy.throttleWhileWatching &&
+    onlinePlaybackThrottleState.activeOnlineStreaming
+  );
 }
 
 export function getOfflineStorageBytes(): number {
@@ -1411,6 +1458,38 @@ async function downloadHlsItem(
   }
 
   const workerCount = Math.max(1, Math.min(6, concurrency || 3, totalSegments));
+  let activeThrottledWorkers = 0;
+  const throttleWaiters: (() => void)[] = [];
+
+  const acquireThrottleGateIfNeeded = async () => {
+    while (shouldThrottleDownloadNow() && activeThrottledWorkers >= 1) {
+      if (signal.aborted || attemptController.signal.aborted) break;
+      await new Promise<void>((res) => {
+        const wake = () => {
+          clearTimeout(timer);
+          res();
+        };
+        const timer = setTimeout(() => {
+          const idx = throttleWaiters.indexOf(wake);
+          if (idx >= 0) throttleWaiters.splice(idx, 1);
+          res();
+        }, 250);
+        throttleWaiters.push(wake);
+      });
+    }
+    activeThrottledWorkers++;
+  };
+
+  const releaseThrottleGate = () => {
+    activeThrottledWorkers = Math.max(0, activeThrottledWorkers - 1);
+    while (
+      throttleWaiters.length > 0 &&
+      (!shouldThrottleDownloadNow() || activeThrottledWorkers === 0)
+    ) {
+      const w = throttleWaiters.shift();
+      if (w) w();
+    }
+  };
 
   updateItemInMemory(item.id, {
     status: 'downloading',
@@ -1428,6 +1507,7 @@ async function downloadHlsItem(
     const elapsedSec = Math.max(0.25, (now - startedAt) / 1000);
     const speedMbps = sessionBytes / (1024 * 1024) / elapsedSec;
     const pct = Math.min(99, Math.round((completedCount / totalSegments) * 100));
+    const throttleNote = shouldThrottleDownloadNow() ? ' (Nhường băng thông)' : '';
     updateItemInMemory(item.id, {
       status: 'downloading',
       media_format: 'hls',
@@ -1435,7 +1515,7 @@ async function downloadHlsItem(
       size_bytes: downloadedBytes,
       total_segments: totalSegments,
       completed_segments: completedCount,
-      status_text: `Đang tải ${pct}% • ${speedMbps.toFixed(1)} MB/s (${completedCount}/${totalSegments})`,
+      status_text: `Đang tải ${pct}% • ${speedMbps.toFixed(1)} MB/s (${completedCount}/${totalSegments})${throttleNote}`,
     });
   };
 
@@ -1451,6 +1531,12 @@ async function downloadHlsItem(
     if (now - lastProgressAt >= DOWNLOAD_WATCHDOG_TIMEOUT_MS) {
       restartReason = 'stall';
       attemptController.abort();
+      return;
+    }
+    if (shouldThrottleDownloadNow()) {
+      lowSpeedSince = 0;
+      lastWindowAt = now;
+      lastWindowBytes = sessionBytes;
       return;
     }
     if (now - startedAt > 10000) {
@@ -1497,12 +1583,34 @@ async function downloadHlsItem(
           }
         } catch {}
 
-        const segBytes = await downloadFileChunkSafe(
-          t.url,
-          t.destUri,
-          t.minBytes,
-          attemptController.signal
-        );
+        await acquireThrottleGateIfNeeded();
+        const segStartedAt = Date.now();
+        let segBytes = 0;
+        try {
+          segBytes = await downloadFileChunkSafe(
+            t.url,
+            t.destUri,
+            t.minBytes,
+            attemptController.signal
+          );
+          if (shouldThrottleDownloadNow() && !attemptController.signal.aborted) {
+            const elapsedSegMs = Date.now() - segStartedAt;
+            const paceMs = Math.max(60, Math.min(3500, elapsedSegMs));
+            let waited = 0;
+            while (
+              waited < paceMs &&
+              shouldThrottleDownloadNow() &&
+              !attemptController.signal.aborted &&
+              !signal.aborted
+            ) {
+              const slice = Math.min(150, paceMs - waited);
+              await abortableSleep(slice, attemptController.signal);
+              waited += slice;
+            }
+          }
+        } finally {
+          releaseThrottleGate();
+        }
         downloadedBytes += segBytes;
         sessionBytes += segBytes;
         completedCount++;
@@ -1995,6 +2103,7 @@ async function processSingleItem(id: string): Promise<void> {
     };
 
     await persistIndex(cachedItems.map((it) => (it.id === id ? finalized : it)));
+    void cacheOfflineMovieMeta(finalized.videos_id).catch(() => {});
     void enforceOfflineRetentionPolicy();
     const followUps = pendingFollowUpByParentId.get(id);
     if (followUps && followUps.length > 0) {
@@ -2090,6 +2199,44 @@ function scheduleDownloadReconnectRetry(delayMs = 9000): void {
   }, delayMs);
 }
 
+export async function pauseDownloadsForWifiWait(): Promise<void> {
+  if (!activeOfflinePolicy.wifiOnlyDownload) return;
+  await loadOfflineDownloads();
+  let changed = false;
+  const idsToAbort: string[] = [];
+  const nextItems = cachedItems.map((it) => {
+    if (it.status === 'downloading' || it.status === 'preparing' || it.status === 'queued') {
+      changed = true;
+      idsToAbort.push(it.id);
+      return {
+        ...it,
+        status: 'paused' as const,
+        status_text: 'Đang chờ Wi-Fi...',
+        paused_by_user: false,
+        waiting_for_wifi: true,
+        updated_at: new Date().toISOString(),
+      };
+    }
+    return it;
+  });
+  if (!changed) return;
+  downloadQueue.length = 0;
+  currentItemPrewarmGateOpen = false;
+  abortActivePrewarm();
+  await persistIndex(nextItems);
+  for (const id of idsToAbort) {
+    const ctrl = activeControllers.get(id);
+    if (ctrl) ctrl.abort();
+    const res = activeResumables.get(id);
+    if (res) {
+      try {
+        await res.pauseAsync();
+      } catch {}
+    }
+  }
+  syncBackgroundDownloadGuard();
+}
+
 async function processDownloadQueue(): Promise<void> {
   if (isProcessingQueue) {
     syncBackgroundDownloadGuard();
@@ -2100,6 +2247,10 @@ async function processDownloadQueue(): Promise<void> {
   syncBackgroundDownloadGuard();
   try {
     while (downloadQueue.length > 0) {
+      if (isCellularDownloadBlocked()) {
+        await pauseDownloadsForWifiWait();
+        break;
+      }
       const nextId = downloadQueue.shift();
       if (!nextId) continue;
       const target = cachedItems.find((i) => i.id === nextId);
@@ -2131,6 +2282,10 @@ export async function resumeBackgroundQueueIfNeeded(includeRecoverable = true): 
   }
   resumeQueuePromise = (async () => {
     await loadOfflineDownloads();
+    if (isCellularDownloadBlocked()) {
+      await pauseDownloadsForWifiWait();
+      return;
+    }
     let hasQueued = false;
     const recoverableIds: string[] = [];
     const now = Date.now();
@@ -2141,7 +2296,8 @@ export async function resumeBackgroundQueueIfNeeded(includeRecoverable = true): 
           downloadQueue.push(it.id);
         }
       } else if (includeRecoverable) {
-        const isPausedAuto = it.status === 'paused' && it.paused_by_user === false;
+        const isPausedAuto =
+          it.status === 'paused' && (it.paused_by_user === false || it.waiting_for_wifi === true);
         const isRetryableFailed =
           it.status === 'failed' &&
           (!it.error_message?.includes('Không hỗ trợ') || now >= (unsupportedRetryAfter.get(it.id) || 0));
@@ -2176,6 +2332,7 @@ export async function resumeBackgroundQueueIfNeeded(includeRecoverable = true): 
             status_text: 'Đã có mạng • Đang tự động tải tiếp...',
             error_message: undefined,
             paused_by_user: false,
+            waiting_for_wifi: false,
             updated_at: nowIso,
           };
         });
@@ -2232,6 +2389,7 @@ export async function enqueueOfflineDownload(
       ? params.episode_number
       : extractEpisodeNumberFromName(params.episode_title);
 
+  const cellularBlocked = isCellularDownloadBlocked();
   const itemDir = `${OFFLINE_DIR}${id}/`;
   const newItem: OfflineDownloadItem = {
     id,
@@ -2252,22 +2410,28 @@ export async function enqueueOfflineDownload(
     remote_url: params.remote_url || existing?.remote_url || '',
     size_bytes: existing?.size_bytes || 0,
     progress: existing?.status === 'paused' ? existing.progress : 0,
-    status: 'queued',
-    status_text: 'Đang chờ trong hàng đợi...',
+    status: cellularBlocked ? 'paused' : 'queued',
+    status_text: cellularBlocked ? 'Đang chờ Wi-Fi...' : 'Đang chờ trong hàng đợi...',
     paused_by_user: false,
+    waiting_for_wifi: cellularBlocked,
     created_at: existing?.created_at || new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };
 
   await persistIndex([newItem, ...cachedItems.filter((i) => i.id !== id)]);
+  void cacheOfflineMovieMeta(params.videos_id).catch(() => {});
   prewarmedItemIds.delete(id);
   prewarmCooldownUntil.delete(id);
-  if (!downloadQueue.includes(id)) {
-    downloadQueue.push(id);
+  if (!cellularBlocked) {
+    if (!downloadQueue.includes(id)) {
+      downloadQueue.push(id);
+    }
+    syncBackgroundDownloadGuard();
+    void processDownloadQueue();
+    scheduleNextQueuePrewarm();
+  } else {
+    syncBackgroundDownloadGuard();
   }
-  syncBackgroundDownloadGuard();
-  void processDownloadQueue();
-  scheduleNextQueuePrewarm();
   return newItem;
 }
 
@@ -2368,11 +2532,27 @@ export async function resumeOfflineDownload(id: string): Promise<void> {
     return;
   }
 
+  if (isCellularDownloadBlocked()) {
+    updateItemInMemory(
+      id,
+      { status: 'paused', status_text: 'Đang chờ Wi-Fi...', paused_by_user: false, waiting_for_wifi: true },
+      true
+    );
+    syncBackgroundDownloadGuard();
+    return;
+  }
+
   prewarmedItemIds.delete(id);
   prewarmCooldownUntil.delete(id);
   updateItemInMemory(
     id,
-    { status: 'queued', status_text: 'Đang tiếp tục tải...', error_message: undefined, paused_by_user: false },
+    {
+      status: 'queued',
+      status_text: 'Đang tiếp tục tải...',
+      error_message: undefined,
+      paused_by_user: false,
+      waiting_for_wifi: false,
+    },
     true
   );
   if (!downloadQueue.includes(id)) {
@@ -2530,7 +2710,15 @@ export async function removeOfflineDownload(id: string): Promise<void> {
       await FileSystem.deleteAsync(target.local_uri, { idempotent: true }).catch(() => {});
     }
   }
-  await persistIndex(cachedItems.filter((i) => i.id !== id));
+  const nextItems = cachedItems.filter((i) => i.id !== id);
+  await persistIndex(nextItems);
+  if (target && target.videos_id > 0) {
+    const stillHasMovie = nextItems.some((i) => i.videos_id === target.videos_id);
+    if (!stillHasMovie) {
+      movieMetaCache.delete(target.videos_id);
+      await FileSystem.deleteAsync(getMovieMetaDir(target.videos_id), { idempotent: true }).catch(() => {});
+    }
+  }
   if (currentDownloadingId === id) {
     currentItemPrewarmGateOpen = false;
     abortActivePrewarm();
@@ -2606,6 +2794,15 @@ export async function saveOfflineResumePosition(
   if (opts?.flushDisk || now - lastFlush >= 8000) {
     lastResumeDiskFlushById.set(id, now);
     await persistIndex(cachedItems);
+    const updatedItem = cachedItems[idx];
+    if (updatedItem?.videos_id && updatedItem?.stream_code) {
+      void updateLocalEpisodeProgress(
+        updatedItem.videos_id,
+        updatedItem.stream_code,
+        nextResume,
+        nextDur
+      ).catch(() => {});
+    }
   } else {
     notifyListeners();
   }
@@ -2630,11 +2827,30 @@ export async function syncOnlineProgressToOffline(params: {
           i.videos_id === params.videosId &&
           (!params.episodeId || i.episode_id === params.episodeId)))
   );
-  if (!matched || matched.resume_sync_pending) return;
+  if (!matched) {
+    if (params.videosId && params.streamCode) {
+      void updateLocalEpisodeProgress(
+        params.videosId,
+        params.streamCode,
+        pos,
+        params.durationSec
+      ).catch(() => {});
+    }
+    return;
+  }
+  if (matched.resume_sync_pending) return;
   await saveOfflineResumePosition(matched.id, pos, params.durationSec, {
     fromOnline: true,
     flushDisk: params.flushDisk,
   });
+  if (params.videosId && params.streamCode) {
+    void updateLocalEpisodeProgress(
+      params.videosId,
+      params.streamCode,
+      pos,
+      params.durationSec
+    ).catch(() => {});
+  }
 }
 
 export async function syncOfflineItemProgressToServer(
@@ -2866,6 +3082,319 @@ export async function exportOfflineToFiles(localUri: string): Promise<void> {
     UTI: 'public.mpeg-4',
     dialogTitle: 'Lưu phim vào ứng dụng Tệp',
   });
+}
+
+const movieMetaCache = new Map<number, OfflineMovieMeta>();
+const inFlightMetaCaching = new Map<number, Promise<OfflineMovieMeta | null>>();
+
+function getMovieMetaDir(videosId: number): string {
+  return `${OFFLINE_DIR}meta_${videosId}/`;
+}
+
+function getMovieMetaFile(videosId: number): string {
+  return `${getMovieMetaDir(videosId)}meta.json`;
+}
+
+function reanchorOfflineMeta(meta: OfflineMovieMeta): OfflineMovieMeta {
+  const reanchorList = (list?: OfflineLocalStarItem[]): OfflineLocalStarItem[] =>
+    Array.isArray(list)
+      ? list.map((s) => ({
+          ...s,
+          local_image_uri: s.local_image_uri ? reanchorOfflineUri(s.local_image_uri) : undefined,
+        }))
+      : [];
+  return {
+    ...meta,
+    local_poster_uri: meta.local_poster_uri ? reanchorOfflineUri(meta.local_poster_uri) : undefined,
+    local_backdrop_uri: meta.local_backdrop_uri
+      ? reanchorOfflineUri(meta.local_backdrop_uri)
+      : undefined,
+    star_list: reanchorList(meta.star_list),
+    director_list: reanchorList(meta.director_list),
+    writer_list: reanchorList(meta.writer_list),
+  };
+}
+
+export async function loadOfflineMovieMeta(videosId: number): Promise<OfflineMovieMeta | null> {
+  if (!videosId || videosId <= 0) return null;
+  const cached = movieMetaCache.get(videosId);
+  if (cached) return cached;
+  try {
+    const file = getMovieMetaFile(videosId);
+    const info = await FileSystem.getInfoAsync(file);
+    if (!info.exists) return null;
+    const raw = await FileSystem.readAsStringAsync(file);
+    const parsed = JSON.parse(raw) as OfflineMovieMeta;
+    if (!parsed || !parsed.videos_id) return null;
+    const anchored = reanchorOfflineMeta(parsed);
+    movieMetaCache.set(videosId, anchored);
+    return anchored;
+  } catch {
+    return null;
+  }
+}
+
+async function saveOfflineMovieMeta(meta: OfflineMovieMeta): Promise<void> {
+  if (!meta?.videos_id) return;
+  const dir = getMovieMetaDir(meta.videos_id);
+  await ensureDir(dir);
+  const anchored = reanchorOfflineMeta(meta);
+  movieMetaCache.set(meta.videos_id, anchored);
+  try {
+    await FileSystem.writeAsStringAsync(getMovieMetaFile(meta.videos_id), JSON.stringify(anchored));
+  } catch {}
+}
+
+async function downloadLocalMetaImage(
+  remoteUrl: string | undefined,
+  destUri: string
+): Promise<string | undefined> {
+  if (!remoteUrl || !/^https?:\/\//i.test(remoteUrl)) return undefined;
+  try {
+    if (await isValidPosterFile(destUri)) {
+      return destUri;
+    }
+    const res = await FileSystem.downloadAsync(remoteUrl, destUri, {
+      sessionType: FileSystem.FileSystemSessionType.FOREGROUND,
+    });
+    if (res && res.status < 400 && (await isValidPosterFile(destUri))) {
+      return destUri;
+    }
+    await FileSystem.deleteAsync(destUri, { idempotent: true }).catch(() => {});
+  } catch {
+    await FileSystem.deleteAsync(destUri, { idempotent: true }).catch(() => {});
+  }
+  return undefined;
+}
+
+export async function cacheOfflineMovieMeta(
+  videosId: number,
+  existingDetail?: MovieDetail
+): Promise<OfflineMovieMeta | null> {
+  if (!videosId || videosId <= 0) return null;
+  const pending = inFlightMetaCaching.get(videosId);
+  if (pending) return pending;
+
+  const job = (async (): Promise<OfflineMovieMeta | null> => {
+    try {
+      const existingMeta = await loadOfflineMovieMeta(videosId);
+      let detail = existingDetail;
+      if (!detail) {
+        try {
+          const res = await fetchMovieDetailsApi(videosId);
+          if (res?.movie) detail = res.movie;
+        } catch {}
+      }
+      if (!detail) return existingMeta;
+
+      const metaDir = getMovieMetaDir(videosId);
+      const starsDir = `${metaDir}stars/`;
+      await ensureDir(metaDir);
+      await ensureDir(starsDir);
+
+      const localPoster = await downloadLocalMetaImage(
+        detail.thumbnail_url || detail.poster_url,
+        `${metaDir}poster.jpg`
+      );
+      const localBackdrop = await downloadLocalMetaImage(
+        detail.poster_url || detail.thumbnail_url,
+        `${metaDir}backdrop.jpg`
+      );
+
+      // Deduplicate star avatar downloads across star_list / director_list / writer_list (cap 24)
+      const allStars: StarItem[] = [
+        ...(detail.star_list || []),
+        ...(detail.director_list || []),
+        ...(detail.writer_list || []),
+      ];
+      const starUriByKey = new Map<string, string>();
+      const downloadTargets: { key: string; url: string; dest: string }[] = [];
+      const seenKeys = new Set<string>();
+      for (let i = 0; i < allStars.length && downloadTargets.length < 24; i++) {
+        const st = allStars[i];
+        const key = st.id > 0 ? `id_${st.id}` : `name_${st.name}`;
+        if (seenKeys.has(key)) continue;
+        seenKeys.add(key);
+        if (!st.image_url || /\/uploads\/user\.jpg$/i.test(st.image_url)) continue;
+        const safeId = st.id > 0 ? String(st.id) : `n_${i}`;
+        downloadTargets.push({
+          key,
+          url: st.image_url,
+          dest: `${starsDir}${safeId}.jpg`,
+        });
+      }
+      for (let i = 0; i < downloadTargets.length; i += 4) {
+        const batch = downloadTargets.slice(i, i + 4);
+        await Promise.all(
+          batch.map(async (t) => {
+            const uri = await downloadLocalMetaImage(t.url, t.dest);
+            if (uri) starUriByKey.set(t.key, uri);
+          })
+        );
+      }
+
+      const mapStars = (list?: StarItem[]): OfflineLocalStarItem[] =>
+        (list || []).map((st) => {
+          const key = st.id > 0 ? `id_${st.id}` : `name_${st.name}`;
+          return {
+            ...st,
+            local_image_uri: starUriByKey.get(key),
+          };
+        });
+
+      const mergedProgress: Record<string, OfflineLocalEpisodeProgress> = {
+        ...(existingMeta?.episode_progress || {}),
+      };
+      if (detail.episode_progress) {
+        for (const [sc, srv] of Object.entries(detail.episode_progress)) {
+          if (!sc || !srv) continue;
+          const prev = mergedProgress[sc];
+          const dur = srv.duration_seconds || prev?.duration_sec || 0;
+          const resSec = srv.resume_seconds || 0;
+          const pct =
+            srv.progress_percent ||
+            (dur > 0 && resSec > 0 ? Math.min(100, Math.round((resSec / dur) * 100)) : 0);
+          if (resSec > 0 || !prev) {
+            mergedProgress[sc] = {
+              resume_sec: resSec,
+              duration_sec: dur,
+              progress_percent: pct,
+              updated_at: Date.now(),
+            };
+          }
+        }
+      }
+      for (const dl of cachedItems) {
+        if (dl.videos_id === videosId && dl.stream_code && dl.resume_sec && dl.resume_sec > 0) {
+          const dur = dl.duration_sec || mergedProgress[dl.stream_code]?.duration_sec || 0;
+          const pct =
+            dur > 0 ? Math.min(100, Math.round((dl.resume_sec / dur) * 100)) : 0;
+          const prev = mergedProgress[dl.stream_code];
+          if (!prev || (dl.resume_updated_at || 0) >= (prev.updated_at || 0)) {
+            mergedProgress[dl.stream_code] = {
+              resume_sec: dl.resume_sec,
+              duration_sec: dur,
+              progress_percent: pct,
+              updated_at: dl.resume_updated_at || Date.now(),
+            };
+          }
+        }
+      }
+
+      const nextMeta: OfflineMovieMeta = {
+        videos_id: detail.videos_id,
+        title: detail.title,
+        description: detail.description || '',
+        year: detail.year || '',
+        runtime: detail.runtime || '',
+        video_quality: detail.video_quality || 'HD',
+        imdb_rating: detail.imdb_rating || '',
+        is_tvseries: detail.is_tvseries,
+        server_episode_label: detail.server_episode_label,
+        server_episode_status: detail.server_episode_status,
+        genres: detail.genres || [],
+        poster_url: detail.poster_url || '',
+        thumbnail_url: detail.thumbnail_url || '',
+        local_poster_uri: localPoster || existingMeta?.local_poster_uri,
+        local_backdrop_uri: localBackdrop || existingMeta?.local_backdrop_uri,
+        seasons: detail.seasons || [],
+        episodes: detail.episodes || [],
+        star_list: mapStars(detail.star_list),
+        director_list: mapStars(detail.director_list),
+        writer_list: mapStars(detail.writer_list),
+        episode_progress: mergedProgress,
+        updated_at: new Date().toISOString(),
+      };
+
+      await saveOfflineMovieMeta(nextMeta);
+      return nextMeta;
+    } catch {
+      return null;
+    } finally {
+      inFlightMetaCaching.delete(videosId);
+    }
+  })();
+
+  inFlightMetaCaching.set(videosId, job);
+  return job;
+}
+
+export async function updateLocalEpisodeProgress(
+  videosId: number,
+  streamCode: string,
+  resumeSec: number,
+  durationSec?: number
+): Promise<void> {
+  if (!videosId || !streamCode || resumeSec <= 1) return;
+  const meta = await loadOfflineMovieMeta(videosId);
+  if (!meta) return;
+  const prev = meta.episode_progress?.[streamCode];
+  const dur =
+    durationSec && durationSec > 0 ? Math.floor(durationSec) : prev?.duration_sec || 0;
+  const pos = Math.max(0, Math.floor(resumeSec));
+  const pct = dur > 0 ? Math.min(100, Math.max(1, Math.round((pos / dur) * 100))) : prev?.progress_percent || 0;
+  meta.episode_progress = {
+    ...(meta.episode_progress || {}),
+    [streamCode]: {
+      resume_sec: pos,
+      duration_sec: dur,
+      progress_percent: pct,
+      updated_at: Date.now(),
+    },
+  };
+  await saveOfflineMovieMeta(meta);
+}
+
+export async function mergeServerEpisodeProgressToMeta(
+  videosId: number,
+  serverProgress?: Record<string, MovieEpisodeProgress>
+): Promise<void> {
+  if (!videosId || !serverProgress) return;
+  const meta = await loadOfflineMovieMeta(videosId);
+  if (!meta) return;
+  let changed = false;
+  const nextMap = { ...(meta.episode_progress || {}) };
+  for (const [sc, srv] of Object.entries(serverProgress)) {
+    if (!sc || !srv || srv.resume_seconds <= 1) continue;
+    const dl = cachedItems.find(
+      (i) => i.videos_id === videosId && i.stream_code === sc && i.resume_sync_pending
+    );
+    if (dl) continue;
+    const dur = srv.duration_seconds || nextMap[sc]?.duration_sec || 0;
+    const pct =
+      srv.progress_percent ||
+      (dur > 0 ? Math.min(100, Math.max(1, Math.round((srv.resume_seconds / dur) * 100))) : 0);
+    if (
+      !nextMap[sc] ||
+      Math.abs(nextMap[sc].resume_sec - srv.resume_seconds) >= 3 ||
+      nextMap[sc].progress_percent !== pct
+    ) {
+      nextMap[sc] = {
+        resume_sec: srv.resume_seconds,
+        duration_sec: dur,
+        progress_percent: pct,
+        updated_at: Date.now(),
+      };
+      changed = true;
+    }
+  }
+  if (changed) {
+    meta.episode_progress = nextMap;
+    await saveOfflineMovieMeta(meta);
+  }
+}
+
+export async function backfillMissingOfflineMovieMetas(): Promise<void> {
+  await loadOfflineDownloads();
+  const seenVid = new Set<number>();
+  for (const it of cachedItems) {
+    if (it.status !== 'completed' || !it.videos_id || seenVid.has(it.videos_id)) continue;
+    seenVid.add(it.videos_id);
+    const existing = await loadOfflineMovieMeta(it.videos_id);
+    if (!existing || !existing.local_backdrop_uri || !existing.local_poster_uri) {
+      await cacheOfflineMovieMeta(it.videos_id).catch(() => {});
+    }
+  }
 }
 
 export function formatBytes(bytes: number): string {

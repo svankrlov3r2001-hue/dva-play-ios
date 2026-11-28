@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  ActivityIndicator,
   FlatList,
   Image,
   ImageStyle,
@@ -18,13 +17,15 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { showAppAlert } from '../components/AppAlertModal';
 import { BouncyButton } from '../components/BouncyButton';
 import { GlassSurface } from '../components/GlassSurface';
+import { LibrarySegmentBar } from '../components/LibrarySegmentBar';
 import { MovieCard } from '../components/MovieCard';
+import { SkeletonCrossfade } from '../components/SkeletonCrossfade';
+import { ExploreGridSkeleton } from '../components/SkeletonLoaders';
 import { COLORS, RADII } from '../constants/config';
 import { useSettings } from '../context/SettingsContext';
 import { deleteWatchedMovieApi, fetchLibraryApi } from '../services/api';
 import {
   cancelOfflineDownload,
-  exportOfflineToFiles,
   extractEpisodeNumberFromName,
   formatBytes,
   loadOfflineDownloads,
@@ -104,6 +105,7 @@ function OfflinePosterImage({
 
 interface LibraryScreenProps {
   onOpenPreview: (item: MovieItem) => void;
+  onOpenOfflineDetail: (videosId: number) => void;
   onPlayOffline: (item: OfflineDownloadItem, seriesEpisodes?: OfflineDownloadItem[]) => void;
   offlineOnlyMode?: boolean;
   onReconnectOnline?: () => void;
@@ -131,6 +133,7 @@ type OfflineListEntry = OfflineSeriesGroup | OfflineSingleEntry;
 
 export function LibraryScreen({
   onOpenPreview,
+  onOpenOfflineDetail,
   onPlayOffline,
   offlineOnlyMode = false,
   onReconnectOnline,
@@ -148,7 +151,6 @@ export function LibraryScreen({
   const [wishlist, setWishlist] = useState<MovieItem[]>([]);
   const [watched, setWatched] = useState<MovieItem[]>([]);
   const [offlineItems, setOfflineItems] = useState<OfflineDownloadItem[]>([]);
-  const [openedSeriesId, setOpenedSeriesId] = useState<number | null>(null);
   const [loading, setLoading] = useState(!offlineOnlyMode);
   const [refreshing, setRefreshing] = useState(false);
   const [networkRestored, setNetworkRestored] = useState(false);
@@ -344,16 +346,6 @@ export function LibraryScreen({
     return result;
   }, [libraryDisplayItems]);
 
-  const openedSeriesGroup = useMemo(
-    () =>
-      openedSeriesId !== null
-        ? (groupedOfflineEntries.find(
-            (e) => e.kind === 'series' && e.videos_id === openedSeriesId
-          ) as OfflineSeriesGroup | undefined) || null
-        : null,
-    [groupedOfflineEntries, openedSeriesId]
-  );
-
   const totalOfflineBytes = offlineItems.reduce((acc, it) => acc + (it.size_bytes || 0), 0);
   const storageLimitGb = Math.max(10, Math.min(100, settings.offlineStorageLimitGb || 20));
   const storagePct = Math.min(
@@ -362,118 +354,6 @@ export function LibraryScreen({
       ? Math.max(2, Math.round((totalOfflineBytes / (storageLimitGb * 1024 * 1024 * 1024)) * 100))
       : 0
   );
-
-  const renderOfflineEpisodeGridCard = (
-    item: OfflineDownloadItem,
-    group: OfflineSeriesGroup
-  ) => {
-    const resumePct =
-      item.duration_sec && item.duration_sec > 0 && item.resume_sec
-        ? Math.min(100, Math.round((item.resume_sec / item.duration_sec) * 100))
-        : 0;
-    const playableGroup = group.episodes.filter((e) => e.status === 'completed');
-    const isCompleted = item.status === 'completed';
-    const isHls =
-      item.media_format === 'hls' || item.local_uri.toLowerCase().includes('.m3u8');
-    const statusDotColor = isCompleted
-      ? '#30D158'
-      : item.status === 'paused'
-        ? '#FF9F0A'
-        : '#FF453A';
-    const epNum = item.episode_number || extractEpisodeNumberFromName(item.episode_title);
-    const leftBadgeText =
-      item.episode_title || (epNum > 0 ? `Tập ${String(epNum).padStart(2, '0')}` : 'Tập phim');
-    const rightBadgeText = formatBytes(item.size_bytes);
-    const subLabel = isCompleted
-      ? formatBytes(item.size_bytes)
-      : item.status === 'paused'
-        ? `Tạm dừng ${item.progress}%`
-        : 'Lỗi tải • Chạm thử lại';
-
-    return (
-      <BouncyButton
-        bounciness="gentle"
-        activeOpacity={0.86}
-        onPress={() => {
-          Haptics.selectionAsync();
-          if (isCompleted) {
-            onPlayOffline(item, playableGroup);
-          } else {
-            void restartOfflineDownload(item.id);
-          }
-        }}
-        onLongPress={() => {
-          if (isCompleted && !isHls) {
-            Haptics.selectionAsync();
-            void exportOfflineToFiles(item.local_uri).catch((err) => {
-              showAppAlert('Thông báo', err?.message || 'Không thể chia sẻ tệp.');
-            });
-          }
-        }}
-        style={{ width: gridCardWidth, marginBottom: 16 }}
-      >
-        <View style={[styles.posterCardBox, { height: Math.round(gridCardWidth * 1.48) }]}>
-          <OfflinePosterImage
-            localUri={item.local_poster_uri || group.localThumb}
-            remoteUri={item.thumbnail_url || item.poster_url || group.remoteThumb}
-            offlineOnlyMode={offlineOnlyMode}
-            style={styles.posterFill}
-          />
-          <LinearGradient
-            colors={['transparent', 'rgba(7,9,15,0.82)']}
-            style={styles.posterBottomScrim}
-          />
-
-          <View style={styles.posterStatusPill}>
-            <View style={[styles.posterStatusDot, { backgroundColor: statusDotColor }]} />
-          </View>
-
-          <BouncyButton
-            onPress={() => handleDeleteOffline(item)}
-            hitSlop={6}
-            style={styles.gridRemoveBtn}
-            accessibilityLabel="Xóa tập ngoại tuyến"
-          >
-            <Ionicons name="close" size={14} color="#FFFFFF" />
-          </BouncyButton>
-
-          <View style={[styles.floatingSplitBadgesCenter, resumePct > 0 && { bottom: 12 }]}>
-            <View style={styles.splitSubHalf}>
-              <Text style={styles.splitPillText} numberOfLines={1}>
-                {leftBadgeText}
-              </Text>
-            </View>
-            <LinearGradient
-              colors={['#e50914', '#d50055']}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={styles.splitEpHalf}
-            >
-              <Text style={styles.splitPillText}>{rightBadgeText}</Text>
-            </LinearGradient>
-          </View>
-
-          {resumePct > 0 ? (
-            <View style={styles.posterProgTrack}>
-              <LinearGradient
-                colors={['#e50914', '#d50055']}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 0 }}
-                style={[styles.posterProgFill, { width: `${resumePct}%` }]}
-              />
-            </View>
-          ) : null}
-        </View>
-
-        <Text style={styles.posterTitle} numberOfLines={1}>
-          {leftBadgeText}
-        </Text>
-        <Text style={styles.posterSub} numberOfLines={1}>
-          {subLabel}
-        </Text>
-      </BouncyButton>
-    );
-  };
 
   const renderOfflineGridCard = (entry: OfflineListEntry) => {
     const isSeries = entry.kind === 'series';
@@ -501,17 +381,23 @@ export function LibraryScreen({
       : entry.item.status === 'completed'
         ? formatBytes(totalBytes)
         : entry.item.status === 'paused'
-          ? `Tạm dừng ${entry.item.progress}%`
+          ? entry.item.waiting_for_wifi
+            ? 'Đang chờ Wi-Fi'
+            : `Tạm dừng ${entry.item.progress}%`
           : 'Lỗi tải • Chạm thử lại';
 
     const handleCardPress = () => {
       Haptics.selectionAsync();
       if (isSeries) {
-        setOpenedSeriesId(entry.videos_id);
+        onOpenOfflineDetail(entry.videos_id);
         return;
       }
       if (entry.item.status === 'completed') {
-        onPlayOffline(entry.item);
+        if (entry.item.videos_id > 0) {
+          onOpenOfflineDetail(entry.item.videos_id);
+        } else {
+          onPlayOffline(entry.item);
+        }
       } else {
         void restartOfflineDownload(entry.item.id);
       }
@@ -598,22 +484,6 @@ export function LibraryScreen({
 
   const renderOfflineHeader = () => (
     <View style={{ gap: 10, marginBottom: 12 }}>
-      {openedSeriesGroup ? (
-        <BouncyButton
-          bounciness="gentle"
-          style={styles.seriesBackHeader}
-          onPress={() => {
-            Haptics.selectionAsync();
-            setOpenedSeriesId(null);
-          }}
-        >
-          <Ionicons name="arrow-back" size={18} color="#FFFFFF" />
-          <Text style={styles.seriesBackTitle} numberOfLines={1}>
-            {openedSeriesGroup.title} ({openedSeriesGroup.episodes.length} tập)
-          </Text>
-        </BouncyButton>
-      ) : null}
-
       {!offlineOnlyMode && activeDownloads.length > 0 ? (
         <View style={{ gap: 8 }}>
           <Text style={styles.queueHeading}>
@@ -753,163 +623,136 @@ export function LibraryScreen({
           ) : null}
         </GlassSurface>
       ) : (
-        <GlassSurface intensity={28} radius={18} style={styles.segmentWrap}>
-          {(
-            [
-              { key: 'wishlist', label: `Yêu thích (${wishlist.length})` },
-              { key: 'watched', label: `Đang xem (${watched.length})` },
-              { key: 'offline', label: `Ngoại tuyến (${offlineItems.length})` },
-            ] as const
-          ).map((seg) => (
-            <BouncyButton
-              key={seg.key}
-              style={[styles.segmentBtn, activeTab === seg.key && styles.segmentBtnActive]}
-              onPress={() => {
-                Haptics.selectionAsync();
-                setOpenedSeriesId(null);
-                setTab(seg.key);
-              }}
-            >
-              <Text style={[styles.segmentText, activeTab === seg.key && styles.segmentTextActive]}>
-                {seg.label}
-              </Text>
-            </BouncyButton>
-          ))}
-        </GlassSurface>
+        <LibrarySegmentBar
+          activeTab={activeTab}
+          wishlistCount={wishlist.length}
+          watchedCount={watched.length}
+          offlineCount={offlineItems.length}
+          onSelectTab={(nextTab) => setTab(nextTab)}
+        />
       )}
 
       {activeTab === 'offline' ? (
-        openedSeriesGroup ? (
-          <FlatList
-            key={`library-offline-series-grid-${openedSeriesGroup.videos_id}`}
-            data={openedSeriesGroup.episodes}
-            numColumns={3}
-            initialNumToRender={9}
-            maxToRenderPerBatch={6}
-            windowSize={5}
-            keyExtractor={(ep, idx) => `ep_${ep.id}_${idx}`}
-            columnWrapperStyle={styles.gridRow}
-            contentContainerStyle={{
-              paddingHorizontal: 16,
-              paddingTop: 12,
-              paddingBottom: insets.bottom + (offlineOnlyMode ? 32 : 110),
-            }}
-            ListHeaderComponent={renderOfflineHeader}
-            renderItem={({ item: ep }) =>
-              renderOfflineEpisodeGridCard(ep, openedSeriesGroup)
-            }
-          />
-        ) : (
-          <FlatList
-            key="library-offline-grid-3"
-            data={groupedOfflineEntries}
-            numColumns={3}
-            initialNumToRender={9}
-            maxToRenderPerBatch={6}
-            windowSize={5}
-            keyExtractor={(entry, idx) =>
-              entry.kind === 'series'
-                ? `series_${entry.videos_id}_${idx}`
-                : `${entry.item.id}_${idx}`
-            }
-            columnWrapperStyle={styles.gridRow}
-            contentContainerStyle={{
-              paddingHorizontal: 16,
-              paddingTop: 12,
-              paddingBottom: insets.bottom + (offlineOnlyMode ? 32 : 110),
-            }}
-            ListHeaderComponent={renderOfflineHeader}
-            renderItem={({ item: entry }) => renderOfflineGridCard(entry)}
-            ListEmptyComponent={
-              activeDownloads.length === 0 ? (
-                <View style={styles.emptyBox}>
-                  <Ionicons name="cloud-download-outline" size={44} color={COLORS.muted} />
-                  <Text style={styles.emptyText}>Chưa có phim nào được tải ngoại tuyến.</Text>
-                </View>
-              ) : undefined
-            }
-          />
-        )
-      ) : loading ? (
-        <View style={styles.center}>
-          <ActivityIndicator size="large" color={COLORS.accent} />
-        </View>
-      ) : activeTab === 'wishlist' ? (
         <FlatList
-          key="library-wishlist-grid"
-          data={wishlist}
+          key="library-offline-grid-3"
+          data={groupedOfflineEntries}
           numColumns={3}
           initialNumToRender={9}
           maxToRenderPerBatch={6}
           windowSize={5}
-          removeClippedSubviews={false}
-          keyExtractor={(item, idx) => `wish_${item.videos_id}_${idx}`}
-          columnWrapperStyle={styles.gridRow}
-          refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={() => loadLibrary(true)}
-              tintColor={COLORS.accent}
-            />
+          keyExtractor={(entry, idx) =>
+            entry.kind === 'series'
+              ? `series_${entry.videos_id}_${idx}`
+              : `${entry.item.id}_${idx}`
           }
+          columnWrapperStyle={styles.gridRow}
           contentContainerStyle={{
             paddingHorizontal: 16,
-            paddingTop: 14,
-            paddingBottom: insets.bottom + 110,
+            paddingTop: 12,
+            paddingBottom: insets.bottom + (offlineOnlyMode ? 32 : 110),
           }}
-          renderItem={({ item }) => (
-            <View style={{ marginBottom: 16 }}>
-              <MovieCard item={item} layout="grid" width={gridCardWidth} onPress={onOpenPreview} />
-            </View>
-          )}
+          ListHeaderComponent={renderOfflineHeader}
+          renderItem={({ item: entry }) => renderOfflineGridCard(entry)}
           ListEmptyComponent={
-            <View style={styles.emptyBox}>
-              <Ionicons name="bookmark-outline" size={44} color={COLORS.muted} />
-              <Text style={styles.emptyText}>Danh sách yêu thích đang trống.</Text>
-            </View>
+            activeDownloads.length === 0 ? (
+              <View style={styles.emptyBox}>
+                <Ionicons name="cloud-download-outline" size={44} color={COLORS.muted} />
+                <Text style={styles.emptyText}>Chưa có phim nào được tải ngoại tuyến.</Text>
+              </View>
+            ) : undefined
           }
         />
       ) : (
-        <FlatList
-          key="library-watched-grid"
-          data={watched}
-          numColumns={3}
-          initialNumToRender={9}
-          maxToRenderPerBatch={6}
-          windowSize={5}
-          removeClippedSubviews={false}
-          keyExtractor={(item, idx) => `watched_${item.videos_id}_${idx}`}
-          columnWrapperStyle={styles.gridRow}
-          refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={() => loadLibrary(true)}
-              tintColor={COLORS.accent}
-            />
-          }
-          contentContainerStyle={{
-            paddingHorizontal: 16,
-            paddingTop: 14,
-            paddingBottom: insets.bottom + 110,
-          }}
-          renderItem={({ item }) => (
-            <View style={{ marginBottom: 16 }}>
-              <MovieCard
-                item={item}
-                layout="grid"
-                width={gridCardWidth}
-                onPress={onOpenPreview}
-                onRemoveWatched={handleRemoveWatched}
+        <SkeletonCrossfade
+          loading={loading}
+          backgroundColor="transparent"
+          skeleton={
+            <View style={{ paddingTop: 14 }}>
+              <ExploreGridSkeleton
+                cardWidth={gridCardWidth}
+                active={loading}
               />
             </View>
-          )}
-          ListEmptyComponent={
-            <View style={styles.emptyBox}>
-              <Ionicons name="time-outline" size={44} color={COLORS.muted} />
-              <Text style={styles.emptyText}>Bạn chưa có lịch sử phim đang xem.</Text>
-            </View>
           }
-        />
+        >
+          {activeTab === 'wishlist' ? (
+            <FlatList
+              key="library-wishlist-grid"
+              data={wishlist}
+              numColumns={3}
+              initialNumToRender={9}
+              maxToRenderPerBatch={6}
+              windowSize={5}
+              removeClippedSubviews={false}
+              keyExtractor={(item, idx) => `wish_${item.videos_id}_${idx}`}
+              columnWrapperStyle={styles.gridRow}
+              refreshControl={
+                <RefreshControl
+                  refreshing={refreshing}
+                  onRefresh={() => loadLibrary(true)}
+                  tintColor={COLORS.accent}
+                />
+              }
+              contentContainerStyle={{
+                paddingHorizontal: 16,
+                paddingTop: 14,
+                paddingBottom: insets.bottom + 110,
+              }}
+              renderItem={({ item }) => (
+                <View style={{ marginBottom: 16 }}>
+                  <MovieCard item={item} layout="grid" width={gridCardWidth} onPress={onOpenPreview} />
+                </View>
+              )}
+              ListEmptyComponent={
+                <View style={styles.emptyBox}>
+                  <Ionicons name="bookmark-outline" size={44} color={COLORS.muted} />
+                  <Text style={styles.emptyText}>Danh sách yêu thích đang trống.</Text>
+                </View>
+              }
+            />
+          ) : (
+            <FlatList
+              key="library-watched-grid"
+              data={watched}
+              numColumns={3}
+              initialNumToRender={9}
+              maxToRenderPerBatch={6}
+              windowSize={5}
+              removeClippedSubviews={false}
+              keyExtractor={(item, idx) => `watched_${item.videos_id}_${idx}`}
+              columnWrapperStyle={styles.gridRow}
+              refreshControl={
+                <RefreshControl
+                  refreshing={refreshing}
+                  onRefresh={() => loadLibrary(true)}
+                  tintColor={COLORS.accent}
+                />
+              }
+              contentContainerStyle={{
+                paddingHorizontal: 16,
+                paddingTop: 14,
+                paddingBottom: insets.bottom + 110,
+              }}
+              renderItem={({ item }) => (
+                <View style={{ marginBottom: 16 }}>
+                  <MovieCard
+                    item={item}
+                    layout="grid"
+                    width={gridCardWidth}
+                    onPress={onOpenPreview}
+                    onRemoveWatched={handleRemoveWatched}
+                  />
+                </View>
+              )}
+              ListEmptyComponent={
+                <View style={styles.emptyBox}>
+                  <Ionicons name="time-outline" size={44} color={COLORS.muted} />
+                  <Text style={styles.emptyText}>Bạn chưa có lịch sử phim đang xem.</Text>
+                </View>
+              }
+            />
+          )}
+        </SkeletonCrossfade>
       )}
     </View>
   );

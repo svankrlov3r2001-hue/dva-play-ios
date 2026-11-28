@@ -12,6 +12,17 @@ interface DvaNativeMediaServerBridge {
   dvaSetBackgroundDownloadActive?: (active: boolean) => boolean;
   dvaSetVideoPlaybackActive?: (active: boolean) => boolean;
   dvaIsBackgroundDownloadActive?: () => boolean;
+  dvaGetNetworkInfo?: () => string;
+  dvaOpenAuthSession?: (url: string, callbackScheme: string) => Promise<string>;
+}
+
+export interface NativeNetworkInfo {
+  type: 'wifi' | 'cellular' | 'ethernet' | 'other' | 'none' | 'unknown';
+  isWifi: boolean;
+  isCellular: boolean;
+  isExpensive: boolean;
+  isConstrained: boolean;
+  isConnected: boolean;
 }
 
 export interface AppSigningInfo {
@@ -143,6 +154,45 @@ export function setNativeVideoPlaybackActive(active: boolean): boolean {
   } catch {
     return false;
   }
+}
+
+export function getNativeNetworkInfo(): NativeNetworkInfo | null {
+  const bridge = getNativeMediaBridge();
+  if (!bridge || typeof bridge.dvaGetNetworkInfo !== 'function') {
+    return null;
+  }
+  try {
+    const raw = bridge.dvaGetNetworkInfo();
+    if (!raw || typeof raw !== 'string') return null;
+    const parsed = JSON.parse(raw);
+    return {
+      type: parsed?.type || 'unknown',
+      isWifi: Boolean(parsed?.isWifi),
+      isCellular: Boolean(parsed?.isCellular),
+      isExpensive: Boolean(parsed?.isExpensive),
+      isConstrained: Boolean(parsed?.isConstrained),
+      isConnected: Boolean(parsed?.isConnected ?? true),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function isNativeAuthSessionSupported(): boolean {
+  const bridge = getNativeMediaBridge();
+  return Boolean(bridge && typeof bridge.dvaOpenAuthSession === 'function');
+}
+
+export async function openNativeAuthSession(
+  url: string,
+  callbackScheme = 'dvaplay'
+): Promise<string | null> {
+  const bridge = getNativeMediaBridge();
+  if (!bridge || typeof bridge.dvaOpenAuthSession !== 'function') {
+    throw new Error('Tính năng Passkey / Face ID yêu cầu cài đặt bản ứng dụng iOS mới nhất.');
+  }
+  const res = await bridge.dvaOpenAuthSession(url, callbackScheme);
+  return res ? String(res) : null;
 }
 
 export function getCachedOfflineMediaServerPort(): number {

@@ -139,6 +139,12 @@ export interface WatchHistory {
   last_episode_id: number;
 }
 
+export interface MovieEpisodeProgress {
+  resume_seconds: number;
+  duration_seconds: number;
+  progress_percent: number;
+}
+
 export interface MovieDetail {
   videos_id: number;
   code: string;
@@ -167,6 +173,7 @@ export interface MovieDetail {
   star_list: StarItem[];
   in_wishlist: boolean;
   watch_history: WatchHistory;
+  episode_progress?: Record<string, MovieEpisodeProgress>;
   episodes: EpisodeItem[];
   seasons: SeasonItem[];
   sources: SourceItem[];
@@ -343,8 +350,45 @@ export interface OfflineDownloadItem {
   status_text?: string;
   error_message?: string;
   paused_by_user?: boolean;
+  waiting_for_wifi?: boolean;
   created_at: string;
   updated_at?: string;
+}
+
+export interface OfflineLocalStarItem extends StarItem {
+  local_image_uri?: string;
+}
+
+export interface OfflineLocalEpisodeProgress {
+  resume_sec: number;
+  duration_sec: number;
+  progress_percent: number;
+  updated_at?: number;
+}
+
+export interface OfflineMovieMeta {
+  videos_id: number;
+  title: string;
+  description: string;
+  year: string;
+  runtime: string;
+  video_quality: string;
+  imdb_rating: string;
+  is_tvseries: number;
+  server_episode_label?: string;
+  server_episode_status?: ServerEpisodeStatus;
+  genres: FilterOption[];
+  poster_url: string;
+  thumbnail_url: string;
+  local_poster_uri?: string;
+  local_backdrop_uri?: string;
+  seasons: SeasonItem[];
+  episodes: EpisodeItem[];
+  star_list: OfflineLocalStarItem[];
+  director_list: OfflineLocalStarItem[];
+  writer_list: OfflineLocalStarItem[];
+  episode_progress?: Record<string, OfflineLocalEpisodeProgress>;
+  updated_at: string;
 }
 
 export type ContrastLevelOption = 'Thấp' | 'Mặc định' | 'Cao' | 'Rất cao';
@@ -382,6 +426,7 @@ export interface AppSettings {
   offlineAutoDeleteEnabled: boolean;
   offlineAutoDeleteDays: number;
   offlineAntiStallEnabled: boolean;
+  offlineThrottleWhileWatching: boolean;
   // General player settings (ported from setting_ST)
   autoOptimalServer: boolean;
   autoDubNext: boolean;

@@ -73,9 +73,11 @@ import {
   getCurrentAndNextEpisodes,
   getOfflineDownloadsSnapshot,
   getOfflineRootDir,
+  isCellularDownloadBlocked,
   loadOfflineDownloads,
   OfflineEnqueueParams,
   saveOfflineResumePosition,
+  setOnlinePlaybackThrottleState,
   setPendingFollowUpDownloads,
   subscribeOfflineDownloads,
   syncOfflineItemProgressToServer,
@@ -1536,6 +1538,26 @@ export function PlayerModal({
       setNativeVideoPlaybackActive(false);
     };
   }, [visible]);
+
+  // Throttle HLS offline download bandwidth to ~50% while actively streaming online
+  const isPlayingFromLocalOffline = Boolean(
+    activeServerId === '99' ||
+      (matchedOfflineItem?.status === 'completed' &&
+        (params?.offlineUri || settings.preferOfflineWhenOnline))
+  );
+  useEffect(() => {
+    const activeOnlineStreaming = Boolean(
+      visible && isPlaying && !isOfflineOnlyMode && !isPlayingFromLocalOffline
+    );
+    setOnlinePlaybackThrottleState({
+      activeOnlineStreaming,
+      videosId: params?.videosId,
+      streamCode: activeStreamCode,
+    });
+    return () => {
+      setOnlinePlaybackThrottleState({ activeOnlineStreaming: false });
+    };
+  }, [visible, isPlaying, isOfflineOnlyMode, isPlayingFromLocalOffline, params?.videosId, activeStreamCode]);
 
   // Load media URL into active AVPlayer
   const playServerOnActiveLayer = useCallback(
@@ -3993,6 +4015,9 @@ export function PlayerModal({
       return;
     }
     if (resolved.movie?.videos_id && resolved.movie.videos_id !== params.videosId) {
+      return;
+    }
+    if (isCellularDownloadBlocked()) {
       return;
     }
     const wantCurrent = settings.autoDownloadCurrentOnWatch;
