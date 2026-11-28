@@ -1114,8 +1114,8 @@ export function AccountSettingsScreen({
           <IosSwitchRow
             icon="cellular"
             badgeColor="#F59E0B"
-            label="Cho phép tải phim bằng dữ liệu di động"
-            desc="Mặc định tắt: chỉ tải khi kết nối Wi-Fi và hiện cảnh báo nếu đang dùng 4G/5G"
+            label="Tải bằng dữ liệu di động"
+            desc="Tắt để chỉ tải qua Wi-Fi và tiết kiệm dung lượng 4G/5G"
             value={!settings.wifiOnlyDownload}
             onChange={(allowCellular) => {
               const nextWifiOnly = !allowCellular;

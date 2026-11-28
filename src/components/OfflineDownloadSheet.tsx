@@ -200,7 +200,7 @@ export function OfflineDownloadSheet({
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
     showAppAlert(
       'Đang dùng dữ liệu di động',
-      'Tùy chọn cho phép tải phim bằng dữ liệu di động đang tắt. Tải phim qua 4G/5G có thể tiêu tốn nhiều dung lượng.',
+      'Tính năng Tải bằng dữ liệu di động đang tắt. Tải phim qua 4G/5G có thể tiêu tốn nhiều dung lượng.',
       [
         { text: 'Đóng', style: 'cancel' },
         {

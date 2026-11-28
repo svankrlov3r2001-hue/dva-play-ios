@@ -1507,7 +1507,7 @@ async function downloadHlsItem(
     const elapsedSec = Math.max(0.25, (now - startedAt) / 1000);
     const speedMbps = sessionBytes / (1024 * 1024) / elapsedSec;
     const pct = Math.min(99, Math.round((completedCount / totalSegments) * 100));
-    const throttleNote = shouldThrottleDownloadNow() ? ' (Nhường băng thông)' : '';
+    const throttleNote = shouldThrottleDownloadNow() ? ' (Giới hạn tốc độ)' : '';
     updateItemInMemory(item.id, {
       status: 'downloading',
       media_format: 'hls',
